@@ -1,7 +1,7 @@
 # Hermes Proactive Agent Governor (`proactive-agent`)
 
 [![Hermes Plugin](https://img.shields.io/badge/Hermes-Plugin-blue.svg)](https://hermes-agent.nousresearch.com)
-[![Version](https://img.shields.io/badge/version-0.1.0-green.svg)](https://github.com/JerryLiu369/hermes-proactive-agent)
+[![Version](https://img.shields.io/badge/version-0.1.1-green.svg)](https://github.com/JerryLiu369/hermes-proactive-agent)
 [![CI](https://github.com/JerryLiu369/hermes-proactive-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/JerryLiu369/hermes-proactive-agent/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python: 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
@@ -49,12 +49,12 @@
 |  +---------+    +----------------------------+                                                  :   |
 |  | 前台执行|    |       熔断器检测逻辑        |                                                  :   |
 |  | 监控计时|    |   - 单轮串行轮次 > 5 轮?   |                                                  :   |
-|  +----+----+    |   - 单轮累计耗时 > 100 秒? |                                                  :   |
+|  +----+----+    |   - 单轮累计耗时 > 90 秒?  |                                                  :   |
 |       |         +--------------+-------------+                                                  :   |
 |       |                        |                                                                :   |
 |   [ > 30s? ]            +------+------+                                                         :   |
 |    /     \              |             |                                                         :   |
-|   是      否           未超限        触发熔断 (>5轮 / >100s)                                    :   |
+|   是      否           未超限        触发熔断 (>5轮 / >90s)                                     :   |
 |   |        |            |             |                                                         :   |
 |   v        v            v             v                                                         :   |
 | [挂起后台] [正常完成]  [执行工具]   [冻结重型单体执行工具]                                       :   |
@@ -87,21 +87,22 @@ flowchart TD
     AgentThink --> ToolCheck{调用何种工具?}
 
     ToolCheck -->|Terminal 终端命令| ExecTerm[执行前台终端命令]
-    ExecTerm --> DetachTimer{命令耗时 > 30s?}
+    DetachTimer{命令耗时 > 30s?}
+    ExecTerm --> DetachTimer
     DetachTimer -->|未超过 <30s| NormalFinish[命令在前台正常执行完成]
     DetachTimer -->|超时 >30s| AdaptiveDetach[自适应平滑转入后台<br/>- 零杀进程 (Zero-Kill)<br/>- 过户给 Background Registry<br/>- 标记完成自动推送通知]
     AdaptiveDetach --> ReturnBgPrompt[注入异步回执引导提示词]
     ReturnBgPrompt --> ReleaseChat[结束本轮并释放用户交互]
 
-    ToolCheck -->|单体重型执行工具<br/>terminal / patch / write_file| BreakerCheck{熔断器校验<br/>轮数 > 5 或 耗时 > 100s?}
+    ToolCheck -->|单体重型执行工具<br/>terminal / patch / write_file| BreakerCheck{熔断器校验<br/>轮数 > 5 或 耗时 > 90s?}
     BreakerCheck -->|未超配额| ExecTool[正常执行并累加统计]
     ExecTool --> AgentThink
     BreakerCheck -->|超配额| TripBreaker[重型单体工具拦截冻结<br/>Action: Block]
 
-    TripBreaker --> ForceDelegate[强制进行子代理委派<br/>- delegate_task 分发隔离子任务<br/>- skill_manage / memory 总结经验<br/>- 给出阶段进展并结束本轮]
+    TripBreaker --> ForceDelegate[强制进行子代理委派<br/>- delegate_task 分发隔离子任务<br/>- process_manage 管理后台进程<br/>- skill_manage / memory 总结经验<br/>- 给出阶段进展并结束本轮]
     ForceDelegate --> ReleaseChat
 
-    ToolCheck -->|元工具/白名单工具<br/>delegate_task / memory / skills| ExecAllowed[无条件放行]
+    ToolCheck -->|元工具/白名单工具<br/>delegate_task / process_manage / memory / skills| ExecAllowed[无条件放行]
     ExecAllowed --> ReleaseChat
 
     SteerEvent([用户中途插话 / Steer 纠偏]) -.->|轮次中途或新轮次| ResetQuota[原子重置当前轮次计数与耗时为 0]
@@ -118,14 +119,16 @@ flowchart TD
   - 非侵入式挂接底层 `BaseEnvironment._wait_for_process`，无缝接入原生 `yield_handler`。
   - 一旦前台命令执行超过设定阈值（默认 `30s`），在**不杀进程**的前提下，将正在运行的 `Popen` 进程平滑过户至后台 `process_registry`，标记完成自动推送通知（`notify_on_complete=True`）。
   - 自动通过 `transform_tool_result` 注入指引，明确告知模型：“该命令已转入后台异步运行，切勿 polling / sleep-wait，立即向用户回复并释放对话轮次！”
+  - **子代理彻底豁免脱壳**：子代理（`task_id.startswith("sa-")`，`platform="subagent"`）完全跳过 30s 定时器，保证隔离子任务中的长期编译或训练不受脱壳打断。
 
-### 痛点二：单轮连续硬跑单体工具死循环 (Turn Circuit Breaker > 5 轮 / > 100s)
+### 痛点二：单轮连续硬跑单体工具死循环 (Turn Circuit Breaker > 5 轮 / > 90s)
 - **痛点分析**：Agent 在面对难以解决的代码报错时，容易陷入“修改 -> 报错 -> 修改 -> 报错”的单体死循环。
 - **治理机制**：
   - **并发工具合并计轮**：现代 LLM 单次回复常并发吐出 2~4 个工具调用，插件在 `pre_api_request` 维度计轮，确保一次模型思考只算一轮，绝不误触熔断。
-  - **硬熔断限制**：当主轮次工具调用达到第 6 轮（`> 5` 轮），或累计工具执行耗时达到 `100s` 时，立刻熔断重型单体执行工具（`terminal`, `patch`, `write_file`, `execute_code`）。
+  - **硬熔断限制**：当主轮次工具调用达到第 6 轮（`> 5` 轮），或累计工具执行耗时达到 `90s` 时，立刻熔断重型单体执行工具（`terminal`, `patch`, `write_file`, `execute_code`）。
   - **元认知与自进化工具白名单放行**：
     - `delegate_task`：强制要求模型拆解任务，分发给隔离子代理并行处理；
+    - `process_manage`：即使主线程熔断，仍然允许查看、轮询、发送输入或终止后台脱壳任务，避免运维死锁；
     - `skill_manage` / `memory`：允许模型在熔断状态下沉淀经验与教训，杜绝“为存经验不得不派子代理”的动作形变；
     - `skill_view` / `skills_list`：允许检索规则。
   - **子代理隔离放行**：子代理（`task_id.startswith("sa-")`）拥有独立的沙箱生命周期，自动绕过熔断，避免任务死锁。
@@ -137,8 +140,30 @@ flowchart TD
   - 一旦检测到人类中途介入或开启新轮次，立即原子级重置本轮 round_count 与耗时计数器，给予 Agent 全新配额以遵从用户的最新指示。
   - 会话重置（`on_session_reset`）、会话结束（`on_session_end`）与中断（`agent_loop_stopped`）时自动清理状态，杜绝内存泄漏。
 
-### 动态系统提示词注入
-- 自动根据当前生效的阈值参数，将行为规范（`proactive-agent.discipline`）动态编译并注入到 Hermes 系统提示词中，从思维源头校准模型行为。
+### 动态系统提示词注入与子代理零注入
+- 自动根据当前生效的阈值参数，将行为规范（`proactive-agent.discipline`）动态编译并注入到 Hermes 主对话系统提示词中。
+- **子代理彻底零注入**：当 `session_info.get("platform") == "subagent"` 时，提示词生成器直接返回空字符串 `""`，不产生任何额外 token 开销，绝不混淆子代理的专注执行角色。
+
+```text
+Role: Main dialogue orchestrator. Stay responsive; heavy execution never blocks the chat turn.
+
+1. Triage & Dispatch-Then-Yield
+- LIGHT (read files, status checks, quick probes): finish in <=5 tool rounds, then answer.
+- HEAVY (multi-step edits, refactors, builds, test suites, training, commands likely >30s):
+  1. Dispatch by round 2:
+     - Complex reasoning or code tasks: fan out via delegate_task.
+     - Long shell commands: run terminal(background=True, notify=True).
+  2. Release turn immediately: output a concise one-line status to the user and end your turn. NEVER run sleep or poll.
+
+2. Hardware Governance Limits (Main Thread Only)
+- Foreground command >30s: auto-detached to background with completion notification. Do not wait; inform the user and end your turn.
+- At tool round 6 (round >=6) or >90s turn time: terminal, patch, write_file and execution tools are frozen. Only delegate_task, process_manage, memory, skill_manage, skill_view, skills_list remain. Do not retry; delegate remaining work or deliver current state.
+
+3. Event Wakeup & Physical Verification
+- Asynchronous tasks wake the conversation automatically upon completion.
+- Verify physical on-disk artifacts and real exit codes before answering. Deliver verified results directly — never make the user ask "is it done?".
+- Never expose internal PIDs, session_ids, or raw commands. Keep output clean.
+```
 
 ---
 
@@ -150,7 +175,7 @@ flowchart TD
 |---|---|---|---|---|
 | `terminal_auto_detach_seconds` | `PROACTIVE_TERMINAL_AUTO_DETACH_SECONDS` | `int` | `30` | 前台命令最大允许执行秒数，超过后自动安全挂起至后台运行 |
 | `turn_max_tool_rounds` | `PROACTIVE_TURN_MAX_TOOL_ROUNDS` | `int` | `5` | 主代理单轮最大串行工具调用轮数，超过后触发重任务熔断 |
-| `turn_max_duration_seconds` | `PROACTIVE_TURN_MAX_DURATION_SECONDS` | `int` | `100` | 主代理单轮工具执行累计最大秒数，超过后触发熔断 |
+| `turn_max_duration_seconds` | `PROACTIVE_TURN_MAX_DURATION_SECONDS` | `int` | `90` | 主代理单轮工具执行累计最大秒数，超过后触发熔断 |
 
 ### 配置示例 `config.yaml`
 ```yaml
@@ -161,7 +186,7 @@ plugins:
       config:
         terminal_auto_detach_seconds: 30
         turn_max_tool_rounds: 5
-        turn_max_duration_seconds: 100
+        turn_max_duration_seconds: 90
 ```
 
 ---
@@ -199,8 +224,8 @@ hermes plugins uninstall proactive-agent
 | 现象 / 疑问 | 触发机制与原因 | 建议排障与操作 |
 |---|---|---|
 | **前台执行命令在 30 秒后转入后台** | 触发了自适应前台超时机制，避免阻塞聊天界面。 | 属于正常预期行为。进程在后台安全运行，命令完成时会自动收到推送；Agent 无需轮询等待。 |
-| **工具调用报错 `[Circuit Breaker] Quota reached`** | Agent 在单轮内调用单体工具超过 5 轮或工具执行总时长超过 100 秒。 | Agent 被要求拆解子任务并使用 `delegate_task` 委派子代理并行处理，或先回复用户当前进展。 |
-| **子代理（Subagent）会被熔断限制吗？** | 子代理沙箱有独立生命周期。 | 不会。以 `sa-` 开头的子任务 ID 会自动跳过熔断检测，确保子代理能够完整执行分配的子任务。 |
+| **工具调用报错 `[Circuit Breaker] Quota reached`** | Agent 在单轮内调用单体工具超过 5 轮或工具执行总时长超过 90 秒。 | Agent 被要求拆解子任务并使用 `delegate_task` 委派子代理并行处理，或先回复用户当前进展。熔断期间 `process_manage` 依然可用于管理后台任务。 |
+| **子代理（Subagent）会被熔断或脱壳限制吗？** | 子代理拥有独立生命周期。 | 不会。以 `sa-` 开头的子任务 ID 或 `platform="subagent"` 自动跳过 30s 脱壳定时器与熔断检测，且享受 0 提示词注入开销。 |
 | **中途发送了纠偏消息，Agent 会被卡住吗？** | 包含自愈检测。 | 不会。用户中途发送 Steer / 插话消息后，插件会自动清零单轮计数器并重置执行耗时，重新赋予完整配额。 |
 | **如何在本地运行测试？** | 项目包含完备的测试套件。 | 在项目根目录下执行 `pytest -v` 即可运行全部单元测试。 |
 

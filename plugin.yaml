@@ -1,6 +1,6 @@
 name: proactive-agent
-version: "0.1.0"
-description: "Proactive agent governor: adaptive 30s terminal detach, 5-turn/100s subagent circuit breaker, and dynamic system prompt discipline."
+version: "0.1.1"
+description: "Proactive agent governor: adaptive 30s terminal detach, 5-turn/90s subagent circuit breaker, and dynamic system prompt discipline."
 author: Jerry Liu
 license: MIT
 hooks:
@@ -32,5 +32,5 @@ config_schema:
     description: "Max serial tool rounds in the main agent turn before circuit breaker restricts execution to subagents."
   turn_max_duration_seconds:
     type: int
-    default: 100
+    default: 90
     description: "Max total tool execution duration in the main agent turn before circuit breaker restricts execution to subagents."

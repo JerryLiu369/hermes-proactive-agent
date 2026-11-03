@@ -1,7 +1,7 @@
 # Hermes Proactive Agent Governor (`proactive-agent`)
 
 [![Hermes Plugin](https://img.shields.io/badge/Hermes-Plugin-blue.svg)](https://hermes-agent.nousresearch.com)
-[![Version](https://img.shields.io/badge/version-0.1.0-green.svg)](https://github.com/JerryLiu369/hermes-proactive-agent)
+[![Version](https://img.shields.io/badge/version-0.1.1-green.svg)](https://github.com/JerryLiu369/hermes-proactive-agent)
 [![CI](https://github.com/JerryLiu369/hermes-proactive-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/JerryLiu369/hermes-proactive-agent/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python: 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
@@ -49,12 +49,12 @@ Autonomous LLM agents easily fall into common traps:
 |  +---------+    +----------------------------+                                                  :   |
 |  | Execute |    |   Circuit Breaker Check    |                                                  :   |
 |  | Command |    |   - Round Count > 5?       |                                                  :   |
-|  +----+----+    |   - Turn Elapsed > 100s?   |                                                  :   |
+|  +----+----+    |   - Turn Elapsed > 90s?    |                                                  :   |
 |       |         +--------------+-------------+                                                  :   |
 |       |                        |                                                                :   |
 |   [ > 30s? ]            +------+------+                                                         :   |
 |    /     \              |             |                                                         :   |
-|  Yes      No          Pass          Trip (>5 rds / >100s)                                       :   |
+|  Yes      No          Pass          Trip (>5 rds / >90s)                                        :   |
 |   |        |            |             |                                                         :   |
 |   v        v            v             v                                                         :   |
 | [Detach] [Done]    [Execute]   [Freeze Heavy Tools]                                             :   |
@@ -92,15 +92,15 @@ flowchart TD
     AdaptiveDetach --> ReturnBgPrompt[Inject Async Notification Directive]
     ReturnBgPrompt --> ReleaseChat[Conclude Turn & Release Chat]
 
-    ToolCheck -->|Monolithic Execution Tool<br/>terminal / patch / write_file| BreakerCheck{Circuit Breaker Check<br/>Round > 5 OR Elapsed > 100s?}
+    ToolCheck -->|Monolithic Execution Tool<br/>terminal / patch / write_file| BreakerCheck{Circuit Breaker Check<br/>Round > 5 OR Elapsed > 90s?}
     BreakerCheck -->|No| ExecTool[Execute Tool & Accumulate Stats]
     ExecTool --> AgentThink
     BreakerCheck -->|Yes| TripBreaker[Block Heavy Execution<br/>Tripped Action: Block]
 
-    TripBreaker --> ForceDelegate[Force Proactive Delegation<br/>- delegate_task to Subagent<br/>- skill_manage / memory<br/>- Conclude turn with progress report]
+    TripBreaker --> ForceDelegate[Force Proactive Delegation<br/>- delegate_task to Subagent<br/>- process_manage to monitor bg tasks<br/>- skill_manage / memory<br/>- Conclude turn with progress report]
     ForceDelegate --> ReleaseChat
 
-    ToolCheck -->|Whitelisted / Meta-Tool<br/>delegate_task / memory / skills| ExecAllowed[Always Permitted]
+    ToolCheck -->|Whitelisted / Meta-Tool<br/>delegate_task / process_manage / memory / skills| ExecAllowed[Always Permitted]
     ExecAllowed --> ReleaseChat
 
     SteerEvent([Human Intervention / Steer Message]) -.->|Mid-Turn or New Turn| ResetQuota[Reset Turn Rounds & Timer to Zero]
@@ -117,17 +117,19 @@ flowchart TD
   - Non-invasively monitors `BaseEnvironment._wait_for_process` without breaking native interrupt wiring.
   - If a foreground command exceeds `terminal_auto_detach_seconds` (default: `30s`), it triggers Hermes's native `yield_handler` to adopt the running process into `process_registry` with zero kill and `notify_on_complete=True`.
   - Replaces tool result notes via `transform_tool_result` to instruct the LLM: *"Command running asynchronously in the background. Conclude your turn immediately and release the chat!"*
+  - **Subagent Full Bypass**: Subagents (`task_id.startswith("sa-")`, `platform="subagent"`) skip the 30s detach timer completely, allowing background workers to execute long-running builds without unwanted detachment.
 
-### 2. Turn Circuit Breaker (>5 rounds / >100s) — Break Monolithic Death Loops
+### 2. Turn Circuit Breaker (>5 rounds / >90s) — Break Monolithic Death Loops
 - **The Problem**: Single-threaded agents often get stuck in endless trial-and-error loops (10+ serial bash/patch tool calls in a single response turn), burning tokens, degrading context quality, and locking the UI.
 - **The Solution**:
   - **Batch-Level Round Counting**: Parallel tool calls emitted within a single assistant step share one round counter (`pre_api_request`), preventing premature tripping.
-  - **Hard Circuit Breaker**: If serial rounds exceed `turn_max_tool_rounds` (default: `5`) or turn duration exceeds `turn_max_duration_seconds` (default: `100s`), heavy monolithic tools (`terminal`, `patch`, `write_file`, `execute_code`) are frozen.
-  - **Meta-Tool Whitelist**: Lightweight meta-tools remain completely accessible:
+  - **Hard Circuit Breaker**: If serial rounds exceed `turn_max_tool_rounds` (default: `5`) or turn duration exceeds `turn_max_duration_seconds` (default: `90s`), heavy monolithic tools (`terminal`, `patch`, `write_file`, `execute_code`) are frozen.
+  - **Meta-Tool Whitelist**: Lightweight governance and meta-tools remain completely accessible:
     - `delegate_task`: Fan out heavy sub-tasks to isolated subagents in parallel.
+    - `process_manage`: Check or manage running background tasks even during circuit break.
     - `skill_manage` / `memory`: Perform atomic self-evolution and retain learnings without action distortion.
-    - `skill_view` / `skills_list`: Read existing guidelines.
-  - **Subagent Bypass Guard**: Child subagents (`task_id.startswith("sa-")`) bypass the breaker to execute subtasks cleanly.
+    - `skill_view` / `skills_list`: Read existing guidelines and documentation.
+  - **Subagent Bypass Guard**: Child subagents (`task_id.startswith("sa-")`) bypass the breaker entirely to execute delegated subtasks cleanly.
 
 ### 3. Human Intervention & Steer Self-Healing — Dynamic Quota Reset
 - **The Problem**: Static quota systems freeze agents permanently when users jump in mid-flight to correct direction.
@@ -136,8 +138,30 @@ flowchart TD
   - The moment a human intervenes (either in a new turn or out-of-band mid-turn), round counters and elapsed timers are instantly reset to zero. The agent is granted a fresh quota to execute the user's updated directive.
   - Automatically prunes stale turn states to guarantee zero memory leaks across sessions.
 
-### 4. Dynamic Prompt Discipline
-- Dynamically renders and registers prompt context (`proactive-agent.discipline`) matching the active configuration into the agent's system prompt.
+### 4. Dynamic Prompt Discipline & Subagent Zero-Injection
+- Dynamically renders and registers prompt context (`proactive-agent.discipline`) matching the active configuration into the main agent's system prompt.
+- **Subagent Zero-Injection**: When `session_info.get("platform") == "subagent"`, prompt generation returns an empty string, ensuring child subagents have zero prompt pollution and zero token overhead.
+
+```text
+Role: Main dialogue orchestrator. Stay responsive; heavy execution never blocks the chat turn.
+
+1. Triage & Dispatch-Then-Yield
+- LIGHT (read files, status checks, quick probes): finish in <=5 tool rounds, then answer.
+- HEAVY (multi-step edits, refactors, builds, test suites, training, commands likely >30s):
+  1. Dispatch by round 2:
+     - Complex reasoning or code tasks: fan out via delegate_task.
+     - Long shell commands: run terminal(background=True, notify=True).
+  2. Release turn immediately: output a concise one-line status to the user and end your turn. NEVER run sleep or poll.
+
+2. Hardware Governance Limits (Main Thread Only)
+- Foreground command >30s: auto-detached to background with completion notification. Do not wait; inform the user and end your turn.
+- At tool round 6 (round >=6) or >90s turn time: terminal, patch, write_file and execution tools are frozen. Only delegate_task, process_manage, memory, skill_manage, skill_view, skills_list remain. Do not retry; delegate remaining work or deliver current state.
+
+3. Event Wakeup & Physical Verification
+- Asynchronous tasks wake the conversation automatically upon completion.
+- Verify physical on-disk artifacts and real exit codes before answering. Deliver verified results directly — never make the user ask "is it done?".
+- Never expose internal PIDs, session_ids, or raw commands. Keep output clean.
+```
 
 ---
 
@@ -149,7 +173,7 @@ Parameters can be configured in your Hermes profile config (`config.yaml`), plug
 |---|---|---|---|---|
 | `terminal_auto_detach_seconds` | `PROACTIVE_TERMINAL_AUTO_DETACH_SECONDS` | `int` | `30` | Max seconds a foreground terminal command can run before being detached into the background. |
 | `turn_max_tool_rounds` | `PROACTIVE_TURN_MAX_TOOL_ROUNDS` | `int` | `5` | Max serial tool rounds in the main agent turn before circuit breaker restricts execution. |
-| `turn_max_duration_seconds` | `PROACTIVE_TURN_MAX_DURATION_SECONDS` | `int` | `100` | Max cumulative tool execution duration (seconds) in the main agent turn before circuit breaker trips. |
+| `turn_max_duration_seconds` | `PROACTIVE_TURN_MAX_DURATION_SECONDS` | `int` | `90` | Max cumulative tool execution duration (seconds) in the main agent turn before circuit breaker trips. |
 
 ### Example `config.yaml`
 ```yaml
@@ -160,7 +184,7 @@ plugins:
       config:
         terminal_auto_detach_seconds: 30
         turn_max_tool_rounds: 5
-        turn_max_duration_seconds: 100
+        turn_max_duration_seconds: 90
 ```
 
 ---
@@ -198,8 +222,8 @@ hermes plugins uninstall proactive-agent
 | Question / Symptom | Root Cause | Recommended Action |
 |---|---|---|
 | **Foreground command detached after 30s** | Adaptive timer reached 30s threshold. | The command is running safely in background. Let the agent wrap up its turn; completion notification will arrive automatically. |
-| **Circuit breaker triggered (`[Circuit Breaker] Quota reached`)** | The agent executed >5 serial tool rounds or took >100s in a single turn. | The agent is prompted to delegate remaining work via `delegate_task` or deliver its current findings. |
-| **Do subagents inherit circuit breaker limits?** | Subagents are scoped to subtasks. | No, tasks prefixed with `sa-` automatically bypass the circuit breaker to prevent deadlock. |
+| **Circuit breaker triggered (`[Circuit Breaker] Quota reached`)** | The agent executed >5 serial tool rounds or took >90s in a single turn. | The agent is prompted to delegate remaining work via `delegate_task` or deliver its current findings. `process_manage` remains available to check background tasks. |
+| **Do subagents inherit circuit breaker or terminal detach limits?** | Subagents are scoped to subtasks. | No. Subagents (`task_id.startswith("sa-")`, `platform="subagent"`) have full bypass (no 30s detach timer, no circuit breaker) and zero prompt injection overhead. |
 | **Does mid-turn user steering get blocked?** | Prior turns may have consumed the quota. | Any new user input or out-of-band message immediately resets turn counters and grants a fresh quota. |
 | **How to run tests locally?** | Standard testing workflow. | Run `pytest -v` in the root of the repository. |
 

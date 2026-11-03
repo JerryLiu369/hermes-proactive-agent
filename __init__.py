@@ -1,23 +1,25 @@
 """
-proactive-agent: Proactive Agent Governor Plugin for Hermes Agent (v0.1.0).
+proactive-agent: Proactive Agent Governor Plugin for Hermes Agent (v0.1.1).
 
 Features:
 1. Terminal Adaptive Detach:
    Foreground terminal commands that run longer than `terminal_auto_detach_seconds` (default: 30s)
    are dynamically detached into tracked background processes using Hermes's native
    `yield_handler` / `process_registry.adopt_local` mechanism with completion notifications,
-   releasing chat interaction immediately.
+   releasing chat interaction immediately. Subagents are fully exempt.
 
 2. Tool Circuit Breaker & Subagent Enforcement:
    If the main agent in a single turn executes > `turn_max_tool_rounds` (default: 5 rounds,
    meaning when attempting round 6), OR if cumulative tool execution duration in that turn
-   reaches `turn_max_duration_seconds` (default: 100s):
+   reaches `turn_max_duration_seconds` (default: 90s):
    - Heavy execution tools are blocked with an explicit directive.
-   - Allowed tools: `delegate_task`, `skill_manage`, `memory`, `skill_view`, `skills_list`.
+   - Allowed tools: `delegate_task`, `process_manage`, `skill_manage`, `memory`, `skill_view`, `skills_list`.
    - Forces the model to report phase progress and delegate heavy work to subagents.
+   - Subagents bypass the circuit breaker completely.
 
 3. Dynamic System Prompt Discipline:
-   Dynamically renders prompt rules matching active config thresholds into session prompt context.
+   Dynamically renders prompt rules matching active config thresholds into main agent session prompt context.
+   Subagents receive zero prompt injection (returns empty string).
 
 4. Resilient Human Intervention & Turn Lifecycle Recovery:
    - Resets round counts and elapsed timers when human intervention occurs
@@ -27,6 +29,8 @@ Features:
 
 from __future__ import annotations
 
+import collections.abc
+import contextvars
 import json
 import logging
 import os
@@ -41,7 +45,7 @@ _patched: bool = False
 _state_lock = threading.Lock()
 
 DEFAULT_MAX_ROUNDS = 5
-DEFAULT_MAX_DURATION_S = 100.0
+DEFAULT_MAX_DURATION_S = 90.0
 
 # Turn state: turn_id -> {
 #   "session_id": str,
@@ -57,6 +61,38 @@ _turn_states: Dict[str, Dict[str, Any]] = {}
 
 _timeout_yield_tids: Set[int] = set()
 _timeout_yield_lock = threading.Lock()
+
+# Subagent context & thread mapping
+_current_task_id: contextvars.ContextVar[str] = contextvars.ContextVar("proactive_agent_task_id", default="")
+_thread_task_ids: Dict[int, str] = {}
+_task_id_lock = threading.Lock()
+
+
+def _is_subagent_context(watch_interrupt_tid: Optional[int] = None) -> bool:
+    """Check if the current context or thread belongs to a subagent (task_id.startswith('sa-'))."""
+    task_id = _current_task_id.get()
+    if task_id and task_id.startswith("sa-"):
+        return True
+
+    if watch_interrupt_tid is not None:
+        with _task_id_lock:
+            t_id = _thread_task_ids.get(watch_interrupt_tid)
+            if t_id and t_id.startswith("sa-"):
+                return True
+
+    with _task_id_lock:
+        t_id = _thread_task_ids.get(threading.get_ident())
+        if t_id and t_id.startswith("sa-"):
+            return True
+
+    try:
+        from agent.delegation_context import is_delegated_child_context
+        if is_delegated_child_context():
+            return True
+    except Exception:
+        pass
+
+    return False
 
 
 def _get_setting(key: str, default: Any) -> Any:
@@ -108,6 +144,19 @@ def _install_adaptive_terminal_patch() -> None:
             output=None,
             yield_handler: Optional[Callable] = None,
         ) -> dict:
+            # Subagent bypass: if current thread or context belongs to a subagent (task_id.startswith("sa-")),
+            # bypass 30s auto-detach timer completely and call orig_wait directly!
+            if _is_subagent_context(watch_interrupt_tid):
+                return orig_wait(
+                    self,
+                    proc,
+                    timeout=timeout,
+                    bounded_capture=bounded_capture,
+                    watch_interrupt_tid=watch_interrupt_tid,
+                    output=output,
+                    yield_handler=yield_handler,
+                )
+
             detach_timeout = _get_setting("terminal_auto_detach_seconds", 30)
 
             # Only apply timer if yield_handler is present, watch_interrupt_tid is known, and detach_timeout > 0
@@ -219,11 +268,15 @@ def _reset_turn_state(turn_id: str, session_id: str = "", steer_count: int = 0) 
 
 def _on_pre_llm_call(**hook_kwargs: Any) -> None:
     """Reset turn state at the start of every new user turn (pre_llm_call)."""
-    turn_id = hook_kwargs.get("turn_id") or ""
-    session_id = hook_kwargs.get("session_id") or ""
     task_id = hook_kwargs.get("task_id") or ""
+    if task_id:
+        _current_task_id.set(task_id)
+        with _task_id_lock:
+            _thread_task_ids[threading.get_ident()] = task_id
     if task_id.startswith("sa-"):
         return
+    turn_id = hook_kwargs.get("turn_id") or ""
+    session_id = hook_kwargs.get("session_id") or ""
     if turn_id:
         messages = hook_kwargs.get("conversation_history") or []
         initial_steer = _count_steers(messages)
@@ -237,8 +290,12 @@ def _on_pre_llm_call(**hook_kwargs: Any) -> None:
 
 def _on_pre_api_request(**hook_kwargs: Any) -> None:
     """Detect mid-turn human intervention (steer messages) and increment round count."""
-    turn_id = hook_kwargs.get("turn_id") or ""
     task_id = hook_kwargs.get("task_id") or ""
+    if task_id:
+        _current_task_id.set(task_id)
+        with _task_id_lock:
+            _thread_task_ids[threading.get_ident()] = task_id
+    turn_id = hook_kwargs.get("turn_id") or ""
     session_id = hook_kwargs.get("session_id") or ""
     if not turn_id or task_id.startswith("sa-"):
         return
@@ -288,13 +345,19 @@ def _on_agent_loop_stopped(**hook_kwargs: Any) -> None:
 
 
 def _pre_tool_call(tool_name: str, args: Optional[dict], **hook_kwargs: Any) -> Optional[dict]:
-    """Pre-tool hook enforcing circuit breaker (>5 rounds or >100s)."""
-    turn_id = hook_kwargs.get("turn_id") or ""
-    if not turn_id:
+    """Pre-tool hook enforcing circuit breaker (>5 rounds or >90s)."""
+    task_id = hook_kwargs.get("task_id") or ""
+    if task_id:
+        _current_task_id.set(task_id)
+        with _task_id_lock:
+            _thread_task_ids[threading.get_ident()] = task_id
+        if task_id.startswith("sa-"):
+            return None
+    elif _is_subagent_context():
         return None
 
-    task_id = hook_kwargs.get("task_id") or ""
-    if task_id.startswith("sa-"):
+    turn_id = hook_kwargs.get("turn_id") or ""
+    if not turn_id:
         return None
 
     session_id = hook_kwargs.get("session_id") or ""
@@ -327,11 +390,11 @@ def _pre_tool_call(tool_name: str, args: Optional[dict], **hook_kwargs: Any) -> 
     tripped_time = elapsed_turn_time >= max_duration
 
     if tripped_rounds or tripped_time:
-        ALLOWED_TRIPPED_TOOLS = {"delegate_task", "skill_manage", "memory", "skill_view", "skills_list"}
+        ALLOWED_TRIPPED_TOOLS = {"delegate_task", "process_manage", "skill_manage", "memory", "skill_view", "skills_list"}
         if tool_name in ALLOWED_TRIPPED_TOOLS:
             return None
 
-        reason = "[Circuit Breaker]: Quota reached (>5 rounds or >100s). Heavy execution frozen. Delegate via delegate_task, record via skill_manage/memory, or finalize response."
+        reason = f"[Circuit Breaker]: Quota reached (>{max_rounds} rounds or >{int(max_duration)}s). Heavy execution frozen. Delegate via delegate_task, record via skill_manage/memory, or finalize response."
         logger.warning(
             "proactive-agent: Tripped circuit breaker for tool %s (round=%s, elapsed=%.1fs)",
             tool_name, current_round, elapsed_turn_time
@@ -347,6 +410,16 @@ def _pre_tool_call(tool_name: str, args: Optional[dict], **hook_kwargs: Any) -> 
 
 def _post_tool_call(tool_name: str, args: Optional[dict], result: Any, **hook_kwargs: Any) -> None:
     """Post-tool hook tracking accurate duration via duration_ms."""
+    with _task_id_lock:
+        _thread_task_ids.pop(threading.get_ident(), None)
+
+    task_id = hook_kwargs.get("task_id") or ""
+    if task_id:
+        if task_id.startswith("sa-"):
+            return
+    elif _is_subagent_context():
+        return
+
     turn_id = hook_kwargs.get("turn_id") or ""
     if not turn_id:
         return
@@ -384,8 +457,15 @@ def _transform_tool_result(tool_name: str, args: Optional[dict], result: Any, **
     if tool_name != "terminal":
         return None
 
+    task_id = hook_kwargs.get("task_id") or ""
+    if task_id:
+        if task_id.startswith("sa-"):
+            return None
+    elif _is_subagent_context():
+        return None
+
     # Check whether this command was yielded due to our adaptive timer
-    tid = threading.current_thread().ident
+    tid = threading.get_ident()
     is_timeout_yield = False
     with _timeout_yield_lock:
         if tid in _timeout_yield_tids:
@@ -406,7 +486,7 @@ def _transform_tool_result(tool_name: str, args: Optional[dict], result: Any, **
                 f"it has been automatically detached to a background process (session_id: {session_id}) and continues running.\n"
                 "[Action Required]:\n"
                 "1. This command is now running asynchronously in the background. When it finishes, completion notification will be delivered automatically. Do NOT poll or sleep-wait for it;\n"
-                "2. Conclude your turn immediately: write a concise text response informing the user that the command is running in the background (mention the session_id), and release the conversation!"
+                "2. Conclude your turn immediately: write a concise text response informing the user that the command is running in the background, and release the conversation!"
             )
             logger.info("proactive-agent: Replaced yield note with custom timeout prompt for session %s", session_id)
             return json.dumps(data, ensure_ascii=False)
@@ -418,6 +498,9 @@ def _transform_tool_result(tool_name: str, args: Optional[dict], result: Any, **
 
 def _on_session_clean(session_id: str = "", turn_id: str = "", **kwargs: Any) -> None:
     """Clear turn state on session reset or turn/session end."""
+    _current_task_id.set("")
+    with _task_id_lock:
+        _thread_task_ids.clear()
     with _state_lock:
         if turn_id and turn_id in _turn_states:
             _turn_states.pop(turn_id, None)
@@ -431,26 +514,39 @@ def _on_session_clean(session_id: str = "", turn_id: str = "", **kwargs: Any) ->
 
 def _render_system_prompt_discipline(session_info: Optional[Any] = None) -> str:
     """Dynamically render proactive agent discipline system prompt using current settings."""
+    if session_info is not None:
+        platform = ""
+        if isinstance(session_info, (dict, collections.abc.Mapping)):
+            platform = str(session_info.get("platform") or "")
+        elif hasattr(session_info, "get"):
+            platform = str(session_info.get("platform") or "")
+        elif hasattr(session_info, "platform"):
+            platform = str(getattr(session_info, "platform", "") or "")
+        if platform == "subagent":
+            return ""
+
     detach_timeout = _get_setting("terminal_auto_detach_seconds", 30)
     max_rounds = _get_setting("turn_max_tool_rounds", DEFAULT_MAX_ROUNDS)
     max_duration = _get_setting("turn_max_duration_seconds", int(DEFAULT_MAX_DURATION_S))
     round_breaker = max_rounds + 1
-    return f"""## Execution Discipline: Proactive Orchestration & Asynchronous Heavy Tasks (重任务通通异步)
+    return f"""Role: Main dialogue orchestrator. Stay responsive; heavy execution never blocks the chat turn.
 
-Own outcomes with initiative. Settle 1~{max_rounds} quick tool turns directly for lightweight inspections (reading files, status checks, minimal verification). Any non-trivial, iterative, or heavy work must be dispatched asynchronously:
+1. Triage & Dispatch-Then-Yield
+- LIGHT (read files, status checks, quick probes): finish in <={max_rounds} tool rounds, then answer.
+- HEAVY (multi-step edits, refactors, builds, test suites, training, commands likely >{detach_timeout}s):
+  1. Dispatch by round 2:
+     - Complex reasoning or code tasks: fan out via delegate_task.
+     - Long shell commands: run terminal(background=True, notify=True).
+  2. Release turn immediately: output a concise one-line status to the user and end your turn. NEVER run sleep or poll.
 
-### Proactive Orchestration Pillars:
-1. **Reply first, then delegate**: When facing non-trivial work, give a concise one-line status update in turn 1 and release the turn immediately so the conversation stays responsive. Never freeze chat in sequential blocking tool loops or sleep waits.
-2. **Embrace background execution & delegation**:
-   - Proactively dispatch long-running commands to the background via `terminal(background=True, notify=True)` or `tmux` with an isolated cgroup.
-   - Proactively decompose complex, multi-step, or multi-file tasks into discrete subtasks and fan them out in parallel to isolated subagents via `delegate_task`.
-3. **Quiet execution**: Keep execution quiet. Never narrate executor IDs, internal PIDs, or raw background commands in chat.
-4. **Verify before claiming done**: Verify actual physical artifacts on disk before declaring completion. Deliver final results and attachments via event-driven notifications.
+2. Hardware Governance Limits (Main Thread Only)
+- Foreground command >{detach_timeout}s: auto-detached to background with completion notification. Do not wait; inform the user and end your turn.
+- At tool round {round_breaker} (round >={round_breaker}) or >{max_duration}s turn time: terminal, patch, write_file and execution tools are frozen. Only delegate_task, process_manage, memory, skill_manage, skill_view, skills_list remain. Do not retry; delegate remaining work or deliver current state.
 
-### Automated Governor Safeguards:
-- **Adaptive Terminal Detach (>{detach_timeout}s)**: Any foreground terminal command exceeding {detach_timeout}s is automatically detached into a tracked background process without being killed. Never poll or sleep-wait for it in the main thread.
-- **Circuit Breaker (>{max_rounds} tool rounds or >{max_duration}s user-message processing time)**: When tool execution reaches round {round_breaker} or total processing time for the current user message reaches {max_duration}s, all monolithic execution tools (`terminal`, `patch`, `write_file`, etc.) are frozen. Heavy execution must be delegated via `delegate_task`. Lightweight self-evolution and memory tools (`skill_manage`, `memory`) remain permitted.
-"""
+3. Event Wakeup & Physical Verification
+- Asynchronous tasks wake the conversation automatically upon completion.
+- Verify physical on-disk artifacts and real exit codes before answering. Deliver verified results directly — never make the user ask "is it done?".
+- Never expose internal PIDs, session_ids, or raw commands. Keep output clean."""
 
 
 def register(ctx: Any) -> None:
