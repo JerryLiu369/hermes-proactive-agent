@@ -88,6 +88,8 @@ def test_system_prompt_rendering():
     assert "round 6" in content
     assert "delegate_task" in content
     assert "process_manage" not in content
+    assert "Scope minimally and aim to dispatch as early as possible" in content
+    assert "before tool round 5 or 90s" in content
 
 
 def test_subagent_zero_prompt_injection():

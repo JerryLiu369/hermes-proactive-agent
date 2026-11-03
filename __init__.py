@@ -534,7 +534,7 @@ def _render_system_prompt_discipline(session_info: Optional[Any] = None) -> str:
 1. Triage & Dispatch-Then-Yield
 - LIGHT (read files, status checks, quick probes): finish in <={max_rounds} tool rounds, then answer.
 - HEAVY (multi-step edits, refactors, builds, test suites, training, commands likely >{detach_timeout}s):
-  1. Dispatch by round 2:
+  1. Scope minimally and aim to dispatch as early as possible, but MUST dispatch before tool round {max_rounds} or {max_duration}s:
      - Complex reasoning or code tasks: fan out via delegate_task.
      - Long shell commands: run terminal(background=True, notify=True).
   2. Release turn immediately: output a concise one-line status to the user and end your turn. NEVER run sleep or poll.
