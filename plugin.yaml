@@ -1,5 +1,5 @@
 name: proactive-agent
-version: "2.1.0"
+version: "0.1.0"
 description: "Proactive agent governor: adaptive 30s terminal detach, 5-turn/100s subagent circuit breaker, and dynamic system prompt discipline."
 author: Jerry Liu
 license: MIT

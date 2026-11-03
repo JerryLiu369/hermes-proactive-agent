@@ -1,7 +1,8 @@
 # Hermes Proactive Agent Governor (`proactive-agent`)
 
 [![Hermes Plugin](https://img.shields.io/badge/Hermes-Plugin-blue.svg)](https://hermes-agent.nousresearch.com)
-[![Version](https://img.shields.io/badge/version-2.1.0-green.svg)](https://github.com/JerryLiu369/hermes-proactive-agent)
+[![Version](https://img.shields.io/badge/version-0.1.0-green.svg)](https://github.com/JerryLiu369/hermes-proactive-agent)
+[![CI](https://github.com/JerryLiu369/hermes-proactive-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/JerryLiu369/hermes-proactive-agent/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python: 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
 
@@ -9,25 +10,110 @@
 
 ---
 
-**Hermes Proactive Agent Governor** (`proactive-agent`) is an execution governance plugin for [Hermes Agent](https://hermes-agent.nousresearch.com). It enforces proactive orchestrator discipline, eliminates blocking foreground commands, prevents infinite serial tool loops, and provides resilient self-healing when humans intervene mid-turn.
+**Hermes Proactive Agent Governor** (`proactive-agent`) is an execution governance plugin for [Hermes Agent](https://hermes-agent.nousresearch.com). It enforces proactive orchestrator discipline, eliminates blocking foreground commands, breaks infinite serial trial-and-error tool loops, and provides resilient self-healing when humans intervene mid-turn.
 
 ## 🎯 Core Philosophy: "All Heavy Tasks Asynchronous"
 
-Autonomous LLM agents easily fall into traps: freezing chat for minutes on long bash commands, running in endless monolithic trial-and-error loops within a single turn, or ignoring mid-flight user steering.
+Autonomous LLM agents easily fall into common traps:
+- **Foreground Freezes**: Executing long compilation, installation, or model scripts in the foreground, blocking chat UI and gateway connections.
+- **Serial Trial-and-Error Loops**: Burning tokens and context length in endless monolithic loops (e.g. 10+ consecutive `terminal` or `patch` calls) within a single turn.
+- **Quota Lockout on Steering**: Refusing to act after human intervention due to rigid, static execution limits.
 
 `proactive-agent` transforms your agent into a disciplined, proactive orchestrator:
-1. **Reply first, then delegate**: Provide immediate feedback to keep conversations snappy and responsive.
-2. **Embrace background execution & delegation**: Long-running commands run detached; multi-step goals fan out to subagents via `delegate_task`.
-3. **Quiet execution**: Keep execution clean without spamming internal PIDs or raw terminal logs into user chat.
+1. **Reply first, then delegate**: Acknowledge requests immediately in turn 1 and release the conversation. Never lock chat behind blocking sequential tool calls.
+2. **Embrace background execution & delegation**: Long-running commands run detached in the background; complex multi-step goals fan out in parallel to subagents via `delegate_task`.
+3. **Quiet execution**: Keep conversations clean without spamming internal PIDs or raw terminal logs into user chat.
 4. **Verify before claiming done**: Check physical artifacts on disk before declaring completion.
 
 ---
 
-## ⚡ Key Pain Points Solved
+## 🏛️ System Architecture & Workflow
+
+```text
++----------------------------------------------------------------------------------------------------+
+|                                    Hermes Proactive Agent Governor                                 |
++----------------------------------------------------------------------------------------------------+
+|                                                                                                    |
+|   +-----------------------+                                                                        |
+|   | User Turn Initiation  |                                                                        |
+|   +-----------+-----------+                                                                        |
+|               |                                                                                    |
+|               v                                                                                    |
+|   +-----------------------+              Steer Message / Intervention                              |
+|   | LLM Reasoning & Step  |<....................................................................+   |
+|   +-----------+-----------+                                                                     :   |
+|               |                                                                                 :   |
+|       +-------+-------+                                                                         :   |
+|       |               |                                                                         :   |
+|       v (Terminal)    v (Tool Call)                                                             :   |
+|  +---------+    +----------------------------+                                                  :   |
+|  | Execute |    |   Circuit Breaker Check    |                                                  :   |
+|  | Command |    |   - Round Count > 5?       |                                                  :   |
+|  +----+----+    |   - Turn Elapsed > 100s?   |                                                  :   |
+|       |         +--------------+-------------+                                                  :   |
+|       |                        |                                                                :   |
+|   [ > 30s? ]            +------+------+                                                         :   |
+|    /     \              |             |                                                         :   |
+|  Yes      No          Pass          Trip (>5 rds / >100s)                                       :   |
+|   |        |            |             |                                                         :   |
+|   v        v            v             v                                                         :   |
+| [Detach] [Done]    [Execute]   [Freeze Heavy Tools]                                             :   |
+|   |                     |             |                                                         :   |
+|   |                     |             v                                                         :   |
+|   |                     |     [Force delegate_task                                              :   |
+|   |                     |      to Isolated Subagents]                                           :   |
+|   |                     |             |                                                         :   |
+|   +------------+--------+             |                                                         :   |
+|                |                      |                                                         :   |
+|                v                      v                                                         :   |
+|       +------------------------------------+                                                    :   |
+|       |  Atomic State Tracker & Governor   |                                                    :   |
+|       |  (Dynamic Prompt & Quota Watcher)  |<...................................................+   |
+|       +-----------------+------------------+                                                        |
+|                         |                                                                           |
+|                         v                                                                           |
+|       +------------------------------------+                                                        |
+|       |  Prompt Response & Fast Turn Hand  |                                                        |
+|       +------------------------------------+                                                        |
++----------------------------------------------------------------------------------------------------+
+```
+
+### Execution Lifecycle (Mermaid)
+
+```mermaid
+flowchart TD
+    User([User Prompt / Turn]) --> AgentThink[LLM Reasoning & Tool Intent]
+    AgentThink --> ToolCheck{Tool Type?}
+
+    ToolCheck -->|Terminal Command| ExecTerm[Execute Terminal Command]
+    ExecTerm --> DetachTimer{Running > 30s?}
+    DetachTimer -->|No, <30s| NormalFinish[Command Completes in Foreground]
+    DetachTimer -->|Yes, >30s| AdaptiveDetach[Adaptive Background Detach<br/>- Zero Process Kill<br/>- Adopt to Background Registry<br/>- Notify on Completion]
+    AdaptiveDetach --> ReturnBgPrompt[Inject Async Notification Directive]
+    ReturnBgPrompt --> ReleaseChat[Conclude Turn & Release Chat]
+
+    ToolCheck -->|Monolithic Execution Tool<br/>terminal / patch / write_file| BreakerCheck{Circuit Breaker Check<br/>Round > 5 OR Elapsed > 100s?}
+    BreakerCheck -->|No| ExecTool[Execute Tool & Accumulate Stats]
+    ExecTool --> AgentThink
+    BreakerCheck -->|Yes| TripBreaker[Block Heavy Execution<br/>Tripped Action: Block]
+
+    TripBreaker --> ForceDelegate[Force Proactive Delegation<br/>- delegate_task to Subagent<br/>- skill_manage / memory<br/>- Conclude turn with progress report]
+    ForceDelegate --> ReleaseChat
+
+    ToolCheck -->|Whitelisted / Meta-Tool<br/>delegate_task / memory / skills| ExecAllowed[Always Permitted]
+    ExecAllowed --> ReleaseChat
+
+    SteerEvent([Human Intervention / Steer Message]) -.->|Mid-Turn or New Turn| ResetQuota[Reset Turn Rounds & Timer to Zero]
+    ResetQuota -.-> AgentThink
+```
+
+---
+
+## ⚡ Core Governance Capabilities
 
 ### 1. Adaptive Terminal Detach (>30s) — Never Freeze Foreground Chat
 - **The Problem**: When an agent runs build scripts (`cargo build`, `npm install`), test suites, or training processes in the foreground, the terminal blocks. Chat freezes for minutes, risking gateway timeouts or connection drops.
-- **The Solution**: 
+- **The Solution**:
   - Non-invasively monitors `BaseEnvironment._wait_for_process` without breaking native interrupt wiring.
   - If a foreground command exceeds `terminal_auto_detach_seconds` (default: `30s`), it triggers Hermes's native `yield_handler` to adopt the running process into `process_registry` with zero kill and `notify_on_complete=True`.
   - Replaces tool result notes via `transform_tool_result` to instruct the LLM: *"Command running asynchronously in the background. Conclude your turn immediately and release the chat!"*
@@ -93,6 +179,12 @@ hermes plugins enable proactive-agent
 hermes plugins list
 ```
 
+### Manual Installation
+```bash
+git clone https://github.com/JerryLiu369/hermes-proactive-agent.git ~/.hermes/plugins/proactive-agent
+hermes plugins enable proactive-agent
+```
+
 ### Uninstall
 ```bash
 hermes plugins disable proactive-agent
@@ -101,10 +193,22 @@ hermes plugins uninstall proactive-agent
 
 ---
 
+## 🔍 Troubleshooting & FAQ
+
+| Question / Symptom | Root Cause | Recommended Action |
+|---|---|---|
+| **Foreground command detached after 30s** | Adaptive timer reached 30s threshold. | The command is running safely in background. Let the agent wrap up its turn; completion notification will arrive automatically. |
+| **Circuit breaker triggered (`[Circuit Breaker] Quota reached`)** | The agent executed >5 serial tool rounds or took >100s in a single turn. | The agent is prompted to delegate remaining work via `delegate_task` or deliver its current findings. |
+| **Do subagents inherit circuit breaker limits?** | Subagents are scoped to subtasks. | No, tasks prefixed with `sa-` automatically bypass the circuit breaker to prevent deadlock. |
+| **Does mid-turn user steering get blocked?** | Prior turns may have consumed the quota. | Any new user input or out-of-band message immediately resets turn counters and grants a fresh quota. |
+| **How to run tests locally?** | Standard testing workflow. | Run `pytest -v` in the root of the repository. |
+
+---
+
 ## 🛠️ Environment Compatibility
 
 - **Hermes Agent**: v0.8.0 and above
-- **Python**: 3.10+
+- **Python**: 3.10, 3.11, 3.12+
 - **OS**: Linux, macOS, WSL
 
 ---

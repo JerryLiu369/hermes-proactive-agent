@@ -1,7 +1,8 @@
 # Hermes Proactive Agent Governor (`proactive-agent`)
 
 [![Hermes Plugin](https://img.shields.io/badge/Hermes-Plugin-blue.svg)](https://hermes-agent.nousresearch.com)
-[![Version](https://img.shields.io/badge/version-2.1.0-green.svg)](https://github.com/JerryLiu369/hermes-proactive-agent)
+[![Version](https://img.shields.io/badge/version-0.1.0-green.svg)](https://github.com/JerryLiu369/hermes-proactive-agent)
+[![CI](https://github.com/JerryLiu369/hermes-proactive-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/JerryLiu369/hermes-proactive-agent/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python: 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
 
@@ -14,9 +15,9 @@
 ## 🎯 核心治理哲学：重任务通通异步 (All Heavy Tasks Asynchronous)
 
 自主大模型 Agent 在日常执行任务中最容易陷入以下失控陷阱：
-- 执行编译、拉取镜像、微调等耗时任务时一直卡在前台等待，导致与用户的聊天窗口彻底卡死；
-- 遇到报错时在单轮内陷入盲目的“单体工具连环试错”（接连执行 10~15 轮 `terminal` / `patch`），烧光上下文并最终超时；
-- 用户中途发消息纠偏，Agent 却受死板配额限制拒绝执行。
+- **前台卡死**：执行编译、拉取镜像、微调等耗时任务时一直卡在前台等待，导致与用户的聊天窗口彻底卡死，触发网关超时；
+- **连环试错死循环**：遇到报错时在单轮内陷入盲目的“单体工具连环试错”（接连执行 10~15 轮 `terminal` / `patch`），烧光上下文并最终超时；
+- **死板配额锁死**：用户中途发消息纠偏，Agent 却受死板配额限制拒绝执行。
 
 `proactive-agent` 树立四大执行支柱：
 1. **先回执后委派 (Reply first, then delegate)**：遇到复杂非平凡任务，首轮简短回执用户并释放交互，绝不在主线程单体硬跑或 sleep 等待。
@@ -26,7 +27,90 @@
 
 ---
 
-## ⚡ 解决三大 Agent 核心痛点与机制
+## 🏛️ 系统架构与执行流转图
+
+```text
++----------------------------------------------------------------------------------------------------+
+|                                    Hermes Proactive Agent Governor                                 |
++----------------------------------------------------------------------------------------------------+
+|                                                                                                    |
+|   +-----------------------+                                                                        |
+|   |   用户发起请求 / 轮次   |                                                                        |
+|   +-----------+-----------+                                                                        |
+|               |                                                                                    |
+|               v                                                                                    |
+|   +-----------------------+              用户中途介入纠偏 (Steer / 插话)                             |
+|   |  模型思考与意图生成     |<....................................................................+   |
+|   +-----------+-----------+                                                                     :   |
+|               |                                                                                 :   |
+|       +-------+-------+                                                                         :   |
+|       |               |                                                                         :   |
+|       v (Terminal长命令)v (常规单体工具)                                                          :   |
+|  +---------+    +----------------------------+                                                  :   |
+|  | 前台执行|    |       熔断器检测逻辑        |                                                  :   |
+|  | 监控计时|    |   - 单轮串行轮次 > 5 轮?   |                                                  :   |
+|  +----+----+    |   - 单轮累计耗时 > 100 秒? |                                                  :   |
+|       |         +--------------+-------------+                                                  :   |
+|       |                        |                                                                :   |
+|   [ > 30s? ]            +------+------+                                                         :   |
+|    /     \              |             |                                                         :   |
+|   是      否           未超限        触发熔断 (>5轮 / >100s)                                    :   |
+|   |        |            |             |                                                         :   |
+|   v        v            v             v                                                         :   |
+| [挂起后台] [正常完成]  [执行工具]   [冻结重型单体执行工具]                                       :   |
+| (零杀进程) (回显结果)   (累计耗时)   (terminal/patch/write)                                     :   |
+|   |                     |             |                                                         :   |
+|   |                     |             v                                                         :   |
+|   |                     |     [强制要求 delegate_task                                           :   |
+|   |                     |      拆解并委派隔离子代理]                                            :   |
+|   |                     |             |                                                         :   |
+|   +------------+--------+             |                                                         :   |
+|                |                      |                                                         :   |
+|                v                      v                                                         :   |
+|       +------------------------------------+                                                    :   |
+|       |   原子状态跟踪器与动态注入治理器   |                                                    :   |
+|       |  (Prompt 注入 / 配额守护 / 内存防漏)|<...................................................+   |
+|       +-----------------+------------------+                                                        |
+|                         |                                                                           |
+|                         v                                                                           |
+|       +------------------------------------+                                                        |
+|       |      即刻交还轮次，保持交互丝滑响应   |                                                        |
+|       +------------------------------------+                                                        |
++----------------------------------------------------------------------------------------------------+
+```
+
+### 治理执行时序流程图 (Mermaid)
+
+```mermaid
+flowchart TD
+    User([用户发起任务 / 轮次]) --> AgentThink[LLM 思考与规划]
+    AgentThink --> ToolCheck{调用何种工具?}
+
+    ToolCheck -->|Terminal 终端命令| ExecTerm[执行前台终端命令]
+    ExecTerm --> DetachTimer{命令耗时 > 30s?}
+    DetachTimer -->|未超过 <30s| NormalFinish[命令在前台正常执行完成]
+    DetachTimer -->|超时 >30s| AdaptiveDetach[自适应平滑转入后台<br/>- 零杀进程 (Zero-Kill)<br/>- 过户给 Background Registry<br/>- 标记完成自动推送通知]
+    AdaptiveDetach --> ReturnBgPrompt[注入异步回执引导提示词]
+    ReturnBgPrompt --> ReleaseChat[结束本轮并释放用户交互]
+
+    ToolCheck -->|单体重型执行工具<br/>terminal / patch / write_file| BreakerCheck{熔断器校验<br/>轮数 > 5 或 耗时 > 100s?}
+    BreakerCheck -->|未超配额| ExecTool[正常执行并累加统计]
+    ExecTool --> AgentThink
+    BreakerCheck -->|超配额| TripBreaker[重型单体工具拦截冻结<br/>Action: Block]
+
+    TripBreaker --> ForceDelegate[强制进行子代理委派<br/>- delegate_task 分发隔离子任务<br/>- skill_manage / memory 总结经验<br/>- 给出阶段进展并结束本轮]
+    ForceDelegate --> ReleaseChat
+
+    ToolCheck -->|元工具/白名单工具<br/>delegate_task / memory / skills| ExecAllowed[无条件放行]
+    ExecAllowed --> ReleaseChat
+
+    SteerEvent([用户中途插话 / Steer 纠偏]) -.->|轮次中途或新轮次| ResetQuota[原子重置当前轮次计数与耗时为 0]
+    ResetQuota -.-> AgentThink
+```
+
+---
+
+## ⚡ 解决三大 Agent 核心痛点与治理机制
 
 ### 痛点一：前台长命令卡死终端与超时 (Adaptive Terminal Detach > 30s)
 - **痛点分析**：大模型使用前台 `terminal` 运行长命令（如编译项目、训练脚本、大文件下载）时，终端会阻塞数分钟直至超时爆掉，期间用户无法在 IM/CLI 得到任何响应。如果直接粗暴重写 `terminal` 工具，又会破坏 Hermes 原生线程中断与消息接入协议。
@@ -84,7 +168,7 @@ plugins:
 
 ## 🚀 安装与使用
 
-### 安装
+### 通过 Hermes CLI 安装
 ```bash
 # 从 GitHub 仓库一键安装
 hermes plugins install github:JerryLiu369/hermes-proactive-agent
@@ -96,6 +180,12 @@ hermes plugins enable proactive-agent
 hermes plugins list
 ```
 
+### 手动安装
+```bash
+git clone https://github.com/JerryLiu369/hermes-proactive-agent.git ~/.hermes/plugins/proactive-agent
+hermes plugins enable proactive-agent
+```
+
 ### 卸载
 ```bash
 hermes plugins disable proactive-agent
@@ -104,10 +194,22 @@ hermes plugins uninstall proactive-agent
 
 ---
 
+## 🔍 常见排障与 FAQ
+
+| 现象 / 疑问 | 触发机制与原因 | 建议排障与操作 |
+|---|---|---|
+| **前台执行命令在 30 秒后转入后台** | 触发了自适应前台超时机制，避免阻塞聊天界面。 | 属于正常预期行为。进程在后台安全运行，命令完成时会自动收到推送；Agent 无需轮询等待。 |
+| **工具调用报错 `[Circuit Breaker] Quota reached`** | Agent 在单轮内调用单体工具超过 5 轮或工具执行总时长超过 100 秒。 | Agent 被要求拆解子任务并使用 `delegate_task` 委派子代理并行处理，或先回复用户当前进展。 |
+| **子代理（Subagent）会被熔断限制吗？** | 子代理沙箱有独立生命周期。 | 不会。以 `sa-` 开头的子任务 ID 会自动跳过熔断检测，确保子代理能够完整执行分配的子任务。 |
+| **中途发送了纠偏消息，Agent 会被卡住吗？** | 包含自愈检测。 | 不会。用户中途发送 Steer / 插话消息后，插件会自动清零单轮计数器并重置执行耗时，重新赋予完整配额。 |
+| **如何在本地运行测试？** | 项目包含完备的测试套件。 | 在项目根目录下执行 `pytest -v` 即可运行全部单元测试。 |
+
+---
+
 ## 🛠️ 环境兼容性
 
 - **Hermes Agent**: v0.8.0 及以上版本
-- **Python**: 3.10+
+- **Python**: 3.10, 3.11, 3.12+
 - **操作系统**: Linux, macOS, WSL
 
 ---

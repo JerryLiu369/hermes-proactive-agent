@@ -1,5 +1,5 @@
 """
-proactive-agent: Proactive Agent Governor Plugin for Hermes Agent (v2.1.0).
+proactive-agent: Proactive Agent Governor Plugin for Hermes Agent (v0.1.0).
 
 Features:
 1. Terminal Adaptive Detach:
