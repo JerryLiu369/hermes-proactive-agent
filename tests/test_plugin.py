@@ -86,7 +86,8 @@ def test_system_prompt_rendering():
     assert ">30s" in content
     assert ">90s" in content
     assert "round 6" in content
-    assert "process_manage" in content
+    assert "delegate_task" in content
+    assert "process_manage" not in content
 
 
 def test_subagent_zero_prompt_injection():
@@ -125,9 +126,14 @@ def test_circuit_breaker_enforcement():
     assert ">90s" in res.get("reason", "")
 
     # Allowed tools should pass even when tripped
-    for allowed_tool in ["delegate_task", "process_manage", "skill_manage", "memory", "skill_view", "skills_list"]:
+    for allowed_tool in ["delegate_task", "skill_manage", "memory", "skill_view", "skills_list"]:
         res = plugin._pre_tool_call(allowed_tool, {}, turn_id=turn_id, session_id=session_id, task_id="main")
         assert res is None, f"Allowed tool {allowed_tool} should pass when circuit breaker is tripped"
+
+    # process_manage must be blocked when tripped
+    res = plugin._pre_tool_call("process_manage", {}, turn_id=turn_id, session_id=session_id, task_id="main")
+    assert res is not None
+    assert res.get("action") == "block"
 
     # Subagent bypass
     res = plugin._pre_tool_call("terminal", {"command": "ls"}, turn_id=turn_id, session_id=session_id, task_id="sa-subtask-1")

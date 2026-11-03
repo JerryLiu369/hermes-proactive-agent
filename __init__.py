@@ -13,7 +13,7 @@ Features:
    meaning when attempting round 6), OR if cumulative tool execution duration in that turn
    reaches `turn_max_duration_seconds` (default: 90s):
    - Heavy execution tools are blocked with an explicit directive.
-   - Allowed tools: `delegate_task`, `process_manage`, `skill_manage`, `memory`, `skill_view`, `skills_list`.
+   - Allowed tools: `delegate_task`, `skill_manage`, `memory`, `skill_view`, `skills_list`.
    - Forces the model to report phase progress and delegate heavy work to subagents.
    - Subagents bypass the circuit breaker completely.
 
@@ -390,7 +390,7 @@ def _pre_tool_call(tool_name: str, args: Optional[dict], **hook_kwargs: Any) -> 
     tripped_time = elapsed_turn_time >= max_duration
 
     if tripped_rounds or tripped_time:
-        ALLOWED_TRIPPED_TOOLS = {"delegate_task", "process_manage", "skill_manage", "memory", "skill_view", "skills_list"}
+        ALLOWED_TRIPPED_TOOLS = {"delegate_task", "skill_manage", "memory", "skill_view", "skills_list"}
         if tool_name in ALLOWED_TRIPPED_TOOLS:
             return None
 
@@ -541,7 +541,7 @@ def _render_system_prompt_discipline(session_info: Optional[Any] = None) -> str:
 
 2. Hardware Governance Limits (Main Thread Only)
 - Foreground command >{detach_timeout}s: auto-detached to background with completion notification. Do not wait; inform the user and end your turn.
-- At tool round {round_breaker} (round >={round_breaker}) or >{max_duration}s turn time: terminal, patch, write_file and execution tools are frozen. Only delegate_task, process_manage, memory, skill_manage, skill_view, skills_list remain. Do not retry; delegate remaining work or deliver current state.
+- At tool round {round_breaker} (round >={round_breaker}) or >{max_duration}s turn time: terminal, patch, write_file and execution tools are frozen. Only delegate_task, memory, skill_manage, skill_view, skills_list remain. Do not retry; delegate remaining work or deliver current state.
 
 3. Event Wakeup & Physical Verification
 - Asynchronous tasks wake the conversation automatically upon completion.

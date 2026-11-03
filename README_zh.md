@@ -99,10 +99,10 @@ flowchart TD
     ExecTool --> AgentThink
     BreakerCheck -->|超配额| TripBreaker[重型单体工具拦截冻结<br/>Action: Block]
 
-    TripBreaker --> ForceDelegate[强制进行子代理委派<br/>- delegate_task 分发隔离子任务<br/>- process_manage 管理后台进程<br/>- skill_manage / memory 总结经验<br/>- 给出阶段进展并结束本轮]
+    TripBreaker --> ForceDelegate[强制进行子代理委派<br/>- delegate_task 分发隔离子任务<br/>- skill_manage / memory 总结经验<br/>- 给出阶段进展并结束本轮]
     ForceDelegate --> ReleaseChat
 
-    ToolCheck -->|元工具/白名单工具<br/>delegate_task / process_manage / memory / skills| ExecAllowed[无条件放行]
+    ToolCheck -->|元工具/白名单工具<br/>delegate_task / memory / skills| ExecAllowed[无条件放行]
     ExecAllowed --> ReleaseChat
 
     SteerEvent([用户中途插话 / Steer 纠偏]) -.->|轮次中途或新轮次| ResetQuota[原子重置当前轮次计数与耗时为 0]
@@ -128,7 +128,6 @@ flowchart TD
   - **硬熔断限制**：当主轮次工具调用达到第 6 轮（`> 5` 轮），或累计工具执行耗时达到 `90s` 时，立刻熔断重型单体执行工具（`terminal`, `patch`, `write_file`, `execute_code`）。
   - **元认知与自进化工具白名单放行**：
     - `delegate_task`：强制要求模型拆解任务，分发给隔离子代理并行处理；
-    - `process_manage`：即使主线程熔断，仍然允许查看、轮询、发送输入或终止后台脱壳任务，避免运维死锁；
     - `skill_manage` / `memory`：允许模型在熔断状态下沉淀经验与教训，杜绝“为存经验不得不派子代理”的动作形变；
     - `skill_view` / `skills_list`：允许检索规则。
   - **子代理隔离放行**：子代理（`task_id.startswith("sa-")`）拥有独立的沙箱生命周期，自动绕过熔断，避免任务死锁。
@@ -157,7 +156,7 @@ Role: Main dialogue orchestrator. Stay responsive; heavy execution never blocks 
 
 2. Hardware Governance Limits (Main Thread Only)
 - Foreground command >30s: auto-detached to background with completion notification. Do not wait; inform the user and end your turn.
-- At tool round 6 (round >=6) or >90s turn time: terminal, patch, write_file and execution tools are frozen. Only delegate_task, process_manage, memory, skill_manage, skill_view, skills_list remain. Do not retry; delegate remaining work or deliver current state.
+- At tool round 6 (round >=6) or >90s turn time: terminal, patch, write_file and execution tools are frozen. Only delegate_task, memory, skill_manage, skill_view, skills_list remain. Do not retry; delegate remaining work or deliver current state.
 
 3. Event Wakeup & Physical Verification
 - Asynchronous tasks wake the conversation automatically upon completion.
@@ -224,7 +223,7 @@ hermes plugins uninstall proactive-agent
 | 现象 / 疑问 | 触发机制与原因 | 建议排障与操作 |
 |---|---|---|
 | **前台执行命令在 30 秒后转入后台** | 触发了自适应前台超时机制，避免阻塞聊天界面。 | 属于正常预期行为。进程在后台安全运行，命令完成时会自动收到推送；Agent 无需轮询等待。 |
-| **工具调用报错 `[Circuit Breaker] Quota reached`** | Agent 在单轮内调用单体工具超过 5 轮或工具执行总时长超过 90 秒。 | Agent 被要求拆解子任务并使用 `delegate_task` 委派子代理并行处理，或先回复用户当前进展。熔断期间 `process_manage` 依然可用于管理后台任务。 |
+| **工具调用报错 `[Circuit Breaker] Quota reached`** | Agent 在单轮内调用单体工具超过 5 轮或工具执行总时长超过 90 秒。 | Agent 被要求拆解子任务并使用 `delegate_task` 委派子代理并行处理，或先回复用户当前进展。 |
 | **子代理（Subagent）会被熔断或脱壳限制吗？** | 子代理拥有独立生命周期。 | 不会。以 `sa-` 开头的子任务 ID 或 `platform="subagent"` 自动跳过 30s 脱壳定时器与熔断检测，且享受 0 提示词注入开销。 |
 | **中途发送了纠偏消息，Agent 会被卡住吗？** | 包含自愈检测。 | 不会。用户中途发送 Steer / 插话消息后，插件会自动清零单轮计数器并重置执行耗时，重新赋予完整配额。 |
 | **如何在本地运行测试？** | 项目包含完备的测试套件。 | 在项目根目录下执行 `pytest -v` 即可运行全部单元测试。 |

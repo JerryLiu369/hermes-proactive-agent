@@ -97,10 +97,10 @@ flowchart TD
     ExecTool --> AgentThink
     BreakerCheck -->|Yes| TripBreaker[Block Heavy Execution<br/>Tripped Action: Block]
 
-    TripBreaker --> ForceDelegate[Force Proactive Delegation<br/>- delegate_task to Subagent<br/>- process_manage to monitor bg tasks<br/>- skill_manage / memory<br/>- Conclude turn with progress report]
+    TripBreaker --> ForceDelegate[Force Proactive Delegation<br/>- delegate_task to Subagent<br/>- skill_manage / memory<br/>- Conclude turn with progress report]
     ForceDelegate --> ReleaseChat
 
-    ToolCheck -->|Whitelisted / Meta-Tool<br/>delegate_task / process_manage / memory / skills| ExecAllowed[Always Permitted]
+    ToolCheck -->|Whitelisted / Meta-Tool<br/>delegate_task / memory / skills| ExecAllowed[Always Permitted]
     ExecAllowed --> ReleaseChat
 
     SteerEvent([Human Intervention / Steer Message]) -.->|Mid-Turn or New Turn| ResetQuota[Reset Turn Rounds & Timer to Zero]
@@ -126,7 +126,6 @@ flowchart TD
   - **Hard Circuit Breaker**: If serial rounds exceed `turn_max_tool_rounds` (default: `5`) or turn duration exceeds `turn_max_duration_seconds` (default: `90s`), heavy monolithic tools (`terminal`, `patch`, `write_file`, `execute_code`) are frozen.
   - **Meta-Tool Whitelist**: Lightweight governance and meta-tools remain completely accessible:
     - `delegate_task`: Fan out heavy sub-tasks to isolated subagents in parallel.
-    - `process_manage`: Check or manage running background tasks even during circuit break.
     - `skill_manage` / `memory`: Perform atomic self-evolution and retain learnings without action distortion.
     - `skill_view` / `skills_list`: Read existing guidelines and documentation.
   - **Subagent Bypass Guard**: Child subagents (`task_id.startswith("sa-")`) bypass the breaker entirely to execute delegated subtasks cleanly.
@@ -155,7 +154,7 @@ Role: Main dialogue orchestrator. Stay responsive; heavy execution never blocks 
 
 2. Hardware Governance Limits (Main Thread Only)
 - Foreground command >30s: auto-detached to background with completion notification. Do not wait; inform the user and end your turn.
-- At tool round 6 (round >=6) or >90s turn time: terminal, patch, write_file and execution tools are frozen. Only delegate_task, process_manage, memory, skill_manage, skill_view, skills_list remain. Do not retry; delegate remaining work or deliver current state.
+- At tool round 6 (round >=6) or >90s turn time: terminal, patch, write_file and execution tools are frozen. Only delegate_task, memory, skill_manage, skill_view, skills_list remain. Do not retry; delegate remaining work or deliver current state.
 
 3. Event Wakeup & Physical Verification
 - Asynchronous tasks wake the conversation automatically upon completion.
@@ -222,7 +221,7 @@ hermes plugins uninstall proactive-agent
 | Question / Symptom | Root Cause | Recommended Action |
 |---|---|---|
 | **Foreground command detached after 30s** | Adaptive timer reached 30s threshold. | The command is running safely in background. Let the agent wrap up its turn; completion notification will arrive automatically. |
-| **Circuit breaker triggered (`[Circuit Breaker] Quota reached`)** | The agent executed >5 serial tool rounds or took >90s in a single turn. | The agent is prompted to delegate remaining work via `delegate_task` or deliver its current findings. `process_manage` remains available to check background tasks. |
+| **Circuit breaker triggered (`[Circuit Breaker] Quota reached`)** | The agent executed >5 serial tool rounds or took >90s in a single turn. | The agent is prompted to delegate remaining work via `delegate_task` or deliver its current findings. |
 | **Do subagents inherit circuit breaker or terminal detach limits?** | Subagents are scoped to subtasks. | No. Subagents (`task_id.startswith("sa-")`, `platform="subagent"`) have full bypass (no 30s detach timer, no circuit breaker) and zero prompt injection overhead. |
 | **Does mid-turn user steering get blocked?** | Prior turns may have consumed the quota. | Any new user input or out-of-band message immediately resets turn counters and grants a fresh quota. |
 | **How to run tests locally?** | Standard testing workflow. | Run `pytest -v` in the root of the repository. |
