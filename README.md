@@ -78,35 +78,6 @@ Autonomous LLM agents easily fall into common traps:
 +----------------------------------------------------------------------------------------------------+
 ```
 
-### Execution Lifecycle (Mermaid)
-
-```mermaid
-flowchart TD
-    User([User Prompt / Turn]) --> AgentThink[LLM Reasoning & Tool Intent]
-    AgentThink --> ToolCheck{Tool Type?}
-
-    ToolCheck -->|Terminal Command| ExecTerm[Execute Terminal Command]
-    ExecTerm --> DetachTimer{Running > 30s?}
-    DetachTimer -->|No, <30s| NormalFinish[Command Completes in Foreground]
-    DetachTimer -->|Yes, >30s| AdaptiveDetach[Adaptive Background Detach<br/>- Zero Process Kill<br/>- Adopt to Background Registry<br/>- Notify on Completion]
-    AdaptiveDetach --> ReturnBgPrompt[Inject Async Notification Directive]
-    ReturnBgPrompt --> ReleaseChat[Conclude Turn & Release Chat]
-
-    ToolCheck -->|Monolithic Execution Tool<br/>terminal / patch / write_file| BreakerCheck{Circuit Breaker Check<br/>Round > 5 OR Elapsed > 90s?}
-    BreakerCheck -->|No| ExecTool[Execute Tool & Accumulate Stats]
-    ExecTool --> AgentThink
-    BreakerCheck -->|Yes| TripBreaker[Block Heavy Execution<br/>Tripped Action: Block]
-
-    TripBreaker --> ForceDelegate[Force Proactive Delegation<br/>- delegate_task to Subagent<br/>- skill_manage / memory<br/>- Conclude turn with progress report]
-    ForceDelegate --> ReleaseChat
-
-    ToolCheck -->|Whitelisted / Meta-Tool<br/>delegate_task / memory / skills| ExecAllowed[Always Permitted]
-    ExecAllowed --> ReleaseChat
-
-    SteerEvent([Human Intervention / Steer Message]) -.->|Mid-Turn or New Turn| ResetQuota[Reset Turn Rounds & Timer to Zero]
-    ResetQuota -.-> AgentThink
-```
-
 ---
 
 ## ⚡ Core Governance Capabilities

@@ -79,36 +79,6 @@
 +----------------------------------------------------------------------------------------------------+
 ```
 
-### 治理执行时序流程图 (Mermaid)
-
-```mermaid
-flowchart TD
-    User([用户发起任务 / 轮次]) --> AgentThink[LLM 思考与规划]
-    AgentThink --> ToolCheck{调用何种工具?}
-
-    ToolCheck -->|Terminal 终端命令| ExecTerm[执行前台终端命令]
-    DetachTimer{命令耗时 > 30s?}
-    ExecTerm --> DetachTimer
-    DetachTimer -->|未超过 <30s| NormalFinish[命令在前台正常执行完成]
-    DetachTimer -->|超时 >30s| AdaptiveDetach[自适应平滑转入后台<br/>- 零杀进程 (Zero-Kill)<br/>- 过户给 Background Registry<br/>- 标记完成自动推送通知]
-    AdaptiveDetach --> ReturnBgPrompt[注入异步回执引导提示词]
-    ReturnBgPrompt --> ReleaseChat[结束本轮并释放用户交互]
-
-    ToolCheck -->|单体重型执行工具<br/>terminal / patch / write_file| BreakerCheck{熔断器校验<br/>轮数 > 5 或 耗时 > 90s?}
-    BreakerCheck -->|未超配额| ExecTool[正常执行并累加统计]
-    ExecTool --> AgentThink
-    BreakerCheck -->|超配额| TripBreaker[重型单体工具拦截冻结<br/>Action: Block]
-
-    TripBreaker --> ForceDelegate[强制进行子代理委派<br/>- delegate_task 分发隔离子任务<br/>- skill_manage / memory 总结经验<br/>- 给出阶段进展并结束本轮]
-    ForceDelegate --> ReleaseChat
-
-    ToolCheck -->|元工具/白名单工具<br/>delegate_task / memory / skills| ExecAllowed[无条件放行]
-    ExecAllowed --> ReleaseChat
-
-    SteerEvent([用户中途插话 / Steer 纠偏]) -.->|轮次中途或新轮次| ResetQuota[原子重置当前轮次计数与耗时为 0]
-    ResetQuota -.-> AgentThink
-```
-
 ---
 
 ## ⚡ 解决三大 Agent 核心痛点与治理机制
