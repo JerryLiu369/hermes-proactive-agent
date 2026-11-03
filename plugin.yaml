@@ -1,0 +1,36 @@
+name: proactive-agent
+version: "2.1.0"
+description: "Proactive agent governor: adaptive 30s terminal detach, 5-turn/100s subagent circuit breaker, and dynamic system prompt discipline."
+author: Jerry Liu
+license: MIT
+hooks:
+  - pre_tool_call
+  - post_tool_call
+  - transform_tool_result
+  - pre_llm_call
+  - pre_api_request
+  - agent_loop_stopped
+  - on_session_end
+  - on_session_reset
+provides_hooks:
+  - pre_tool_call
+  - post_tool_call
+  - transform_tool_result
+  - pre_llm_call
+  - pre_api_request
+  - agent_loop_stopped
+  - on_session_end
+  - on_session_reset
+config_schema:
+  terminal_auto_detach_seconds:
+    type: int
+    default: 30
+    description: "Max seconds a foreground terminal command can run before being detached to the background."
+  turn_max_tool_rounds:
+    type: int
+    default: 5
+    description: "Max serial tool rounds in the main agent turn before circuit breaker restricts execution to subagents."
+  turn_max_duration_seconds:
+    type: int
+    default: 100
+    description: "Max total tool execution duration in the main agent turn before circuit breaker restricts execution to subagents."
