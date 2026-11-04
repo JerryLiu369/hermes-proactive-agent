@@ -1,5 +1,5 @@
 """
-proactive-agent: Proactive Agent Governor Plugin for Hermes Agent (v0.1.4).
+proactive-agent: Proactive Agent Governor Plugin for Hermes Agent (v0.1.5).
 
 Enforces proactive orchestrator discipline for human-interactive dialogue platforms (positive allowlist: weixin by default):
 1. Positive Platform Allowlist (Zero Intrusion): Only platforms explicitly declared in `governed_platforms`
@@ -24,7 +24,7 @@ import threading
 import time
 from typing import Any, Callable, Dict, List, Optional, Set
 
-__version__ = "0.1.4"
+__version__ = "0.1.5"
 
 logger = logging.getLogger("hermes.plugins.proactive_agent")
 
@@ -632,6 +632,15 @@ def _pre_tool_call(tool_name: str, args: Optional[dict] = None, **hook_kwargs: A
     if not _should_govern(**hook_kwargs):
         return None
 
+    if tool_name == "process_manage" and (args or {}).get("action") == "wait":
+        reason = "[Proactive Agent Policy]: process_manage(action='wait') is forbidden on main thread to prevent blocking."
+        logger.warning("proactive-agent: Blocked process_manage(wait) on main thread")
+        return {
+            "action": "block",
+            "message": reason,
+            "reason": reason,
+        }
+
     turn_id = hook_kwargs.get("turn_id") or ""
     if not turn_id:
         return None
@@ -666,7 +675,7 @@ def _pre_tool_call(tool_name: str, args: Optional[dict] = None, **hook_kwargs: A
     tripped_time = elapsed_turn_time >= max_duration
 
     if tripped_rounds or tripped_time:
-        ALLOWED_TRIPPED_TOOLS = {"delegate_task", "skill_manage", "memory", "skill_view", "skills_list"}
+        ALLOWED_TRIPPED_TOOLS = {"delegate_task", "process_manage", "skill_manage", "memory", "skill_view", "skills_list"}
         if tool_name in ALLOWED_TRIPPED_TOOLS:
             return None
 
@@ -806,7 +815,7 @@ def _on_system_prompt(session_info: Optional[Any] = None) -> str:
 
 2. Hardware Governance Limits (Main Thread Only)
 - Foreground command >{detach_timeout}s: auto-detached to background with completion notification. Do not wait; inform the user and end your turn.
-- At tool round {round_breaker} (round >={round_breaker}) or >{max_duration}s turn time: terminal, patch, write_file and execution tools are frozen. Only delegate_task, memory, skill_manage, skill_view, skills_list remain. Do not retry; delegate remaining work or deliver current state.
+- At tool round {round_breaker} (round >={round_breaker}) or >{max_duration}s turn time: terminal, patch, write_file and execution tools are frozen. Only delegate_task, process_manage (kill/list; wait is blocked), memory, skill_manage, skill_view, skills_list remain. Do not retry; delegate remaining work or deliver current state.
 
 3. Event Wakeup & Physical Verification
 - Asynchronous tasks wake the conversation automatically upon completion.

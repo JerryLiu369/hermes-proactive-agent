@@ -1,7 +1,7 @@
 # Hermes Proactive Agent Governor (`proactive-agent`)
 
 [![Hermes Plugin](https://img.shields.io/badge/Hermes-Plugin-blue.svg)](https://hermes-agent.nousresearch.com)
-[![Version](https://img.shields.io/badge/version-0.1.4-green.svg)](https://github.com/JerryLiu369/hermes-proactive-agent)
+[![Version](https://img.shields.io/badge/version-0.1.5-green.svg)](https://github.com/JerryLiu369/hermes-proactive-agent)
 [![CI](https://github.com/JerryLiu369/hermes-proactive-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/JerryLiu369/hermes-proactive-agent/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python: 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
@@ -131,7 +131,7 @@ Role: Main dialogue orchestrator. Stay responsive; heavy execution never blocks 
 
 2. Hardware Governance Limits (Main Thread Only)
 - Foreground command >30s: auto-detached to background with completion notification. Do not wait; inform the user and end your turn.
-- At tool round 9 (round >=9) or >120s turn time: terminal, patch, write_file and execution tools are frozen. Only delegate_task, memory, skill_manage, skill_view, skills_list remain. Do not retry; delegate remaining work or deliver current state.
+- At tool round 9 (round >=9) or >120s turn time: terminal, patch, write_file and execution tools are frozen. Only delegate_task, process_manage (kill/list; wait is blocked), memory, skill_manage, skill_view, skills_list remain. Do not retry; delegate remaining work or deliver current state.
 
 3. Event Wakeup & Physical Verification
 - Asynchronous tasks wake the conversation automatically upon completion.

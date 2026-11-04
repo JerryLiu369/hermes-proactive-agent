@@ -1,5 +1,5 @@
 """
-Tests for proactive-agent governor plugin (v0.1.4).
+Tests for proactive-agent governor plugin (v0.1.5).
 Validates positive platform allowlist (governed_platforms: default ["weixin"]),
 autonomous subagent and cron bypass, 30s terminal detach, and circuit breaker.
 """
@@ -47,7 +47,7 @@ def test_manifest_validity():
         data = yaml.safe_load(f)
 
     assert data["name"] == "proactive-agent"
-    assert data["version"] == "0.1.4"
+    assert data["version"] == "0.1.5"
     assert "description" in data and len(data["description"]) > 10
     assert "hooks" in data
     assert "pre_tool_call" in data["hooks"]
@@ -95,7 +95,7 @@ def test_system_prompt_rendering_allowlist():
     assert ">120s" in content
     assert "round 9" in content
     assert "delegate_task" in content
-    assert "process_manage" not in content
+    assert "process_manage (kill/list; wait is blocked)" in content
     assert "Scope minimally and aim to dispatch as early as possible" in content
     assert "before tool round 8 or 120s" in content
 
@@ -138,18 +138,22 @@ def test_circuit_breaker_enforcement_weixin():
     assert ">8 rounds" in res.get("reason", "")
 
     # Allowed tools should pass even when tripped
-    for allowed_tool in ["delegate_task", "skill_manage", "memory", "skill_view", "skills_list"]:
+    for allowed_tool in ["delegate_task", "process_manage", "skill_manage", "memory", "skill_view", "skills_list"]:
         res = plugin._pre_tool_call(allowed_tool, {}, turn_id=turn_id, session_id=session_id, task_id="main")
         assert res is None, f"Allowed tool {allowed_tool} should pass when circuit breaker is tripped"
 
-    # process_manage must be blocked when tripped
-    res = plugin._pre_tool_call("process_manage", {}, turn_id=turn_id, session_id=session_id, task_id="main")
+    # process_manage(wait) must be blocked on main thread even if process_manage is in allowed tools
+    res = plugin._pre_tool_call("process_manage", {"action": "wait"}, turn_id=turn_id, session_id=session_id, task_id="main")
     assert res is not None
     assert res.get("action") == "block"
+    assert "[Proactive Agent Policy]: process_manage(action='wait') is forbidden on main thread to prevent blocking." in res.get("reason", "")
 
     # Subagent bypass even on weixin
     res = plugin._pre_tool_call("terminal", {"command": "ls"}, turn_id=turn_id, session_id=session_id, task_id="sa-subtask-1")
     assert res is None, "Subagents starting with 'sa-' must bypass the circuit breaker"
+    # Subagents can even call process_manage wait
+    res = plugin._pre_tool_call("process_manage", {"action": "wait"}, turn_id=turn_id, session_id=session_id, task_id="sa-subtask-1")
+    assert res is None, "Subagents must bypass process_manage wait restriction"
     plugin._on_session_clean(session_id=session_id)
 
 
@@ -169,6 +173,41 @@ def test_circuit_breaker_exempt_for_cli_and_desktop():
             assert res is None, f"Platform {exempt_platform} at round {r} must NOT be blocked by circuit breaker"
 
         plugin._on_session_clean(session_id=session_id)
+
+
+def test_process_manage_wait_forbidden_on_main_thread():
+    """Verify process_manage(action='wait') is blocked on main thread for governed platforms,
+    while allowed for subagents, exempt platforms, and other actions like kill/list."""
+    turn_id = "test_pm_turn"
+    session_id = "test_pm_sess"
+    platform = "weixin"
+
+    plugin._on_session_clean(session_id=session_id)
+    plugin._on_pre_llm_call(turn_id=turn_id, session_id=session_id, task_id="main", platform=platform)
+
+    # 1. Main thread on weixin: action='wait' is blocked on round 1
+    res = plugin._pre_tool_call("process_manage", {"action": "wait"}, turn_id=turn_id, session_id=session_id, task_id="main")
+    assert res is not None
+    assert res.get("action") == "block"
+    assert "[Proactive Agent Policy]: process_manage(action='wait') is forbidden on main thread to prevent blocking." in res.get("message", "")
+
+    # 2. Main thread on weixin: other actions (e.g. kill, list) are allowed
+    res_kill = plugin._pre_tool_call("process_manage", {"action": "kill"}, turn_id=turn_id, session_id=session_id, task_id="main")
+    assert res_kill is None
+    res_list = plugin._pre_tool_call("process_manage", {"action": "list"}, turn_id=turn_id, session_id=session_id, task_id="main")
+    assert res_list is None
+
+    # 3. Subagent on weixin: action='wait' is allowed (subagent bypass)
+    res_sub = plugin._pre_tool_call("process_manage", {"action": "wait"}, turn_id=turn_id, session_id=session_id, task_id="sa-subtask-99")
+    assert res_sub is None
+
+    # 4. Non-governed platform (cli): action='wait' is allowed
+    plugin._on_session_clean(session_id=session_id)
+    plugin._on_pre_llm_call(turn_id=turn_id, session_id=session_id, task_id="main", platform="cli")
+    res_cli = plugin._pre_tool_call("process_manage", {"action": "wait"}, turn_id=turn_id, session_id=session_id, task_id="main")
+    assert res_cli is None
+
+    plugin._on_session_clean(session_id=session_id)
 
 
 def test_adaptive_wait_platform_governance():

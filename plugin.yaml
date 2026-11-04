@@ -1,5 +1,5 @@
 name: proactive-agent
-version: "0.1.4"
+version: "0.1.5"
 description: "Proactive agent governor: adaptive 30s terminal detach, 8-turn/120s subagent circuit breaker, positive platform allowlist (weixin by default), and full autonomous subagent & cron bypass."
 author: Jerry Liu
 license: MIT
