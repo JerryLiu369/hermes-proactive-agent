@@ -89,7 +89,7 @@
   - 非侵入式挂接底层 `BaseEnvironment._wait_for_process`，无缝接入原生 `yield_handler`。
   - 一旦前台命令执行超过设定阈值（默认 `30s`），在**不杀进程**的前提下，将正在运行的 `Popen` 进程平滑过户至后台 `process_registry`，标记完成自动推送通知（`notify_on_complete=True`）。
   - 自动通过 `transform_tool_result` 注入指引，明确告知模型：“该命令已转入后台异步运行，切勿 polling / sleep-wait，立即向用户回复并释放对话轮次！”
-  - **子代理彻底豁免脱壳**：子代理（`task_id.startswith("sa-")`，`platform="subagent"`）完全跳过 30s 定时器，保证隔离子任务中的长期编译或训练不受脱壳打断。
+  - **子代理与 Cron 任务彻底豁免脱壳**：子代理（`task_id.startswith("sa-")`，`platform="subagent"`）与无人值守定时任务（`platform="cron"`，`task_id.startswith("cron:")`，`HERMES_CRON_SESSION`）完全跳过 30s 定时器，保证隔离子任务与后台批处理流水线长期执行不受脱壳打断。
 
 ### 痛点二：单轮连续硬跑单体工具死循环 (Turn Circuit Breaker > 5 轮 / > 90s)
 - **痛点分析**：Agent 在面对难以解决的代码报错时，容易陷入“修改 -> 报错 -> 修改 -> 报错”的单体死循环。
@@ -100,7 +100,7 @@
     - `delegate_task`：强制要求模型拆解任务，分发给隔离子代理并行处理；
     - `skill_manage` / `memory`：允许模型在熔断状态下沉淀经验与教训，杜绝“为存经验不得不派子代理”的动作形变；
     - `skill_view` / `skills_list`：允许检索规则。
-  - **子代理隔离放行**：子代理（`task_id.startswith("sa-")`）拥有独立的沙箱生命周期，自动绕过熔断，避免任务死锁。
+  - **子代理与 Cron 任务彻底豁免放行**：子代理（`task_id.startswith("sa-")`）与无人值守定时任务（`platform="cron"`，`task_id.startswith("cron:")`，`HERMES_CRON_SESSION`）拥有完全的自治执行权限，自动绕过熔断，避免自动化长流程被误杀。
 
 ### 痛点三：用户中途介入插话容错自愈 (Human Intervention & Steer Self-Healing)
 - **痛点分析**：若熔断配额过于死板，当用户在单轮中途发送纠偏消息（Steer Message）时，Agent 会因为配额耗尽而直接拒止。
@@ -109,9 +109,9 @@
   - 一旦检测到人类中途介入或开启新轮次，立即原子级重置本轮 round_count 与耗时计数器，给予 Agent 全新配额以遵从用户的最新指示。
   - 会话重置（`on_session_reset`）、会话结束（`on_session_end`）与中断（`agent_loop_stopped`）时自动清理状态，杜绝内存泄漏。
 
-### 动态系统提示词注入与子代理零注入
+### 动态系统提示词注入与后台自治任务零注入
 - 自动根据当前生效的阈值参数，将行为规范（`proactive-agent.discipline`）动态编译并注入到 Hermes 主对话系统提示词中。
-- **子代理彻底零注入**：当 `session_info.get("platform") == "subagent"` 时，提示词生成器直接返回空字符串 `""`，不产生任何额外 token 开销，绝不混淆子代理的专注执行角色。
+- **子代理与 Cron 彻底零注入**：当处于子代理或 Cron 定时任务会话（`platform in ("subagent", "cron")`，`session_id.startswith("cron_")`，`HERMES_CRON_SESSION`）时，提示词生成器直接返回空字符串 `""`，不产生任何额外 token 开销，绝不混淆后台自动化任务的角色定位。
 
 ```text
 Role: Main dialogue orchestrator. Stay responsive; heavy execution never blocks the chat turn.

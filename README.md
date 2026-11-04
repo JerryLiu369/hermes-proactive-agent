@@ -88,7 +88,7 @@ Autonomous LLM agents easily fall into common traps:
   - Non-invasively monitors `BaseEnvironment._wait_for_process` without breaking native interrupt wiring.
   - If a foreground command exceeds `terminal_auto_detach_seconds` (default: `30s`), it triggers Hermes's native `yield_handler` to adopt the running process into `process_registry` with zero kill and `notify_on_complete=True`.
   - Replaces tool result notes via `transform_tool_result` to instruct the LLM: *"Command running asynchronously in the background. Conclude your turn immediately and release the chat!"*
-  - **Subagent Full Bypass**: Subagents (`task_id.startswith("sa-")`, `platform="subagent"`) skip the 30s detach timer completely, allowing background workers to execute long-running builds without unwanted detachment.
+  - **Subagent & Cron Autonomous Bypass**: Subagents (`task_id.startswith("sa-")`, `platform="subagent"`) and scheduled Cron tasks (`platform="cron"`, `task_id.startswith("cron:")`, `HERMES_CRON_SESSION`) skip the 30s detach timer completely, allowing background workers and scheduled batch jobs to execute long-running commands without unwanted detachment.
 
 ### 2. Turn Circuit Breaker (>5 rounds / >90s) — Break Monolithic Death Loops
 - **The Problem**: Single-threaded agents often get stuck in endless trial-and-error loops (10+ serial bash/patch tool calls in a single response turn), burning tokens, degrading context quality, and locking the UI.
@@ -99,7 +99,7 @@ Autonomous LLM agents easily fall into common traps:
     - `delegate_task`: Fan out heavy sub-tasks to isolated subagents in parallel.
     - `skill_manage` / `memory`: Perform atomic self-evolution and retain learnings without action distortion.
     - `skill_view` / `skills_list`: Read existing guidelines and documentation.
-  - **Subagent Bypass Guard**: Child subagents (`task_id.startswith("sa-")`) bypass the breaker entirely to execute delegated subtasks cleanly.
+  - **Subagent & Cron Autonomous Bypass Guard**: Child subagents (`task_id.startswith("sa-")`) and unattended scheduled Cron tasks (`platform="cron"`, `task_id.startswith("cron:")`, `HERMES_CRON_SESSION`) bypass the breaker entirely to execute multi-step automated jobs cleanly without premature freezing.
 
 ### 3. Human Intervention & Steer Self-Healing — Dynamic Quota Reset
 - **The Problem**: Static quota systems freeze agents permanently when users jump in mid-flight to correct direction.
@@ -108,9 +108,9 @@ Autonomous LLM agents easily fall into common traps:
   - The moment a human intervenes (either in a new turn or out-of-band mid-turn), round counters and elapsed timers are instantly reset to zero. The agent is granted a fresh quota to execute the user's updated directive.
   - Automatically prunes stale turn states to guarantee zero memory leaks across sessions.
 
-### 4. Dynamic Prompt Discipline & Subagent Zero-Injection
+### 4. Dynamic Prompt Discipline & Autonomous Zero-Injection
 - Dynamically renders and registers prompt context (`proactive-agent.discipline`) matching the active configuration into the main agent's system prompt.
-- **Subagent Zero-Injection**: When `session_info.get("platform") == "subagent"`, prompt generation returns an empty string, ensuring child subagents have zero prompt pollution and zero token overhead.
+- **Subagent & Cron Zero-Injection**: When running in a subagent or scheduled cron session (`platform in ("subagent", "cron")`, `session_id.startswith("cron_")`, `HERMES_CRON_SESSION`), prompt generation returns an empty string, ensuring background workers and cron jobs have zero prompt pollution and zero token overhead.
 
 ```text
 Role: Main dialogue orchestrator. Stay responsive; heavy execution never blocks the chat turn.

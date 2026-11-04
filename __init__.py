@@ -67,6 +67,109 @@ _current_task_id: contextvars.ContextVar[str] = contextvars.ContextVar("proactiv
 _thread_task_ids: Dict[int, str] = {}
 _task_id_lock = threading.Lock()
 
+# Cron context & thread mapping
+_current_is_cron: contextvars.ContextVar[bool] = contextvars.ContextVar("proactive_agent_is_cron", default=False)
+_thread_is_cron: Dict[int, bool] = {}
+
+
+def _record_cron_context(is_cron: bool = True, tid: Optional[int] = None) -> None:
+    """Record cron context on current contextvar and thread mapping."""
+    _current_is_cron.set(is_cron)
+    with _task_id_lock:
+        _thread_is_cron[tid if tid is not None else threading.get_ident()] = is_cron
+
+
+def _is_cron_context(watch_interrupt_tid: Optional[int] = None, **hook_kwargs: Any) -> bool:
+    """Check if the current execution context or thread belongs to a Cron task.
+
+    Cron tasks are unattended autonomous background executions with no human waiting in
+    interactive private chat. They must be completely exempt from interactive dialogue
+    governance (discipline prompt injection, turn round circuit breakers, and 30s terminal detach).
+    """
+    # 1. Check ContextVar for task_id or cron flag
+    task_id = _current_task_id.get()
+    if task_id and (task_id.startswith("cron:") or task_id.startswith("cron_") or task_id == "cron"):
+        _record_cron_context(True)
+        return True
+
+    if _current_is_cron.get():
+        return True
+
+    # 2. Direct hook_kwargs checks
+    kw_task_id = hook_kwargs.get("task_id") or ""
+    if kw_task_id and (kw_task_id.startswith("cron:") or kw_task_id.startswith("cron_") or kw_task_id == "cron"):
+        _record_cron_context(True)
+        return True
+
+    session_id = hook_kwargs.get("session_id") or ""
+    if session_id and (session_id.startswith("cron_") or session_id.startswith("cron:") or ":cron:" in session_id):
+        _record_cron_context(True)
+        return True
+
+    turn_id = hook_kwargs.get("turn_id") or ""
+    if turn_id and (":cron:" in turn_id or turn_id.startswith("cron_") or turn_id.startswith("cron:")):
+        _record_cron_context(True)
+        return True
+
+    platform = hook_kwargs.get("platform") or ""
+    if platform == "cron":
+        _record_cron_context(True)
+        return True
+
+    # 3. Thread-local checks
+    target_tids = []
+    if watch_interrupt_tid is not None:
+        target_tids.append(watch_interrupt_tid)
+    target_tids.append(threading.get_ident())
+
+    with _task_id_lock:
+        for tid in target_tids:
+            if _thread_is_cron.get(tid):
+                return True
+            t_id = _thread_task_ids.get(tid)
+            if t_id and (t_id.startswith("cron:") or t_id.startswith("cron_") or t_id == "cron"):
+                return True
+
+    # 4. ContextVar / runtime checks from Hermes Core
+    if _ctx is not None and hasattr(_ctx, "current_cron_execution"):
+        try:
+            if _ctx.current_cron_execution() is not None:
+                _record_cron_context(True)
+                return True
+        except Exception:
+            pass
+
+    try:
+        from cron.execution_identity import current_cron_execution
+        if current_cron_execution() is not None:
+            _record_cron_context(True)
+            return True
+    except Exception:
+        pass
+
+    try:
+        from gateway.session_cron import current_execution
+        if current_execution() is not None:
+            _record_cron_context(True)
+            return True
+    except Exception:
+        pass
+
+    try:
+        from gateway.session_context import get_session_env
+        if get_session_env("HERMES_CRON_SESSION") == "1":
+            _record_cron_context(True)
+            return True
+    except Exception:
+        pass
+
+    # 5. Environment variable checks
+    if os.environ.get("HERMES_CRON_SESSION") == "1" or bool(os.environ.get("_HERMES_CRON_EXTERNAL_WORKER")):
+        _record_cron_context(True)
+        return True
+
+    return False
+
 
 def _is_subagent_context(watch_interrupt_tid: Optional[int] = None) -> bool:
     """Check if the current context or thread belongs to a subagent (task_id.startswith('sa-'))."""
@@ -144,9 +247,9 @@ def _install_adaptive_terminal_patch() -> None:
             output=None,
             yield_handler: Optional[Callable] = None,
         ) -> dict:
-            # Subagent bypass: if current thread or context belongs to a subagent (task_id.startswith("sa-")),
+            # Subagent & Cron bypass: if current thread or context belongs to a subagent or cron job,
             # bypass 30s auto-detach timer completely and call orig_wait directly!
-            if _is_subagent_context(watch_interrupt_tid):
+            if _is_subagent_context(watch_interrupt_tid) or _is_cron_context(watch_interrupt_tid):
                 return orig_wait(
                     self,
                     proc,
@@ -275,6 +378,9 @@ def _on_pre_llm_call(**hook_kwargs: Any) -> None:
             _thread_task_ids[threading.get_ident()] = task_id
     if task_id.startswith("sa-"):
         return
+    if _is_subagent_context() or _is_cron_context(**hook_kwargs):
+        _record_cron_context(True)
+        return
     turn_id = hook_kwargs.get("turn_id") or ""
     session_id = hook_kwargs.get("session_id") or ""
     if turn_id:
@@ -298,6 +404,9 @@ def _on_pre_api_request(**hook_kwargs: Any) -> None:
     turn_id = hook_kwargs.get("turn_id") or ""
     session_id = hook_kwargs.get("session_id") or ""
     if not turn_id or task_id.startswith("sa-"):
+        return
+    if _is_subagent_context() or _is_cron_context(**hook_kwargs):
+        _record_cron_context(True)
         return
 
     messages = hook_kwargs.get("request_messages") or hook_kwargs.get("conversation_history") or []
@@ -353,7 +462,12 @@ def _pre_tool_call(tool_name: str, args: Optional[dict], **hook_kwargs: Any) -> 
             _thread_task_ids[threading.get_ident()] = task_id
         if task_id.startswith("sa-"):
             return None
-    elif _is_subagent_context():
+        if task_id.startswith("cron:") or task_id.startswith("cron_") or task_id == "cron":
+            _record_cron_context(True)
+            return None
+    if _is_subagent_context():
+        return None
+    if _is_cron_context(**hook_kwargs):
         return None
 
     turn_id = hook_kwargs.get("turn_id") or ""
@@ -412,12 +526,15 @@ def _post_tool_call(tool_name: str, args: Optional[dict], result: Any, **hook_kw
     """Post-tool hook tracking accurate duration via duration_ms."""
     with _task_id_lock:
         _thread_task_ids.pop(threading.get_ident(), None)
+        _thread_is_cron.pop(threading.get_ident(), None)
 
     task_id = hook_kwargs.get("task_id") or ""
     if task_id:
-        if task_id.startswith("sa-"):
+        if task_id.startswith("sa-") or task_id.startswith("cron:") or task_id.startswith("cron_") or task_id == "cron":
             return
     elif _is_subagent_context():
+        return
+    if _is_cron_context(**hook_kwargs):
         return
 
     turn_id = hook_kwargs.get("turn_id") or ""
@@ -459,9 +576,11 @@ def _transform_tool_result(tool_name: str, args: Optional[dict], result: Any, **
 
     task_id = hook_kwargs.get("task_id") or ""
     if task_id:
-        if task_id.startswith("sa-"):
+        if task_id.startswith("sa-") or task_id.startswith("cron:") or task_id.startswith("cron_") or task_id == "cron":
             return None
     elif _is_subagent_context():
+        return None
+    if _is_cron_context(**hook_kwargs):
         return None
 
     # Check whether this command was yielded due to our adaptive timer
@@ -499,8 +618,14 @@ def _transform_tool_result(tool_name: str, args: Optional[dict], result: Any, **
 def _on_session_clean(session_id: str = "", turn_id: str = "", **kwargs: Any) -> None:
     """Clear turn state on session reset or turn/session end."""
     _current_task_id.set("")
+    _current_is_cron.set(False)
     with _task_id_lock:
-        _thread_task_ids.clear()
+        if not session_id and not turn_id:
+            _thread_task_ids.clear()
+            _thread_is_cron.clear()
+        else:
+            _thread_task_ids.pop(threading.get_ident(), None)
+            _thread_is_cron.pop(threading.get_ident(), None)
     with _state_lock:
         if turn_id and turn_id in _turn_states:
             _turn_states.pop(turn_id, None)
@@ -516,14 +641,21 @@ def _render_system_prompt_discipline(session_info: Optional[Any] = None) -> str:
     """Dynamically render proactive agent discipline system prompt using current settings."""
     if session_info is not None:
         platform = ""
+        sid = ""
         if isinstance(session_info, (dict, collections.abc.Mapping)):
             platform = str(session_info.get("platform") or "")
+            sid = str(session_info.get("session_id") or "")
         elif hasattr(session_info, "get"):
             platform = str(session_info.get("platform") or "")
+            sid = str(session_info.get("session_id") or "")
         elif hasattr(session_info, "platform"):
             platform = str(getattr(session_info, "platform", "") or "")
-        if platform == "subagent":
+            sid = str(getattr(session_info, "session_id", "") or "")
+        if platform in ("subagent", "cron") or sid.startswith("cron_") or sid.startswith("cron:") or ":cron:" in sid:
             return ""
+
+    if _is_cron_context():
+        return ""
 
     detach_timeout = _get_setting("terminal_auto_detach_seconds", 30)
     max_rounds = _get_setting("turn_max_tool_rounds", DEFAULT_MAX_ROUNDS)
