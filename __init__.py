@@ -8,7 +8,7 @@ Enforces proactive orchestrator discipline for human-interactive dialogue platfo
 2. Autonomous Subagent & Cron Exemption: Subagents (task_id.startswith('sa-') or is_delegated_child_context)
    and scheduled Cron tasks (_is_cron_context) completely bypass all restrictions.
 3. Adaptive Terminal Background Detach (>30s): Detaches long-running foreground commands to background.
-4. Turn Circuit Breaker (>8 rounds / >120s): Freezes heavy execution tools after quota exhaustion.
+4. Turn Circuit Breaker (>5 rounds / >90s): Freezes heavy execution tools after quota exhaustion.
 5. Dynamic System Prompt Discipline: Injects proactive orchestration rules into system prompt.
 6. Human Intervention Self-Healing: Instant reset of turn quota when user steer message is detected.
 """
@@ -24,7 +24,7 @@ import threading
 import time
 from typing import Any, Callable, Dict, List, Optional, Set
 
-__version__ = "0.1.5"
+__version__ = "0.1.6"
 
 logger = logging.getLogger("hermes.plugins.proactive_agent")
 
@@ -32,8 +32,8 @@ _ctx: Optional[Any] = None
 _patched: bool = False
 _state_lock = threading.Lock()
 
-DEFAULT_MAX_ROUNDS = 8
-DEFAULT_MAX_DURATION_S = 120.0
+DEFAULT_MAX_ROUNDS = 5
+DEFAULT_MAX_DURATION_S = 90.0
 
 # Turn state: turn_id -> {
 #   "session_id": str,
@@ -628,7 +628,7 @@ def _on_agent_loop_stopped(**hook_kwargs: Any) -> None:
 
 
 def _pre_tool_call(tool_name: str, args: Optional[dict] = None, **hook_kwargs: Any) -> Optional[dict]:
-    """Pre-tool hook enforcing circuit breaker (>8 rounds or >120s)."""
+    """Pre-tool hook enforcing circuit breaker (>5 rounds or >90s)."""
     if not _should_govern(**hook_kwargs):
         return None
 
@@ -675,7 +675,7 @@ def _pre_tool_call(tool_name: str, args: Optional[dict] = None, **hook_kwargs: A
     tripped_time = elapsed_turn_time >= max_duration
 
     if tripped_rounds or tripped_time:
-        ALLOWED_TRIPPED_TOOLS = {"delegate_task", "process_manage", "skill_manage", "memory", "skill_view", "skills_list"}
+        ALLOWED_TRIPPED_TOOLS = {"delegate_task", "process_manage", "read_file", "search_files", "session_search", "skill_manage", "memory", "skill_view", "skills_list"}
         if tool_name in ALLOWED_TRIPPED_TOOLS:
             return None
 
@@ -815,7 +815,7 @@ def _on_system_prompt(session_info: Optional[Any] = None) -> str:
 
 2. Hardware Governance Limits (Main Thread Only)
 - Foreground command >{detach_timeout}s: auto-detached to background with completion notification. Do not wait; inform the user and end your turn.
-- At tool round {round_breaker} (round >={round_breaker}) or >{max_duration}s turn time: terminal, patch, write_file and execution tools are frozen. Only delegate_task, process_manage (kill/list; wait is blocked), memory, skill_manage, skill_view, skills_list remain. Do not retry; delegate remaining work or deliver current state.
+- At tool round {round_breaker} (round >={round_breaker}) or >{max_duration}s turn time: terminal, patch, write_file and execution tools are frozen. Only delegate_task, process_manage (kill/list; wait is blocked), read_file, search_files, session_search, memory, skill_manage, skill_view, skills_list remain. Do not retry; delegate remaining work or deliver current state.
 
 3. Event Wakeup & Physical Verification
 - Asynchronous tasks wake the conversation automatically upon completion.

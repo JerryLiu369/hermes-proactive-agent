@@ -47,7 +47,7 @@ def test_manifest_validity():
         data = yaml.safe_load(f)
 
     assert data["name"] == "proactive-agent"
-    assert data["version"] == "0.1.5"
+    assert data["version"] == "0.1.6"
     assert "description" in data and len(data["description"]) > 10
     assert "hooks" in data
     assert "pre_tool_call" in data["hooks"]
@@ -56,8 +56,8 @@ def test_manifest_validity():
     assert data["config_schema"]["governed_platforms"]["default"] == ["weixin"]
     assert "description" in data["config_schema"]["governed_platforms"]
     assert data["config_schema"]["terminal_auto_detach_seconds"]["default"] == 30
-    assert data["config_schema"]["turn_max_tool_rounds"]["default"] == 8
-    assert data["config_schema"]["turn_max_duration_seconds"]["default"] == 120.0
+    assert data["config_schema"]["turn_max_tool_rounds"]["default"] == 5
+    assert data["config_schema"]["turn_max_duration_seconds"]["default"] == 90.0
 
 
 def test_plugin_registration():
@@ -90,14 +90,14 @@ def test_system_prompt_rendering_allowlist():
     # Governed platform ("weixin") gets prompt discipline
     content = renderer({"platform": "weixin"})
     assert "Role: Main dialogue orchestrator" in content
-    assert "finish in <=8 tool rounds" in content
+    assert "finish in <=5 tool rounds" in content
     assert ">30s" in content
-    assert ">120s" in content
-    assert "round 9" in content
+    assert ">90s" in content
+    assert "round 6" in content
     assert "delegate_task" in content
     assert "process_manage (kill/list; wait is blocked)" in content
     assert "Scope minimally and aim to dispatch as early as possible" in content
-    assert "before tool round 8 or 120s" in content
+    assert "before tool round 5 or 90s" in content
 
     # Non-governed platforms are completely exempt (0 intrusion)
     assert renderer({"platform": "cli"}) == ""
@@ -114,7 +114,7 @@ def test_system_prompt_rendering_allowlist():
 
 
 def test_circuit_breaker_enforcement_weixin():
-    """Verify circuit breaker trips on governed platform (weixin) at round 9 / 120s."""
+    """Verify circuit breaker trips on governed platform (weixin) at round 6 / 90s."""
     turn_id = "test_turn_123"
     session_id = "test_sess_123"
     platform = "weixin"
@@ -122,23 +122,23 @@ def test_circuit_breaker_enforcement_weixin():
     plugin._on_session_clean(session_id=session_id)
     plugin._on_pre_llm_call(turn_id=turn_id, session_id=session_id, task_id="main", platform=platform)
 
-    # Round 1..8: heavy tool allowed
-    for r in range(1, 9):
+    # Round 1..5: heavy tool allowed
+    for r in range(1, 6):
         plugin._on_pre_api_request(turn_id=turn_id, session_id=session_id, task_id="main", api_request_id=f"req_{r}", platform=platform)
         res = plugin._pre_tool_call("terminal", {"command": "ls"}, turn_id=turn_id, session_id=session_id, task_id="main")
         assert res is None, f"Round {r} should not trip the circuit breaker"
 
-    # Round 9: heavy tool blocked
-    plugin._on_pre_api_request(turn_id=turn_id, session_id=session_id, task_id="main", api_request_id="req_9", platform=platform)
+    # Round 6: heavy tool blocked
+    plugin._on_pre_api_request(turn_id=turn_id, session_id=session_id, task_id="main", api_request_id="req_6", platform=platform)
     res = plugin._pre_tool_call("terminal", {"command": "ls"}, turn_id=turn_id, session_id=session_id, task_id="main")
     assert res is not None
     assert res.get("action") == "block"
     assert "[Circuit Breaker]" in res.get("reason", "")
-    assert ">120s" in res.get("reason", "")
-    assert ">8 rounds" in res.get("reason", "")
+    assert ">90s" in res.get("reason", "")
+    assert ">5 rounds" in res.get("reason", "")
 
     # Allowed tools should pass even when tripped
-    for allowed_tool in ["delegate_task", "process_manage", "skill_manage", "memory", "skill_view", "skills_list"]:
+    for allowed_tool in ["delegate_task", "process_manage", "read_file", "search_files", "session_search", "skill_manage", "memory", "skill_view", "skills_list"]:
         res = plugin._pre_tool_call(allowed_tool, {}, turn_id=turn_id, session_id=session_id, task_id="main")
         assert res is None, f"Allowed tool {allowed_tool} should pass when circuit breaker is tripped"
 
@@ -337,8 +337,8 @@ def test_human_intervention_steer_reset():
     plugin._on_session_clean(session_id=session_id)
     plugin._on_pre_llm_call(turn_id=turn_id, session_id=session_id, task_id="main", platform=platform)
 
-    # Advance to round 9 to trip breaker
-    for r in range(1, 10):
+    # Advance to round 6 to trip breaker
+    for r in range(1, 7):
         plugin._on_pre_api_request(turn_id=turn_id, session_id=session_id, task_id="main", api_request_id=f"r_{r}", platform=platform)
 
     # Check tripped
@@ -387,7 +387,7 @@ def test_cron_zero_prompt_injection():
 
 
 def test_cron_circuit_breaker_bypass():
-    """Verify Cron tasks are completely exempt from the circuit breaker (>8 rounds or >120s) even on weixin."""
+    """Verify Cron tasks are completely exempt from the circuit breaker (>5 rounds or >90s) even on weixin."""
     # 1. Bypass by task_id ("cron:...")
     turn_id = "turn_cron_1"
     session_id = "local-cron-session-1"
