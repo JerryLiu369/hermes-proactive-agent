@@ -157,6 +157,20 @@ plugins:
         turn_max_duration_seconds: 90
 ```
 
+### ⚡ Subagent Configuration (Optional, Recommended for Production)
+
+The plugin works **out of the box (Zero-Config)**. When `delegation` is not configured, Hermes automatically causes subagents to inherit the parent agent's model, provider, and API credentials.
+
+If your primary model is a premium tier (e.g. Claude Opus or GPT-4o) or subject to strict concurrency rate limits, we strongly recommend pinning delegation in `~/.hermes/config.yaml` to a fast, cost-effective, high-concurrency model (such as Gemini Flash or DeepSeek Flash) for optimal fan-out performance and cost efficiency:
+
+```yaml
+delegation:
+  # Optional: pin dedicated provider and model for subagents (defaults to parent model)
+  provider: custom   # e.g., custom, openrouter, deepseek, etc.
+  model: deepseek-flash
+  max_concurrent_children: 5  # Max parallel child agents (default: 5)
+```
+
 ---
 
 ## 🚀 Installation & Usage

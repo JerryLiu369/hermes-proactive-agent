@@ -158,6 +158,20 @@ plugins:
         turn_max_duration_seconds: 90
 ```
 
+### ⚡ 子代理配置（可选，生产环境推荐）
+
+本插件**开箱即用（Zero-Config）**。若未配置 `delegation`，Hermes 会默认让子代理自动继承主 Agent 的模型和凭据。
+
+如果你的主模型单价较高或有并发调用限制（如 Claude Opus / GPT-4o），强烈建议在 `~/.hermes/config.yaml` 中为子代理配置轻量、高并发的专属模型（如 DeepSeek Flash、Gemini Flash），以获得最佳的并发调研速度与成本效益：
+
+```yaml
+delegation:
+  # 可选：指定子代理专用 provider 与模型（缺省则自动继承主模型）
+  provider: custom   # 例如 custom, openrouter, deepseek 等
+  model: deepseek-flash
+  max_concurrent_children: 5  # 最大并发子代理数（默认 5）
+```
+
 ---
 
 ## 🚀 安装与使用
