@@ -1,0 +1,95 @@
+# Hermes Proactive Agent Governor (`proactive-agent`)
+
+> Execution governance and proactive orchestrator discipline plugin for Hermes Agent. Eliminates blocking foreground commands (>30s auto-detach), breaks infinite serial trial-and-error tool loops (>8 rounds / >120s circuit breaker), and preserves pure zero-overhead execution for non-interactive environments via positive platform allowlisting.
+
+## Project Positioning & Overview
+
+- **Repository**: https://github.com/JerryLiu369/hermes-proactive-agent
+- **Target Platform**: Hermes Agent (v0.8.0+)
+- **Role**: Execution Governor & Orchestrator Supervisor
+- **Language & Runtime**: Python 3.10+
+- **License**: MIT
+
+Autonomous LLM agents commonly fall into two critical failure modes in interactive chat platforms:
+1. **Foreground Freezes**: Executing long compilation, installation, or test commands in the foreground, locking the conversation thread and risking gateway/network timeouts.
+2. **Serial Trial-and-Error Loops**: Burning context and tokens in monolithic single-turn execution loops (e.g. 10+ consecutive bash or patch calls).
+
+`proactive-agent` solves these issues non-invasively by transforming the agent into an asynchronous orchestrator that replies immediately, runs long tasks in the background, delegates complex tasks to child subagents, and heals instantly upon human intervention.
+
+## Core Governance Capabilities
+
+### 1. Adaptive Terminal Detach (>30s)
+- Monitors terminal command execution without disrupting Hermes interrupt handling.
+- If any foreground command exceeds `terminal_auto_detach_seconds` (default: 30s), it seamlessly transitions the process into Hermes's native background registry (`process_registry`) with completion notification (`notify_on_complete=True`).
+- Prompts the agent to release the chat turn immediately while the process continues in the background.
+- Automatic bypass for subagents and cron jobs so automated pipelines run unimpeded.
+
+### 2. Turn Circuit Breaker (>8 rounds / >120s)
+- Tracks serial reasoning/execution rounds within a single assistant turn.
+- If serial rounds exceed `turn_max_tool_rounds` (default: 8) or turn duration exceeds `turn_max_duration_seconds` (default: 120s), heavy monolithic tools (`terminal`, `patch`, `write_file`, `execute_code`) are frozen.
+- Meta-tools and coordination tools remain accessible: `delegate_task` (fan out to isolated subagents), `skill_manage`, `skill_view`, and `memory`.
+- Child subagents and scheduled cron sessions are fully exempt from circuit breaker limits.
+
+### 3. Positive Platform Allowlist (Zero Intrusion)
+- Proactive discipline and hardware governors only apply to configured interactive messaging platforms (default: `["weixin"]`).
+- Non-governed platforms (e.g. `cli`, `desktop`, telegram, slack) run vanilla Hermes behavior with zero prompt pollution, zero token overhead, and zero tool interception.
+- Can be configured via `config.yaml` or `PROACTIVE_GOVERNED_PLATFORMS`.
+
+### 4. Human Intervention & Steer Self-Healing
+- Listens for user steering signals (`display_kind == "steer"` and `[OUT-OF-BAND USER MESSAGE]` markers).
+- When human intervention is detected mid-flight or in a subsequent turn, all turn round counters and elapsed timers are instantly reset to zero, granting the agent fresh execution quota.
+- Automatic stale state cleanup ensures zero memory leaks.
+
+## Configuration Reference
+
+Parameters can be defined in Hermes `config.yaml` under `plugins.entries.proactive-agent.config`, or through environment variables:
+
+| Parameter | Environment Variable | Type | Default | Description |
+|---|---|---|---|---|
+| `governed_platforms` | `PROACTIVE_GOVERNED_PLATFORMS` | `list[str]` | `["weixin"]` | Platforms subject to proactive agent governance. Unlisted platforms are 100% exempt. |
+| `terminal_auto_detach_seconds` | `PROACTIVE_TERMINAL_AUTO_DETACH_SECONDS` | `int` | `30` | Max seconds before a foreground terminal command is detached to background. |
+| `turn_max_tool_rounds` | `PROACTIVE_TURN_MAX_TOOL_ROUNDS` | `int` | `8` | Max serial tool rounds in a main agent turn before circuit breaker trips. |
+| `turn_max_duration_seconds` | `PROACTIVE_TURN_MAX_DURATION_SECONDS` | `int` | `120` | Max cumulative tool execution seconds in a single turn before circuit breaker trips. |
+
+### Example `config.yaml` Configuration
+
+```yaml
+plugins:
+  entries:
+    proactive-agent:
+      enabled: true
+      config:
+        governed_platforms: ["weixin"]
+        terminal_auto_detach_seconds: 30
+        turn_max_tool_rounds: 8
+        turn_max_duration_seconds: 120
+```
+
+## Quick Start
+
+### Installation via Hermes CLI
+```bash
+# Install plugin from GitHub
+hermes plugins install github:JerryLiu369/hermes-proactive-agent
+
+# Enable plugin
+hermes plugins enable proactive-agent
+
+# Verify active status
+hermes plugins list
+```
+
+### Manual Installation
+```bash
+git clone https://github.com/JerryLiu369/hermes-proactive-agent.git ~/.hermes/plugins/proactive-agent
+hermes plugins enable proactive-agent
+```
+
+### Recommended Delegation Model Setup
+When running complex agentic workflows, configure fast delegation for subagents in `~/.hermes/config.yaml`:
+```yaml
+delegation:
+  provider: custom
+  model: deepseek-flash
+  max_concurrent_children: 5
+```
