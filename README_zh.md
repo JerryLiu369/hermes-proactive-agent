@@ -1,7 +1,7 @@
 # Hermes Proactive Agent Governor (`proactive-agent`)
 
 [![Hermes Plugin](https://img.shields.io/badge/Hermes-Plugin-blue.svg)](https://hermes-agent.nousresearch.com)
-[![Version](https://img.shields.io/badge/version-0.1.1-green.svg)](https://github.com/JerryLiu369/hermes-proactive-agent)
+[![Version](https://img.shields.io/badge/version-0.1.3-green.svg)](https://github.com/JerryLiu369/hermes-proactive-agent)
 [![CI](https://github.com/JerryLiu369/hermes-proactive-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/JerryLiu369/hermes-proactive-agent/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python: 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
@@ -83,6 +83,11 @@
 
 ## ⚡ 解决三大 Agent 核心痛点与治理机制
 
+### 核心机制：正向白名单治理机制 (Positive Platform Allowlist)
+- **设计理念**：默认将主动治理（提示词注入、熔断器、30s 终端脱壳）严格限定在配置的平台列表中（`governed_platforms`，默认仅 `["weixin"]`）。
+- **完全放行，0 侵入**：未在白名单中的平台（例如 `cli`、`desktop`、`telegram`、`slack` 等）完全免于治理，享受原生纯粹的 Hermes 执行体验，绝不误触脱壳或熔断。
+- **高度可配置**：可通过插件配置（`governed_platforms: ["weixin", "telegram"]`）或环境变量 `PROACTIVE_GOVERNED_PLATFORMS="weixin,telegram"` 灵活扩展；配置为空列表则全局彻底关闭治理。
+
 ### 痛点一：前台长命令卡死终端与超时 (Adaptive Terminal Detach > 30s)
 - **痛点分析**：大模型使用前台 `terminal` 运行长命令（如编译项目、训练脚本、大文件下载）时，终端会阻塞数分钟直至超时爆掉，期间用户无法在 IM/CLI 得到任何响应。如果直接粗暴重写 `terminal` 工具，又会破坏 Hermes 原生线程中断与消息接入协议。
 - **治理机制**：
@@ -142,6 +147,7 @@ Role: Main dialogue orchestrator. Stay responsive; heavy execution never blocks 
 
 | 配置项 | 对应环境变量 | 类型 | 默认值 | 作用说明 |
 |---|---|---|---|---|
+| `governed_platforms` | `PROACTIVE_GOVERNED_PLATFORMS` | `list` | `["weixin"]` | 纳入主动治理的平台白名单列表；未在列表中的平台（如 cli, desktop）彻底豁免放行 |
 | `terminal_auto_detach_seconds` | `PROACTIVE_TERMINAL_AUTO_DETACH_SECONDS` | `int` | `30` | 前台命令最大允许执行秒数，超过后自动安全挂起至后台运行 |
 | `turn_max_tool_rounds` | `PROACTIVE_TURN_MAX_TOOL_ROUNDS` | `int` | `5` | 主代理单轮最大串行工具调用轮数，超过后触发重任务熔断 |
 | `turn_max_duration_seconds` | `PROACTIVE_TURN_MAX_DURATION_SECONDS` | `int` | `90` | 主代理单轮工具执行累计最大秒数，超过后触发熔断 |
@@ -153,6 +159,7 @@ plugins:
     proactive-agent:
       enabled: true
       config:
+        governed_platforms: ["weixin"]
         terminal_auto_detach_seconds: 30
         turn_max_tool_rounds: 5
         turn_max_duration_seconds: 90

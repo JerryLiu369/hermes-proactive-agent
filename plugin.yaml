@@ -1,6 +1,6 @@
 name: proactive-agent
-version: "0.1.2"
-description: "Proactive agent governor: adaptive 30s terminal detach, 5-turn/90s subagent circuit breaker, dynamic system prompt discipline, and full subagent & cron autonomous bypass."
+version: "0.1.3"
+description: "Proactive agent governor: adaptive 30s terminal detach, 5-turn/90s subagent circuit breaker, positive platform allowlist (weixin by default), and full autonomous subagent & cron bypass."
 author: Jerry Liu
 license: MIT
 hooks:
@@ -22,6 +22,10 @@ provides_hooks:
   - on_session_end
   - on_session_reset
 config_schema:
+  governed_platforms:
+    type: list
+    default: ["weixin"]
+    description: "Platforms subject to proactive agent governance (circuit breaker, prompt discipline, 30s terminal detach). Platforms not listed (e.g. cli, desktop) are completely exempt."
   terminal_auto_detach_seconds:
     type: int
     default: 30

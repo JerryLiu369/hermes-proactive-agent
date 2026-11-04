@@ -1,30 +1,16 @@
 """
-proactive-agent: Proactive Agent Governor Plugin for Hermes Agent (v0.1.2).
+proactive-agent: Proactive Agent Governor Plugin for Hermes Agent (v0.1.3).
 
-Features:
-1. Terminal Adaptive Detach:
-   Foreground terminal commands that run longer than `terminal_auto_detach_seconds` (default: 30s)
-   are dynamically detached into tracked background processes using Hermes's native
-   `yield_handler` / `process_registry.adopt_local` mechanism with completion notifications,
-   releasing chat interaction immediately. Subagents are fully exempt.
-
-2. Tool Circuit Breaker & Subagent Enforcement:
-   If the main agent in a single turn executes > `turn_max_tool_rounds` (default: 5 rounds,
-   meaning when attempting round 6), OR if cumulative tool execution duration in that turn
-   reaches `turn_max_duration_seconds` (default: 90s):
-   - Heavy execution tools are blocked with an explicit directive.
-   - Allowed tools: `delegate_task`, `skill_manage`, `memory`, `skill_view`, `skills_list`.
-   - Forces the model to report phase progress and delegate heavy work to subagents.
-   - Subagents bypass the circuit breaker completely.
-
-3. Dynamic System Prompt Discipline:
-   Dynamically renders prompt rules matching active config thresholds into main agent session prompt context.
-   Subagents receive zero prompt injection (returns empty string).
-
-4. Resilient Human Intervention & Turn Lifecycle Recovery:
-   - Resets round counts and elapsed timers when human intervention occurs
-     (either via a new user turn or an out-of-band steer message mid-turn).
-   - Auto-purges stale turn states to guarantee zero memory leaks across turns.
+Enforces proactive orchestrator discipline for human-interactive dialogue platforms (positive allowlist: weixin by default):
+1. Positive Platform Allowlist (Zero Intrusion): Only platforms explicitly declared in `governed_platforms`
+   (default: ["weixin"]) are subject to proactive governance. Unlisted platforms (e.g. cli, desktop) are
+   completely exempt (0 intrusion).
+2. Autonomous Subagent & Cron Exemption: Subagents (task_id.startswith('sa-') or is_delegated_child_context)
+   and scheduled Cron tasks (_is_cron_context) completely bypass all restrictions.
+3. Adaptive Terminal Background Detach (>30s): Detaches long-running foreground commands to background.
+4. Turn Circuit Breaker (>5 rounds / >90s): Freezes heavy execution tools after quota exhaustion.
+5. Dynamic System Prompt Discipline: Injects proactive orchestration rules into system prompt.
+6. Human Intervention Self-Healing: Instant reset of turn quota when user steer message is detected.
 """
 
 from __future__ import annotations
@@ -36,7 +22,9 @@ import logging
 import os
 import threading
 import time
-from typing import Any, Callable, Dict, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Set
+
+__version__ = "0.1.3"
 
 logger = logging.getLogger("hermes.plugins.proactive_agent")
 
@@ -50,6 +38,7 @@ DEFAULT_MAX_DURATION_S = 90.0
 # Turn state: turn_id -> {
 #   "session_id": str,
 #   "turn_id": str,
+#   "platform": str,
 #   "start_time": float,
 #   "seen_api_requests": set[str],
 #   "round_count": int,
@@ -70,6 +59,85 @@ _task_id_lock = threading.Lock()
 # Cron context & thread mapping
 _current_is_cron: contextvars.ContextVar[bool] = contextvars.ContextVar("proactive_agent_is_cron", default=False)
 _thread_is_cron: Dict[int, bool] = {}
+
+# Platform context & tracking
+_current_platform: contextvars.ContextVar[str] = contextvars.ContextVar("proactive_agent_platform", default="")
+_thread_platforms: Dict[int, str] = {}
+_session_platforms: Dict[str, str] = {}
+_turn_platforms: Dict[str, str] = {}
+
+
+def _record_platform_context(
+    platform: Optional[str],
+    tid: Optional[int] = None,
+    session_id: str = "",
+    turn_id: str = "",
+) -> None:
+    """Record platform context on contextvar, thread mapping, session mapping, and turn mapping."""
+    if not platform:
+        return
+    p = str(platform).strip()
+    if not p:
+        return
+    _current_platform.set(p)
+    target_tid = tid if tid is not None else threading.get_ident()
+    with _state_lock:
+        _thread_platforms[target_tid] = p
+        if session_id:
+            _session_platforms[session_id] = p
+        if turn_id:
+            _turn_platforms[turn_id] = p
+            if turn_id in _turn_states:
+                _turn_states[turn_id]["platform"] = p
+
+
+def _get_current_platform(watch_interrupt_tid: Optional[int] = None, **hook_kwargs: Any) -> str:
+    """Retrieve current platform from hook kwargs, session_info, contextvar, thread, or turn/session maps."""
+    # 1. Direct hook_kwargs
+    p = hook_kwargs.get("platform")
+    if p:
+        return str(p).strip()
+
+    # 2. session_info (system prompt hook)
+    session_info = hook_kwargs.get("session_info")
+    if session_info is not None:
+        p_info = ""
+        if isinstance(session_info, (dict, collections.abc.Mapping)):
+            p_info = str(session_info.get("platform") or "")
+        elif hasattr(session_info, "get"):
+            p_info = str(session_info.get("platform") or "")
+        elif hasattr(session_info, "platform"):
+            p_info = str(getattr(session_info, "platform", "") or "")
+        if p_info:
+            return p_info.strip()
+
+    # 3. ContextVar
+    cp = _current_platform.get()
+    if cp:
+        return cp.strip()
+
+    # 4. Thread mapping
+    target_tids = []
+    if watch_interrupt_tid is not None:
+        target_tids.append(watch_interrupt_tid)
+    target_tids.append(threading.get_ident())
+
+    with _state_lock:
+        for tid in target_tids:
+            t_plat = _thread_platforms.get(tid)
+            if t_plat:
+                return t_plat
+
+        # 5. Turn / session mapping
+        turn_id = hook_kwargs.get("turn_id") or ""
+        if turn_id and turn_id in _turn_platforms:
+            return _turn_platforms[turn_id]
+
+        session_id = hook_kwargs.get("session_id") or ""
+        if session_id and session_id in _session_platforms:
+            return _session_platforms[session_id]
+
+    return ""
 
 
 def _record_cron_context(is_cron: bool = True, tid: Optional[int] = None) -> None:
@@ -115,6 +183,23 @@ def _is_cron_context(watch_interrupt_tid: Optional[int] = None, **hook_kwargs: A
     if platform == "cron":
         _record_cron_context(True)
         return True
+
+    session_info = hook_kwargs.get("session_info")
+    if session_info is not None:
+        p_info = ""
+        sid_info = ""
+        if isinstance(session_info, (dict, collections.abc.Mapping)):
+            p_info = str(session_info.get("platform") or "")
+            sid_info = str(session_info.get("session_id") or "")
+        elif hasattr(session_info, "get"):
+            p_info = str(session_info.get("platform") or "")
+            sid_info = str(session_info.get("session_id") or "")
+        elif hasattr(session_info, "platform"):
+            p_info = str(getattr(session_info, "platform", "") or "")
+            sid_info = str(getattr(session_info, "session_id", "") or "")
+        if p_info == "cron" or sid_info.startswith("cron_") or sid_info.startswith("cron:") or ":cron:" in sid_info:
+            _record_cron_context(True)
+            return True
 
     # 3. Thread-local checks
     target_tids = []
@@ -171,22 +256,38 @@ def _is_cron_context(watch_interrupt_tid: Optional[int] = None, **hook_kwargs: A
     return False
 
 
-def _is_subagent_context(watch_interrupt_tid: Optional[int] = None) -> bool:
-    """Check if the current context or thread belongs to a subagent (task_id.startswith('sa-'))."""
+def _is_subagent_context(watch_interrupt_tid: Optional[int] = None, **hook_kwargs: Any) -> bool:
+    """Check if the current context or thread belongs to a subagent (task_id.startswith('sa-') or is_delegated_child_context)."""
+    kw_task_id = hook_kwargs.get("task_id") or ""
+    if kw_task_id and kw_task_id.startswith("sa-"):
+        return True
+
+    session_info = hook_kwargs.get("session_info")
+    if session_info is not None:
+        p_info = ""
+        if isinstance(session_info, (dict, collections.abc.Mapping)):
+            p_info = str(session_info.get("platform") or "")
+        elif hasattr(session_info, "get"):
+            p_info = str(session_info.get("platform") or "")
+        elif hasattr(session_info, "platform"):
+            p_info = str(getattr(session_info, "platform", "") or "")
+        if p_info == "subagent":
+            return True
+
     task_id = _current_task_id.get()
     if task_id and task_id.startswith("sa-"):
         return True
 
+    target_tids = []
     if watch_interrupt_tid is not None:
-        with _task_id_lock:
-            t_id = _thread_task_ids.get(watch_interrupt_tid)
-            if t_id and t_id.startswith("sa-"):
-                return True
+        target_tids.append(watch_interrupt_tid)
+    target_tids.append(threading.get_ident())
 
     with _task_id_lock:
-        t_id = _thread_task_ids.get(threading.get_ident())
-        if t_id and t_id.startswith("sa-"):
-            return True
+        for tid in target_tids:
+            t_id = _thread_task_ids.get(tid)
+            if t_id and t_id.startswith("sa-"):
+                return True
 
     try:
         from agent.delegation_context import is_delegated_child_context
@@ -203,7 +304,15 @@ def _get_setting(key: str, default: Any) -> Any:
     env_key = f"PROACTIVE_{key.upper()}"
     if env_key in os.environ:
         try:
-            return type(default)(os.environ[env_key])
+            val = os.environ[env_key]
+            if isinstance(default, list):
+                s = str(val).strip()
+                if s.startswith("["):
+                    parsed = json.loads(s)
+                    if isinstance(parsed, list):
+                        return [str(x).strip() for x in parsed]
+                return [x.strip() for x in s.split(",") if x.strip()]
+            return type(default)(val)
         except Exception:
             pass
 
@@ -211,11 +320,86 @@ def _get_setting(key: str, default: Any) -> Any:
         try:
             val = _ctx.get_config(key, None)
             if val is not None:
+                if isinstance(default, list):
+                    if isinstance(val, list):
+                        return [str(x).strip() for x in val]
+                    elif isinstance(val, str):
+                        s = val.strip()
+                        if s.startswith("["):
+                            parsed = json.loads(s)
+                            if isinstance(parsed, list):
+                                return [str(x).strip() for x in parsed]
+                        return [x.strip() for x in s.split(",") if x.strip()]
                 return type(default)(val)
         except Exception:
             pass
 
     return default
+
+
+def _get_governed_platforms() -> List[str]:
+    """Retrieve list of governed platforms from env, config, or default ['weixin']."""
+    val = _get_setting("governed_platforms", ["weixin"])
+    if isinstance(val, list):
+        return [str(p).strip().lower() for p in val if str(p).strip()]
+    return ["weixin"]
+
+
+def _should_govern(watch_interrupt_tid: Optional[int] = None, **hook_kwargs: Any) -> bool:
+    """Evaluate whether proactive agent governance applies to the current context.
+
+    Governance applies (returns True) ONLY when ALL 3 checks pass:
+    1. Positive Platform Allowlist: The current platform must be in `governed_platforms`
+       (default: ["weixin"]). If not in list, empty, or unknown, returns False (0 intrusion).
+    2. Subagent Bypass: If task_id starts with 'sa-' or is_delegated_child_context(), returns False.
+    3. Cron Bypass: If execution context is a scheduled cron task, returns False.
+    """
+    # 0. Ingest & record context if provided
+    platform_kw = hook_kwargs.get("platform")
+    session_id = hook_kwargs.get("session_id") or ""
+    turn_id = hook_kwargs.get("turn_id") or ""
+    task_id = hook_kwargs.get("task_id") or ""
+    session_info = hook_kwargs.get("session_info")
+
+    if platform_kw:
+        _record_platform_context(str(platform_kw).strip(), tid=watch_interrupt_tid, session_id=session_id, turn_id=turn_id)
+    elif session_info is not None:
+        p_info = ""
+        s_info = ""
+        if isinstance(session_info, (dict, collections.abc.Mapping)):
+            p_info = str(session_info.get("platform") or "")
+            s_info = str(session_info.get("session_id") or "")
+        elif hasattr(session_info, "get"):
+            p_info = str(session_info.get("platform") or "")
+            s_info = str(session_info.get("session_id") or "")
+        elif hasattr(session_info, "platform"):
+            p_info = str(getattr(session_info, "platform", "") or "")
+            s_info = str(getattr(session_info, "session_id", "") or "")
+        if p_info:
+            _record_platform_context(p_info.strip(), tid=watch_interrupt_tid, session_id=s_info or session_id, turn_id=turn_id)
+
+    if task_id:
+        _current_task_id.set(task_id)
+        target_tid = watch_interrupt_tid if watch_interrupt_tid is not None else threading.get_ident()
+        with _task_id_lock:
+            _thread_task_ids[target_tid] = task_id
+
+    # 判定 1：当前平台必须在 governed_platforms 中（默认 ["weixin"]）。如果不在或为空，直接返回 False（完全放行，0 侵入）！
+    platform = _get_current_platform(watch_interrupt_tid=watch_interrupt_tid, **hook_kwargs)
+    governed = _get_governed_platforms()
+    if not platform or platform.lower() not in governed:
+        return False
+
+    # 判定 2：如果是 subagent（task_id 以 sa- 开头或 is_delegated_child_context），返回 False。
+    if _is_subagent_context(watch_interrupt_tid=watch_interrupt_tid, **hook_kwargs):
+        return False
+
+    # 判定 3：如果是 cron（_is_cron_context），返回 False。
+    if _is_cron_context(watch_interrupt_tid=watch_interrupt_tid, **hook_kwargs):
+        return False
+
+    # 只有三者都通过，才返回 True
+    return True
 
 
 _patch_lock = threading.Lock()
@@ -237,7 +421,7 @@ def _install_adaptive_terminal_patch() -> None:
 
         orig_wait = BaseEnvironment._wait_for_process
 
-        def _adaptive_wait_for_process(
+        def _terminal_watch_wrapper(
             self,
             proc,
             timeout: int = 120,
@@ -247,9 +431,8 @@ def _install_adaptive_terminal_patch() -> None:
             output=None,
             yield_handler: Optional[Callable] = None,
         ) -> dict:
-            # Subagent & Cron bypass: if current thread or context belongs to a subagent or cron job,
-            # bypass 30s auto-detach timer completely and call orig_wait directly!
-            if _is_subagent_context(watch_interrupt_tid) or _is_cron_context(watch_interrupt_tid):
+            # Positive allowlist & bypass check: if not governed, bypass 30s auto-detach completely
+            if not _should_govern(watch_interrupt_tid=watch_interrupt_tid):
                 return orig_wait(
                     self,
                     proc,
@@ -320,7 +503,8 @@ def _install_adaptive_terminal_patch() -> None:
                     yield_handler=yield_handler,
                 )
 
-        BaseEnvironment._wait_for_process = _adaptive_wait_for_process
+        _adaptive_wait_for_process = _terminal_watch_wrapper
+        BaseEnvironment._wait_for_process = _terminal_watch_wrapper
         _patched = True
         logger.info("proactive-agent: Installed adaptive terminal background detach hook (default: 30s)")
 
@@ -371,16 +555,9 @@ def _reset_turn_state(turn_id: str, session_id: str = "", steer_count: int = 0) 
 
 def _on_pre_llm_call(**hook_kwargs: Any) -> None:
     """Reset turn state at the start of every new user turn (pre_llm_call)."""
-    task_id = hook_kwargs.get("task_id") or ""
-    if task_id:
-        _current_task_id.set(task_id)
-        with _task_id_lock:
-            _thread_task_ids[threading.get_ident()] = task_id
-    if task_id.startswith("sa-"):
+    if not _should_govern(**hook_kwargs):
         return
-    if _is_subagent_context() or _is_cron_context(**hook_kwargs):
-        _record_cron_context(True)
-        return
+
     turn_id = hook_kwargs.get("turn_id") or ""
     session_id = hook_kwargs.get("session_id") or ""
     if turn_id:
@@ -396,17 +573,12 @@ def _on_pre_llm_call(**hook_kwargs: Any) -> None:
 
 def _on_pre_api_request(**hook_kwargs: Any) -> None:
     """Detect mid-turn human intervention (steer messages) and increment round count."""
-    task_id = hook_kwargs.get("task_id") or ""
-    if task_id:
-        _current_task_id.set(task_id)
-        with _task_id_lock:
-            _thread_task_ids[threading.get_ident()] = task_id
+    if not _should_govern(**hook_kwargs):
+        return
+
     turn_id = hook_kwargs.get("turn_id") or ""
     session_id = hook_kwargs.get("session_id") or ""
-    if not turn_id or task_id.startswith("sa-"):
-        return
-    if _is_subagent_context() or _is_cron_context(**hook_kwargs):
-        _record_cron_context(True)
+    if not turn_id:
         return
 
     messages = hook_kwargs.get("request_messages") or hook_kwargs.get("conversation_history") or []
@@ -448,26 +620,16 @@ def _on_agent_loop_stopped(**hook_kwargs: Any) -> None:
             for k in list(_turn_states.keys()):
                 if session_key in k or _turn_states[k].get("session_id") == session_key:
                     _turn_states.pop(k, None)
+            _session_platforms.pop(session_key, None)
         else:
             _turn_states.clear()
+            _session_platforms.clear()
         logger.info("proactive-agent: Cleared turn states on agent_loop_stopped for %s", session_key)
 
 
-def _pre_tool_call(tool_name: str, args: Optional[dict], **hook_kwargs: Any) -> Optional[dict]:
+def _pre_tool_call(tool_name: str, args: Optional[dict] = None, **hook_kwargs: Any) -> Optional[dict]:
     """Pre-tool hook enforcing circuit breaker (>5 rounds or >90s)."""
-    task_id = hook_kwargs.get("task_id") or ""
-    if task_id:
-        _current_task_id.set(task_id)
-        with _task_id_lock:
-            _thread_task_ids[threading.get_ident()] = task_id
-        if task_id.startswith("sa-"):
-            return None
-        if task_id.startswith("cron:") or task_id.startswith("cron_") or task_id == "cron":
-            _record_cron_context(True)
-            return None
-    if _is_subagent_context():
-        return None
-    if _is_cron_context(**hook_kwargs):
+    if not _should_govern(**hook_kwargs):
         return None
 
     turn_id = hook_kwargs.get("turn_id") or ""
@@ -522,19 +684,9 @@ def _pre_tool_call(tool_name: str, args: Optional[dict], **hook_kwargs: Any) -> 
     return None
 
 
-def _post_tool_call(tool_name: str, args: Optional[dict], result: Any, **hook_kwargs: Any) -> None:
+def _post_tool_call(tool_name: str, args: Optional[dict] = None, result: Any = None, **hook_kwargs: Any) -> None:
     """Post-tool hook tracking accurate duration via duration_ms."""
-    with _task_id_lock:
-        _thread_task_ids.pop(threading.get_ident(), None)
-        _thread_is_cron.pop(threading.get_ident(), None)
-
-    task_id = hook_kwargs.get("task_id") or ""
-    if task_id:
-        if task_id.startswith("sa-") or task_id.startswith("cron:") or task_id.startswith("cron_") or task_id == "cron":
-            return
-    elif _is_subagent_context():
-        return
-    if _is_cron_context(**hook_kwargs):
+    if not _should_govern(**hook_kwargs):
         return
 
     turn_id = hook_kwargs.get("turn_id") or ""
@@ -557,47 +709,35 @@ def _post_tool_call(tool_name: str, args: Optional[dict], result: Any, **hook_kw
             st["cumulative_duration_s"] = st.get("cumulative_duration_s", 0.0) + dur_s
             st["last_activity"] = now
         elif dur_s > 0:
-            _turn_states[turn_id] = {
-                "session_id": session_id,
-                "turn_id": turn_id,
-                "start_time": now,
-                "seen_api_requests": set(),
-                "round_count": 1,
-                "cumulative_duration_s": dur_s,
-                "steer_count": 0,
-                "last_activity": now,
-            }
+            st = _reset_turn_state(turn_id, session_id=session_id)
+            st["cumulative_duration_s"] = dur_s
+            st["last_activity"] = now
 
 
-def _transform_tool_result(tool_name: str, args: Optional[dict], result: Any, **hook_kwargs: Any) -> Optional[str]:
-    """Replace the default user-message yield note with an explicit timeout-detach directive in English."""
+def _transform_tool_result(tool_name: str, args: Optional[dict] = None, result: Any = None, **hook_kwargs: Any) -> Optional[str]:
+    """Transform yielded terminal output into user/model guidance for proactive background handling."""
     if tool_name != "terminal":
         return None
 
-    task_id = hook_kwargs.get("task_id") or ""
-    if task_id:
-        if task_id.startswith("sa-") or task_id.startswith("cron:") or task_id.startswith("cron_") or task_id == "cron":
-            return None
-    elif _is_subagent_context():
-        return None
-    if _is_cron_context(**hook_kwargs):
-        return None
-
-    # Check whether this command was yielded due to our adaptive timer
-    tid = threading.get_ident()
-    is_timeout_yield = False
+    # Check if this thread triggered a timeout yield
     with _timeout_yield_lock:
-        if tid in _timeout_yield_tids:
-            _timeout_yield_tids.discard(tid)
-            is_timeout_yield = True
+        if threading.get_ident() not in _timeout_yield_tids:
+            return None
+        _timeout_yield_tids.discard(threading.get_ident())
 
-    if not is_timeout_yield:
+    if not _should_govern(**hook_kwargs):
+        return None
+
+    if not result:
         return None
 
     try:
-        data = json.loads(result) if isinstance(result, str) else dict(result)
+        data = json.loads(result) if isinstance(result, str) else result
+        if not isinstance(data, dict):
+            return None
+
         if data.get("status") == "yielded_to_background" or data.get("yielded_session_id"):
-            session_id = data.get("session_id") or data.get("yielded_session_id")
+            session_id = data.get("yielded_session_id") or data.get("session_id", "background")
             timeout_val = _get_setting("terminal_auto_detach_seconds", 30)
             data["note"] = (
                 f"[Foreground Command Timed Out (>{timeout_val}s) - Automatically Detached to Background]:\n"
@@ -616,9 +756,10 @@ def _transform_tool_result(tool_name: str, args: Optional[dict], result: Any, **
 
 
 def _on_session_clean(session_id: str = "", turn_id: str = "", **kwargs: Any) -> None:
-    """Clear turn state on session reset or turn/session end."""
+    """Clear turn, task, and platform state on session reset or turn/session end."""
     _current_task_id.set("")
     _current_is_cron.set(False)
+    _current_platform.set("")
     with _task_id_lock:
         if not session_id and not turn_id:
             _thread_task_ids.clear()
@@ -627,34 +768,26 @@ def _on_session_clean(session_id: str = "", turn_id: str = "", **kwargs: Any) ->
             _thread_task_ids.pop(threading.get_ident(), None)
             _thread_is_cron.pop(threading.get_ident(), None)
     with _state_lock:
-        if turn_id and turn_id in _turn_states:
-            _turn_states.pop(turn_id, None)
-        elif session_id:
-            for k in list(_turn_states.keys()):
-                if _turn_states[k].get("session_id") == session_id or k.startswith(f"{session_id}:"):
-                    _turn_states.pop(k, None)
-        else:
+        if not session_id and not turn_id:
+            _thread_platforms.clear()
+            _session_platforms.clear()
+            _turn_platforms.clear()
             _turn_states.clear()
+        else:
+            _thread_platforms.pop(threading.get_ident(), None)
+            if turn_id:
+                _turn_platforms.pop(turn_id, None)
+                _turn_states.pop(turn_id, None)
+            if session_id:
+                _session_platforms.pop(session_id, None)
+                for k in list(_turn_states.keys()):
+                    if _turn_states[k].get("session_id") == session_id or k.startswith(f"{session_id}:"):
+                        _turn_states.pop(k, None)
 
 
-def _render_system_prompt_discipline(session_info: Optional[Any] = None) -> str:
+def _on_system_prompt(session_info: Optional[Any] = None) -> str:
     """Dynamically render proactive agent discipline system prompt using current settings."""
-    if session_info is not None:
-        platform = ""
-        sid = ""
-        if isinstance(session_info, (dict, collections.abc.Mapping)):
-            platform = str(session_info.get("platform") or "")
-            sid = str(session_info.get("session_id") or "")
-        elif hasattr(session_info, "get"):
-            platform = str(session_info.get("platform") or "")
-            sid = str(session_info.get("session_id") or "")
-        elif hasattr(session_info, "platform"):
-            platform = str(getattr(session_info, "platform", "") or "")
-            sid = str(getattr(session_info, "session_id", "") or "")
-        if platform in ("subagent", "cron") or sid.startswith("cron_") or sid.startswith("cron:") or ":cron:" in sid:
-            return ""
-
-    if _is_cron_context():
+    if not _should_govern(session_info=session_info):
         return ""
 
     detach_timeout = _get_setting("terminal_auto_detach_seconds", 30)
@@ -681,6 +814,9 @@ def _render_system_prompt_discipline(session_info: Optional[Any] = None) -> str:
 - Never expose internal PIDs, session_ids, or raw commands. Keep output clean."""
 
 
+_render_system_prompt_discipline = _on_system_prompt
+
+
 def register(ctx: Any) -> None:
     """Register the proactive-agent plugin with Hermes."""
     global _ctx
@@ -699,7 +835,7 @@ def register(ctx: Any) -> None:
     try:
         ctx.register_system_prompt_section(
             "proactive-agent.discipline",
-            _render_system_prompt_discipline,
+            _on_system_prompt,
             position="after_memory",
             max_chars=2000,
         )

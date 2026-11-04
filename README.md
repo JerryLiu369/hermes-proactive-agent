@@ -1,7 +1,7 @@
 # Hermes Proactive Agent Governor (`proactive-agent`)
 
 [![Hermes Plugin](https://img.shields.io/badge/Hermes-Plugin-blue.svg)](https://hermes-agent.nousresearch.com)
-[![Version](https://img.shields.io/badge/version-0.1.1-green.svg)](https://github.com/JerryLiu369/hermes-proactive-agent)
+[![Version](https://img.shields.io/badge/version-0.1.3-green.svg)](https://github.com/JerryLiu369/hermes-proactive-agent)
 [![CI](https://github.com/JerryLiu369/hermes-proactive-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/JerryLiu369/hermes-proactive-agent/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python: 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
@@ -82,7 +82,12 @@ Autonomous LLM agents easily fall into common traps:
 
 ## ⚡ Core Governance Capabilities
 
-### 1. Adaptive Terminal Detach (>30s) — Never Freeze Foreground Chat
+### 1. Positive Platform Allowlist (Zero Intrusion)
+- **The Principle**: By default, proactive governance (prompt discipline, circuit breaker, 30s terminal detach) is restricted strictly to interactive messaging platforms specified in `governed_platforms` (default: `["weixin"]`).
+- **Full Exemption**: Non-governed platforms such as CLI (`cli`), Desktop (`desktop`), Telegram, Slack, etc., are completely exempt (0 intrusion, 0 overhead). They run pure vanilla Hermes execution without any interruption or tool restrictions.
+- **Flexible Configuration**: Can be configured via plugin settings (`governed_platforms: ["weixin", "telegram"]`) or environment variable `PROACTIVE_GOVERNED_PLATFORMS="weixin,telegram"`. Setting to empty list disables governance everywhere.
+
+### 2. Adaptive Terminal Detach (>30s) — Never Freeze Foreground Chat
 - **The Problem**: When an agent runs build scripts (`cargo build`, `npm install`), test suites, or training processes in the foreground, the terminal blocks. Chat freezes for minutes, risking gateway timeouts or connection drops.
 - **The Solution**:
   - Non-invasively monitors `BaseEnvironment._wait_for_process` without breaking native interrupt wiring.
@@ -90,7 +95,7 @@ Autonomous LLM agents easily fall into common traps:
   - Replaces tool result notes via `transform_tool_result` to instruct the LLM: *"Command running asynchronously in the background. Conclude your turn immediately and release the chat!"*
   - **Subagent & Cron Autonomous Bypass**: Subagents (`task_id.startswith("sa-")`, `platform="subagent"`) and scheduled Cron tasks (`platform="cron"`, `task_id.startswith("cron:")`, `HERMES_CRON_SESSION`) skip the 30s detach timer completely, allowing background workers and scheduled batch jobs to execute long-running commands without unwanted detachment.
 
-### 2. Turn Circuit Breaker (>5 rounds / >90s) — Break Monolithic Death Loops
+### 3. Turn Circuit Breaker (>5 rounds / >90s) — Break Monolithic Death Loops
 - **The Problem**: Single-threaded agents often get stuck in endless trial-and-error loops (10+ serial bash/patch tool calls in a single response turn), burning tokens, degrading context quality, and locking the UI.
 - **The Solution**:
   - **Batch-Level Round Counting**: Parallel tool calls emitted within a single assistant step share one round counter (`pre_api_request`), preventing premature tripping.
@@ -101,14 +106,14 @@ Autonomous LLM agents easily fall into common traps:
     - `skill_view` / `skills_list`: Read existing guidelines and documentation.
   - **Subagent & Cron Autonomous Bypass Guard**: Child subagents (`task_id.startswith("sa-")`) and unattended scheduled Cron tasks (`platform="cron"`, `task_id.startswith("cron:")`, `HERMES_CRON_SESSION`) bypass the breaker entirely to execute multi-step automated jobs cleanly without premature freezing.
 
-### 3. Human Intervention & Steer Self-Healing — Dynamic Quota Reset
+### 4. Human Intervention & Steer Self-Healing — Dynamic Quota Reset
 - **The Problem**: Static quota systems freeze agents permanently when users jump in mid-flight to correct direction.
 - **The Solution**:
   - Monitors `display_kind == "steer"` and `[OUT-OF-BAND USER MESSAGE]` markers in `pre_api_request` and `pre_llm_call`.
   - The moment a human intervenes (either in a new turn or out-of-band mid-turn), round counters and elapsed timers are instantly reset to zero. The agent is granted a fresh quota to execute the user's updated directive.
   - Automatically prunes stale turn states to guarantee zero memory leaks across sessions.
 
-### 4. Dynamic Prompt Discipline & Autonomous Zero-Injection
+### 5. Dynamic Prompt Discipline & Autonomous Zero-Injection
 - Dynamically renders and registers prompt context (`proactive-agent.discipline`) matching the active configuration into the main agent's system prompt.
 - **Subagent & Cron Zero-Injection**: When running in a subagent or scheduled cron session (`platform in ("subagent", "cron")`, `session_id.startswith("cron_")`, `HERMES_CRON_SESSION`), prompt generation returns an empty string, ensuring background workers and cron jobs have zero prompt pollution and zero token overhead.
 
@@ -141,6 +146,7 @@ Parameters can be configured in your Hermes profile config (`config.yaml`), plug
 
 | Config Key | Env Var | Type | Default | Description |
 |---|---|---|---|---|
+| `governed_platforms` | `PROACTIVE_GOVERNED_PLATFORMS` | `list` | `["weixin"]` | Platforms subject to proactive agent governance (circuit breaker, prompt discipline, 30s terminal detach). Platforms not listed (e.g. cli, desktop) are completely exempt. |
 | `terminal_auto_detach_seconds` | `PROACTIVE_TERMINAL_AUTO_DETACH_SECONDS` | `int` | `30` | Max seconds a foreground terminal command can run before being detached into the background. |
 | `turn_max_tool_rounds` | `PROACTIVE_TURN_MAX_TOOL_ROUNDS` | `int` | `5` | Max serial tool rounds in the main agent turn before circuit breaker restricts execution. |
 | `turn_max_duration_seconds` | `PROACTIVE_TURN_MAX_DURATION_SECONDS` | `int` | `90` | Max cumulative tool execution duration (seconds) in the main agent turn before circuit breaker trips. |
@@ -152,6 +158,7 @@ plugins:
     proactive-agent:
       enabled: true
       config:
+        governed_platforms: ["weixin"]
         terminal_auto_detach_seconds: 30
         turn_max_tool_rounds: 5
         turn_max_duration_seconds: 90
