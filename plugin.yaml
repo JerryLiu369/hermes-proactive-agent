@@ -1,6 +1,6 @@
 name: proactive-agent
-version: "0.1.3"
-description: "Proactive agent governor: adaptive 30s terminal detach, 5-turn/90s subagent circuit breaker, positive platform allowlist (weixin by default), and full autonomous subagent & cron bypass."
+version: "0.1.4"
+description: "Proactive agent governor: adaptive 30s terminal detach, 8-turn/120s subagent circuit breaker, positive platform allowlist (weixin by default), and full autonomous subagent & cron bypass."
 author: Jerry Liu
 license: MIT
 hooks:
@@ -32,9 +32,9 @@ config_schema:
     description: "Max seconds a foreground terminal command can run before being detached to the background."
   turn_max_tool_rounds:
     type: int
-    default: 5
+    default: 8
     description: "Max serial tool rounds in the main agent turn before circuit breaker restricts execution to subagents."
   turn_max_duration_seconds:
-    type: int
-    default: 90
+    type: number
+    default: 120.0
     description: "Max total tool execution duration in the main agent turn before circuit breaker restricts execution to subagents."

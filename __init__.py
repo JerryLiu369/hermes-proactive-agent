@@ -1,5 +1,5 @@
 """
-proactive-agent: Proactive Agent Governor Plugin for Hermes Agent (v0.1.3).
+proactive-agent: Proactive Agent Governor Plugin for Hermes Agent (v0.1.4).
 
 Enforces proactive orchestrator discipline for human-interactive dialogue platforms (positive allowlist: weixin by default):
 1. Positive Platform Allowlist (Zero Intrusion): Only platforms explicitly declared in `governed_platforms`
@@ -8,7 +8,7 @@ Enforces proactive orchestrator discipline for human-interactive dialogue platfo
 2. Autonomous Subagent & Cron Exemption: Subagents (task_id.startswith('sa-') or is_delegated_child_context)
    and scheduled Cron tasks (_is_cron_context) completely bypass all restrictions.
 3. Adaptive Terminal Background Detach (>30s): Detaches long-running foreground commands to background.
-4. Turn Circuit Breaker (>5 rounds / >90s): Freezes heavy execution tools after quota exhaustion.
+4. Turn Circuit Breaker (>8 rounds / >120s): Freezes heavy execution tools after quota exhaustion.
 5. Dynamic System Prompt Discipline: Injects proactive orchestration rules into system prompt.
 6. Human Intervention Self-Healing: Instant reset of turn quota when user steer message is detected.
 """
@@ -24,7 +24,7 @@ import threading
 import time
 from typing import Any, Callable, Dict, List, Optional, Set
 
-__version__ = "0.1.3"
+__version__ = "0.1.4"
 
 logger = logging.getLogger("hermes.plugins.proactive_agent")
 
@@ -32,8 +32,8 @@ _ctx: Optional[Any] = None
 _patched: bool = False
 _state_lock = threading.Lock()
 
-DEFAULT_MAX_ROUNDS = 5
-DEFAULT_MAX_DURATION_S = 90.0
+DEFAULT_MAX_ROUNDS = 8
+DEFAULT_MAX_DURATION_S = 120.0
 
 # Turn state: turn_id -> {
 #   "session_id": str,
@@ -628,7 +628,7 @@ def _on_agent_loop_stopped(**hook_kwargs: Any) -> None:
 
 
 def _pre_tool_call(tool_name: str, args: Optional[dict] = None, **hook_kwargs: Any) -> Optional[dict]:
-    """Pre-tool hook enforcing circuit breaker (>5 rounds or >90s)."""
+    """Pre-tool hook enforcing circuit breaker (>8 rounds or >120s)."""
     if not _should_govern(**hook_kwargs):
         return None
 

@@ -1,7 +1,7 @@
 # Hermes Proactive Agent Governor (`proactive-agent`)
 
 [![Hermes Plugin](https://img.shields.io/badge/Hermes-Plugin-blue.svg)](https://hermes-agent.nousresearch.com)
-[![Version](https://img.shields.io/badge/version-0.1.3-green.svg)](https://github.com/JerryLiu369/hermes-proactive-agent)
+[![Version](https://img.shields.io/badge/version-0.1.4-green.svg)](https://github.com/JerryLiu369/hermes-proactive-agent)
 [![CI](https://github.com/JerryLiu369/hermes-proactive-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/JerryLiu369/hermes-proactive-agent/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python: 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
@@ -48,13 +48,13 @@
 |       v (Terminal长命令)v (常规单体工具)                                                          :   |
 |  +---------+    +----------------------------+                                                  :   |
 |  | 前台执行|    |       熔断器检测逻辑        |                                                  :   |
-|  | 监控计时|    |   - 单轮串行轮次 > 5 轮?   |                                                  :   |
-|  +----+----+    |   - 单轮累计耗时 > 90 秒?  |                                                  :   |
+|  | 监控计时|    |   - 单轮串行轮次 > 8 轮?   |                                                  :   |
+|  +----+----+    |   - 单轮累计耗时 > 120 秒?  |                                                  :   |
 |       |         +--------------+-------------+                                                  :   |
 |       |                        |                                                                :   |
 |   [ > 30s? ]            +------+------+                                                         :   |
 |    /     \              |             |                                                         :   |
-|   是      否           未超限        触发熔断 (>5轮 / >90s)                                     :   |
+|   是      否           未超限        触发熔断 (>8轮 / >120s)                                     :   |
 |   |        |            |             |                                                         :   |
 |   v        v            v             v                                                         :   |
 | [挂起后台] [正常完成]  [执行工具]   [冻结重型单体执行工具]                                       :   |
@@ -96,11 +96,11 @@
   - 自动通过 `transform_tool_result` 注入指引，明确告知模型：“该命令已转入后台异步运行，切勿 polling / sleep-wait，立即向用户回复并释放对话轮次！”
   - **子代理与 Cron 任务彻底豁免脱壳**：子代理（`task_id.startswith("sa-")`，`platform="subagent"`）与无人值守定时任务（`platform="cron"`，`task_id.startswith("cron:")`，`HERMES_CRON_SESSION`）完全跳过 30s 定时器，保证隔离子任务与后台批处理流水线长期执行不受脱壳打断。
 
-### 痛点二：单轮连续硬跑单体工具死循环 (Turn Circuit Breaker > 5 轮 / > 90s)
+### 痛点二：单轮连续硬跑单体工具死循环 (Turn Circuit Breaker > 8 轮 / > 120s)
 - **痛点分析**：Agent 在面对难以解决的代码报错时，容易陷入“修改 -> 报错 -> 修改 -> 报错”的单体死循环。
 - **治理机制**：
   - **并发工具合并计轮**：现代 LLM 单次回复常并发吐出 2~4 个工具调用，插件在 `pre_api_request` 维度计轮，确保一次模型思考只算一轮，绝不误触熔断。
-  - **硬熔断限制**：当主轮次工具调用达到第 6 轮（`> 5` 轮），或累计工具执行耗时达到 `90s` 时，立刻熔断重型单体执行工具（`terminal`, `patch`, `write_file`, `execute_code`）。
+  - **硬熔断限制**：当主轮次工具调用达到第 9 轮（`> 8` 轮），或累计工具执行耗时达到 `120s` 时，立刻熔断重型单体执行工具（`terminal`, `patch`, `write_file`, `execute_code`）。
   - **元认知与自进化工具白名单放行**：
     - `delegate_task`：强制要求模型拆解任务，分发给隔离子代理并行处理；
     - `skill_manage` / `memory`：允许模型在熔断状态下沉淀经验与教训，杜绝“为存经验不得不派子代理”的动作形变；
@@ -122,16 +122,16 @@
 Role: Main dialogue orchestrator. Stay responsive; heavy execution never blocks the chat turn.
 
 1. Triage & Dispatch-Then-Yield
-- LIGHT (read files, status checks, quick probes): finish in <=5 tool rounds, then answer.
+- LIGHT (read files, status checks, quick probes): finish in <=8 tool rounds, then answer.
 - HEAVY (multi-step edits, refactors, builds, test suites, training, commands likely >30s):
-  1. 仅做必要探查，尽量尽早派发；但必须在满 {max_rounds} 轮工具或 {max_duration}s 耗时硬上限前完成派发:
+  1. 仅做必要探查，尽量尽早派发；但必须在满 8 轮工具或 120s 耗时硬上限前完成派发:
      - Complex reasoning or code tasks: fan out via delegate_task.
      - Long shell commands: run terminal(background=True, notify=True).
   2. Release turn immediately: output a concise one-line status to the user and end your turn. NEVER run sleep or poll.
 
 2. Hardware Governance Limits (Main Thread Only)
 - Foreground command >30s: auto-detached to background with completion notification. Do not wait; inform the user and end your turn.
-- At tool round 6 (round >=6) or >90s turn time: terminal, patch, write_file and execution tools are frozen. Only delegate_task, memory, skill_manage, skill_view, skills_list remain. Do not retry; delegate remaining work or deliver current state.
+- At tool round 9 (round >=9) or >120s turn time: terminal, patch, write_file and execution tools are frozen. Only delegate_task, memory, skill_manage, skill_view, skills_list remain. Do not retry; delegate remaining work or deliver current state.
 
 3. Event Wakeup & Physical Verification
 - Asynchronous tasks wake the conversation automatically upon completion.
@@ -149,8 +149,8 @@ Role: Main dialogue orchestrator. Stay responsive; heavy execution never blocks 
 |---|---|---|---|---|
 | `governed_platforms` | `PROACTIVE_GOVERNED_PLATFORMS` | `list` | `["weixin"]` | 纳入主动治理的平台白名单列表；未在列表中的平台（如 cli, desktop）彻底豁免放行 |
 | `terminal_auto_detach_seconds` | `PROACTIVE_TERMINAL_AUTO_DETACH_SECONDS` | `int` | `30` | 前台命令最大允许执行秒数，超过后自动安全挂起至后台运行 |
-| `turn_max_tool_rounds` | `PROACTIVE_TURN_MAX_TOOL_ROUNDS` | `int` | `5` | 主代理单轮最大串行工具调用轮数，超过后触发重任务熔断 |
-| `turn_max_duration_seconds` | `PROACTIVE_TURN_MAX_DURATION_SECONDS` | `int` | `90` | 主代理单轮工具执行累计最大秒数，超过后触发熔断 |
+| `turn_max_tool_rounds` | `PROACTIVE_TURN_MAX_TOOL_ROUNDS` | `int` | `8` | 主代理单轮最大串行工具调用轮数，超过后触发重任务熔断 |
+| `turn_max_duration_seconds` | `PROACTIVE_TURN_MAX_DURATION_SECONDS` | `int` | `120` | 主代理单轮工具执行累计最大秒数，超过后触发熔断 |
 
 ### 配置示例 `config.yaml`
 ```yaml
@@ -161,8 +161,8 @@ plugins:
       config:
         governed_platforms: ["weixin"]
         terminal_auto_detach_seconds: 30
-        turn_max_tool_rounds: 5
-        turn_max_duration_seconds: 90
+        turn_max_tool_rounds: 8
+        turn_max_duration_seconds: 120
 ```
 
 ### ⚡ 子代理配置（可选，生产环境推荐）
@@ -214,7 +214,7 @@ hermes plugins uninstall proactive-agent
 | 现象 / 疑问 | 触发机制与原因 | 建议排障与操作 |
 |---|---|---|
 | **前台执行命令在 30 秒后转入后台** | 触发了自适应前台超时机制，避免阻塞聊天界面。 | 属于正常预期行为。进程在后台安全运行，命令完成时会自动收到推送；Agent 无需轮询等待。 |
-| **工具调用报错 `[Circuit Breaker] Quota reached`** | Agent 在单轮内调用单体工具超过 5 轮或工具执行总时长超过 90 秒。 | Agent 被要求拆解子任务并使用 `delegate_task` 委派子代理并行处理，或先回复用户当前进展。 |
+| **工具调用报错 `[Circuit Breaker] Quota reached`** | Agent 在单轮内调用单体工具超过 8 轮或工具执行总时长超过 120 秒。 | Agent 被要求拆解子任务并使用 `delegate_task` 委派子代理并行处理，或先回复用户当前进展。 |
 | **子代理（Subagent）会被熔断或脱壳限制吗？** | 子代理拥有独立生命周期。 | 不会。以 `sa-` 开头的子任务 ID 或 `platform="subagent"` 自动跳过 30s 脱壳定时器与熔断检测，且享受 0 提示词注入开销。 |
 | **中途发送了纠偏消息，Agent 会被卡住吗？** | 包含自愈检测。 | 不会。用户中途发送 Steer / 插话消息后，插件会自动清零单轮计数器并重置执行耗时，重新赋予完整配额。 |
 | **如何在本地运行测试？** | 项目包含完备的测试套件。 | 在项目根目录下执行 `pytest -v` 即可运行全部单元测试。 |

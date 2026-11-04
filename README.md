@@ -1,7 +1,7 @@
 # Hermes Proactive Agent Governor (`proactive-agent`)
 
 [![Hermes Plugin](https://img.shields.io/badge/Hermes-Plugin-blue.svg)](https://hermes-agent.nousresearch.com)
-[![Version](https://img.shields.io/badge/version-0.1.3-green.svg)](https://github.com/JerryLiu369/hermes-proactive-agent)
+[![Version](https://img.shields.io/badge/version-0.1.4-green.svg)](https://github.com/JerryLiu369/hermes-proactive-agent)
 [![CI](https://github.com/JerryLiu369/hermes-proactive-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/JerryLiu369/hermes-proactive-agent/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python: 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
@@ -48,13 +48,13 @@ Autonomous LLM agents easily fall into common traps:
 |       v (Terminal)    v (Tool Call)                                                             :   |
 |  +---------+    +----------------------------+                                                  :   |
 |  | Execute |    |   Circuit Breaker Check    |                                                  :   |
-|  | Command |    |   - Round Count > 5?       |                                                  :   |
-|  +----+----+    |   - Turn Elapsed > 90s?    |                                                  :   |
+|  | Command |    |   - Round Count > 8?       |                                                  :   |
+|  +----+----+    |   - Turn Elapsed > 120s?   |                                                  :   |
 |       |         +--------------+-------------+                                                  :   |
 |       |                        |                                                                :   |
 |   [ > 30s? ]            +------+------+                                                         :   |
 |    /     \              |             |                                                         :   |
-|  Yes      No          Pass          Trip (>5 rds / >90s)                                        :   |
+|  Yes      No          Pass          Trip (>8 rds / >120s)                                       :   |
 |   |        |            |             |                                                         :   |
 |   v        v            v             v                                                         :   |
 | [Detach] [Done]    [Execute]   [Freeze Heavy Tools]                                             :   |
@@ -95,11 +95,11 @@ Autonomous LLM agents easily fall into common traps:
   - Replaces tool result notes via `transform_tool_result` to instruct the LLM: *"Command running asynchronously in the background. Conclude your turn immediately and release the chat!"*
   - **Subagent & Cron Autonomous Bypass**: Subagents (`task_id.startswith("sa-")`, `platform="subagent"`) and scheduled Cron tasks (`platform="cron"`, `task_id.startswith("cron:")`, `HERMES_CRON_SESSION`) skip the 30s detach timer completely, allowing background workers and scheduled batch jobs to execute long-running commands without unwanted detachment.
 
-### 3. Turn Circuit Breaker (>5 rounds / >90s) — Break Monolithic Death Loops
+### 3. Turn Circuit Breaker (>8 rounds / >120s) — Break Monolithic Death Loops
 - **The Problem**: Single-threaded agents often get stuck in endless trial-and-error loops (10+ serial bash/patch tool calls in a single response turn), burning tokens, degrading context quality, and locking the UI.
 - **The Solution**:
   - **Batch-Level Round Counting**: Parallel tool calls emitted within a single assistant step share one round counter (`pre_api_request`), preventing premature tripping.
-  - **Hard Circuit Breaker**: If serial rounds exceed `turn_max_tool_rounds` (default: `5`) or turn duration exceeds `turn_max_duration_seconds` (default: `90s`), heavy monolithic tools (`terminal`, `patch`, `write_file`, `execute_code`) are frozen.
+  - **Hard Circuit Breaker**: If serial rounds exceed `turn_max_tool_rounds` (default: `8`) or turn duration exceeds `turn_max_duration_seconds` (default: `120s`), heavy monolithic tools (`terminal`, `patch`, `write_file`, `execute_code`) are frozen.
   - **Meta-Tool Whitelist**: Lightweight governance and meta-tools remain completely accessible:
     - `delegate_task`: Fan out heavy sub-tasks to isolated subagents in parallel.
     - `skill_manage` / `memory`: Perform atomic self-evolution and retain learnings without action distortion.
@@ -121,16 +121,16 @@ Autonomous LLM agents easily fall into common traps:
 Role: Main dialogue orchestrator. Stay responsive; heavy execution never blocks the chat turn.
 
 1. Triage & Dispatch-Then-Yield
-- LIGHT (read files, status checks, quick probes): finish in <=5 tool rounds, then answer.
+- LIGHT (read files, status checks, quick probes): finish in <=8 tool rounds, then answer.
 - HEAVY (multi-step edits, refactors, builds, test suites, training, commands likely >30s):
-  1. Scope minimally and aim to dispatch as early as possible, but MUST dispatch before tool round 5 or 90s:
+  1. Scope minimally and aim to dispatch as early as possible, but MUST dispatch before tool round 8 or 120s:
      - Complex reasoning or code tasks: fan out via delegate_task.
      - Long shell commands: run terminal(background=True, notify=True).
   2. Release turn immediately: output a concise one-line status to the user and end your turn. NEVER run sleep or poll.
 
 2. Hardware Governance Limits (Main Thread Only)
 - Foreground command >30s: auto-detached to background with completion notification. Do not wait; inform the user and end your turn.
-- At tool round 6 (round >=6) or >90s turn time: terminal, patch, write_file and execution tools are frozen. Only delegate_task, memory, skill_manage, skill_view, skills_list remain. Do not retry; delegate remaining work or deliver current state.
+- At tool round 9 (round >=9) or >120s turn time: terminal, patch, write_file and execution tools are frozen. Only delegate_task, memory, skill_manage, skill_view, skills_list remain. Do not retry; delegate remaining work or deliver current state.
 
 3. Event Wakeup & Physical Verification
 - Asynchronous tasks wake the conversation automatically upon completion.
@@ -148,8 +148,8 @@ Parameters can be configured in your Hermes profile config (`config.yaml`), plug
 |---|---|---|---|---|
 | `governed_platforms` | `PROACTIVE_GOVERNED_PLATFORMS` | `list` | `["weixin"]` | Platforms subject to proactive agent governance (circuit breaker, prompt discipline, 30s terminal detach). Platforms not listed (e.g. cli, desktop) are completely exempt. |
 | `terminal_auto_detach_seconds` | `PROACTIVE_TERMINAL_AUTO_DETACH_SECONDS` | `int` | `30` | Max seconds a foreground terminal command can run before being detached into the background. |
-| `turn_max_tool_rounds` | `PROACTIVE_TURN_MAX_TOOL_ROUNDS` | `int` | `5` | Max serial tool rounds in the main agent turn before circuit breaker restricts execution. |
-| `turn_max_duration_seconds` | `PROACTIVE_TURN_MAX_DURATION_SECONDS` | `int` | `90` | Max cumulative tool execution duration (seconds) in the main agent turn before circuit breaker trips. |
+| `turn_max_tool_rounds` | `PROACTIVE_TURN_MAX_TOOL_ROUNDS` | `int` | `8` | Max serial tool rounds in the main agent turn before circuit breaker restricts execution. |
+| `turn_max_duration_seconds` | `PROACTIVE_TURN_MAX_DURATION_SECONDS` | `int` | `120` | Max cumulative tool execution duration (seconds) in the main agent turn before circuit breaker trips. |
 
 ### Example `config.yaml`
 ```yaml
@@ -160,8 +160,8 @@ plugins:
       config:
         governed_platforms: ["weixin"]
         terminal_auto_detach_seconds: 30
-        turn_max_tool_rounds: 5
-        turn_max_duration_seconds: 90
+        turn_max_tool_rounds: 8
+        turn_max_duration_seconds: 120
 ```
 
 ### ⚡ Subagent Configuration (Optional, Recommended for Production)
@@ -213,7 +213,7 @@ hermes plugins uninstall proactive-agent
 | Question / Symptom | Root Cause | Recommended Action |
 |---|---|---|
 | **Foreground command detached after 30s** | Adaptive timer reached 30s threshold. | The command is running safely in background. Let the agent wrap up its turn; completion notification will arrive automatically. |
-| **Circuit breaker triggered (`[Circuit Breaker] Quota reached`)** | The agent executed >5 serial tool rounds or took >90s in a single turn. | The agent is prompted to delegate remaining work via `delegate_task` or deliver its current findings. |
+| **Circuit breaker triggered (`[Circuit Breaker] Quota reached`)** | The agent executed >8 serial tool rounds or took >120s in a single turn. | The agent is prompted to delegate remaining work via `delegate_task` or deliver its current findings. |
 | **Do subagents inherit circuit breaker or terminal detach limits?** | Subagents are scoped to subtasks. | No. Subagents (`task_id.startswith("sa-")`, `platform="subagent"`) have full bypass (no 30s detach timer, no circuit breaker) and zero prompt injection overhead. |
 | **Does mid-turn user steering get blocked?** | Prior turns may have consumed the quota. | Any new user input or out-of-band message immediately resets turn counters and grants a fresh quota. |
 | **How to run tests locally?** | Standard testing workflow. | Run `pytest -v` in the root of the repository. |
