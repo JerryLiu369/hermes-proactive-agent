@@ -1,7 +1,7 @@
-# Hermes Proactive Agent Governor (`proactive-agent`)
+# Hermes Proactive Agent (`proactive-agent`)
 
 [![Hermes Plugin](https://img.shields.io/badge/Hermes-Plugin-blue.svg)](https://hermes-agent.nousresearch.com)
-[![Version](https://img.shields.io/badge/version-0.1.5-green.svg)](https://github.com/JerryLiu369/hermes-proactive-agent)
+[![Version](https://img.shields.io/badge/version-0.2.0-green.svg)](https://github.com/JerryLiu369/hermes-proactive-agent)
 [![CI](https://github.com/JerryLiu369/hermes-proactive-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/JerryLiu369/hermes-proactive-agent/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python: 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
@@ -10,224 +10,155 @@
 
 ---
 
-**Hermes Proactive Agent Governor** (`proactive-agent`) is an execution governance plugin for [Hermes Agent](https://hermes-agent.nousresearch.com). It enforces proactive orchestrator discipline, eliminates blocking foreground commands, breaks infinite serial trial-and-error tool loops, and provides resilient self-healing when humans intervene mid-turn.
+`proactive-agent` is a [Hermes Agent](https://hermes-agent.nousresearch.com) plugin that turns the chat agent into a
+personal assistant that manages workers, instead of a worker that blocks the chat.
 
-## 🎯 Core Philosophy: "All Heavy Tasks Asynchronous"
+- The **main agent** (the "secretary") stays responsive, does the thinking, and owns the conversation.
+- **Subagents** (the "workers") do slow execution, with a complete brief and under supervision.
 
-Autonomous LLM agents easily fall into common traps:
-- **Foreground Freezes**: Executing long compilation, installation, or model scripts in the foreground, blocking chat UI and gateway connections.
-- **Serial Trial-and-Error Loops**: Burning tokens and context length in endless monolithic loops (e.g. 10+ consecutive `terminal` or `patch` calls) within a single turn.
-- **Quota Lockout on Steering**: Refusing to act after human intervention due to rigid, static execution limits.
+## Why 0.2
 
-`proactive-agent` transforms your agent into a disciplined, proactive orchestrator:
-1. **Reply first, then delegate**: Acknowledge requests immediately in turn 1 and release the conversation. Never lock chat behind blocking sequential tool calls.
-2. **Embrace background execution & delegation**: Long-running commands run detached in the background; complex multi-step goals fan out in parallel to subagents via `delegate_task`.
-3. **Quiet execution**: Keep conversations clean without spamming internal PIDs or raw terminal logs into user chat.
-4. **Verify before claiming done**: Check physical artifacts on disk before declaring completion.
+Field data from 0.1.x ([issue #1](https://github.com/JerryLiu369/hermes-proactive-agent/issues/1)) showed the
+governance was pointed the wrong way: the main agent was cut off after 5 tool rounds / 90 s and forced to delegate
+before it understood the problem, while subagents ran unsupervised for up to 250 rounds. Subagents start with no
+memory and cannot see the chat, so they got near-empty briefs, looped on the same failing command, scanned ports,
+overwrote each other's work and reported unverified success.
 
----
+0.2 reverses this: the secretary gets room to think and a gentle budget, every handoff carries what the secretary
+knows, and workers are held to tight, checkable rules.
 
-## 🏛️ System Architecture & Workflow
+## What it does
 
-```text
-+----------------------------------------------------------------------------------------------------+
-|                                    Hermes Proactive Agent Governor                                 |
-+----------------------------------------------------------------------------------------------------+
-|                                                                                                    |
-|   +-----------------------+                                                                        |
-|   | User Turn Initiation  |                                                                        |
-|   +-----------+-----------+                                                                        |
-|               |                                                                                    |
-|               v                                                                                    |
-|   +-----------------------+              Steer Message / Intervention                              |
-|   | LLM Reasoning & Step  |<....................................................................+   |
-|   +-----------+-----------+                                                                     :   |
-|               |                                                                                 :   |
-|       +-------+-------+                                                                         :   |
-|       |               |                                                                         :   |
-|       v (Terminal)    v (Tool Call)                                                             :   |
-|  +---------+    +----------------------------+                                                  :   |
-|  | Execute |    |   Circuit Breaker Check    |                                                  :   |
-|  | Command |    |   - Round Count > 8?       |                                                  :   |
-|  +----+----+    |   - Turn Elapsed > 120s?   |                                                  :   |
-|       |         +--------------+-------------+                                                  :   |
-|       |                        |                                                                :   |
-|   [ > 30s? ]            +------+------+                                                         :   |
-|    /     \              |             |                                                         :   |
-|  Yes      No          Pass          Trip (>8 rds / >120s)                                       :   |
-|   |        |            |             |                                                         :   |
-|   v        v            v             v                                                         :   |
-| [Detach] [Done]    [Execute]   [Freeze Heavy Tools]                                             :   |
-|   |                     |             |                                                         :   |
-|   |                     |             v                                                         :   |
-|   |                     |     [Force delegate_task                                              :   |
-|   |                     |      to Isolated Subagents]                                           :   |
-|   |                     |             |                                                         :   |
-|   +------------+--------+             |                                                         :   |
-|                |                      |                                                         :   |
-|                v                      v                                                         :   |
-|       +------------------------------------+                                                    :   |
-|       |  Atomic State Tracker & Governor   |                                                    :   |
-|       |  (Dynamic Prompt & Quota Watcher)  |<...................................................+   |
-|       +-----------------+------------------+                                                        |
-|                         |                                                                           |
-|                         v                                                                           |
-|       +------------------------------------+                                                        |
-|       |  Prompt Response & Fast Turn Hand  |                                                        |
-|       +------------------------------------+                                                        |
-+----------------------------------------------------------------------------------------------------+
-```
+### 1. Secretary turn budget (main agent)
 
----
+| Zone | Default trigger (configurable) | Effect |
+|---|---|---|
+| Green | below both limits | nothing |
+| Yellow | 60 s into the turn, or 30,000 chars of tool output | a one-time note on the next tool result: answer the user or delegate within 1-2 steps |
+| Red | 120 s, or 80,000 chars of tool output | editing and execution tools are refused; read-only tools and `delegate_task` stay available |
 
-## ⚡ Core Governance Capabilities
+- A user message mid-turn (steer) resets the budget.
+- Foreground commands longer than 30 s move to the background through Hermes' own yield path (the process keeps
+  running and notifies on completion). The result tells the agent the command has not failed and shows the output so far.
+- `process_manage(action='wait')`, unbounded `grep -r` / `rg` / `find` over home, `/` or `~/.hermes`, and port scans are refused.
 
-### 1. Positive Platform Allowlist (Zero Intrusion)
-- **The Principle**: By default, proactive governance (prompt discipline, circuit breaker, 30s terminal detach) is restricted strictly to interactive messaging platforms specified in `governed_platforms` (default: `["weixin"]`).
-- **Full Exemption**: Non-governed platforms such as CLI (`cli`), Desktop (`desktop`), Telegram, Slack, etc., are completely exempt (0 intrusion, 0 overhead). They run pure vanilla Hermes execution without any interruption or tool restrictions.
-- **Flexible Configuration**: Can be configured via plugin settings (`governed_platforms: ["weixin", "telegram"]`) or environment variable `PROACTIVE_GOVERNED_PLATFORMS="weixin,telegram"`. Setting to empty list disables governance everywhere.
+### 2. Handoff contract (`delegate_task`)
 
-### 2. Adaptive Terminal Detach (>30s) — Never Freeze Foreground Chat
-- **The Problem**: When an agent runs build scripts (`cargo build`, `npm install`), test suites, or training processes in the foreground, the terminal blocks. Chat freezes for minutes, risking gateway timeouts or connection drops.
-- **The Solution**:
-  - Non-invasively monitors `BaseEnvironment._wait_for_process` without breaking native interrupt wiring.
-  - If a foreground command exceeds `terminal_auto_detach_seconds` (default: `30s`), it triggers Hermes's native `yield_handler` to adopt the running process into `process_registry` with zero kill and `notify_on_complete=True`.
-  - Replaces tool result notes via `transform_tool_result` to instruct the LLM: *"Command running asynchronously in the background. Conclude your turn immediately and release the chat!"*
-  - **Subagent & Cron Autonomous Bypass**: Subagents (`task_id.startswith("sa-")`, `platform="subagent"`) and scheduled Cron tasks (`platform="cron"`, `task_id.startswith("cron:")`, `HERMES_CRON_SESSION`) skip the 30s detach timer completely, allowing background workers and scheduled batch jobs to execute long-running commands without unwanted detachment.
+- **Thin brief: returned once.** If `context` is under 120 characters, or the task touches risky ground (SSH, firewall,
+  deletes, VM lifecycle) without a rollback path, the call is refused once per turn with a checklist of what to add.
+  The second attempt always goes through.
+- **Briefing attached automatically.** Every accepted task gets:
+  - a summary of the conversation (intent, facts established, what was tried, what must not change), generated with
+    an auxiliary model call (`ctx.llm`, 12 s timeout) and falling back to a plain extract of recent messages and tool results;
+  - the user's `USER.md` and `MEMORY.md` (capped);
+  - working rules: stay in scope, fail fast, no unbounded scans, verify the real end state, report blockers;
+  - a default `output_schema` (`status`, `summary`, `evidence`, `blockers`, `files_changed`) if the task had none.
+- The summary runs on the `proactive_handoff_summary` auxiliary task, which follows your `compression` model unless you pin one.
 
-### 3. Turn Circuit Breaker (>8 rounds / >120s) — Break Monolithic Death Loops
-- **The Problem**: Single-threaded agents often get stuck in endless trial-and-error loops (10+ serial bash/patch tool calls in a single response turn), burning tokens, degrading context quality, and locking the UI.
-- **The Solution**:
-  - **Batch-Level Round Counting**: Parallel tool calls emitted within a single assistant step share one round counter (`pre_api_request`), preventing premature tripping.
-  - **Hard Circuit Breaker**: If serial rounds exceed `turn_max_tool_rounds` (default: `8`) or turn duration exceeds `turn_max_duration_seconds` (default: `120s`), heavy monolithic tools (`terminal`, `patch`, `write_file`, `execute_code`) are frozen.
-  - **Meta-Tool Whitelist**: Lightweight governance and meta-tools remain completely accessible:
-    - `delegate_task`: Fan out heavy sub-tasks to isolated subagents in parallel.
-    - `skill_manage` / `memory`: Perform atomic self-evolution and retain learnings without action distortion.
-    - `skill_view` / `skills_list`: Read existing guidelines and documentation.
-  - **Subagent & Cron Autonomous Bypass Guard**: Child subagents (`task_id.startswith("sa-")`) and unattended scheduled Cron tasks (`platform="cron"`, `task_id.startswith("cron:")`, `HERMES_CRON_SESSION`) bypass the breaker entirely to execute multi-step automated jobs cleanly without premature freezing.
+### 3. Worker guards (subagents of governed sessions)
 
-### 4. Human Intervention & Steer Self-Healing — Dynamic Quota Reset
-- **The Problem**: Static quota systems freeze agents permanently when users jump in mid-flight to correct direction.
-- **The Solution**:
-  - Monitors `display_kind == "steer"` and `[OUT-OF-BAND USER MESSAGE]` markers in `pre_api_request` and `pre_llm_call`.
-  - The moment a human intervenes (either in a new turn or out-of-band mid-turn), round counters and elapsed timers are instantly reset to zero. The agent is granted a fresh quota to execute the user's updated directive.
-  - Automatically prunes stale turn states to guarantee zero memory leaks across sessions.
+- **Fail fast.** The same call with the same result 3 times, or the same failure 3 times, stops the worker: its next
+  tool calls are refused and it is told to report status `blocked` with the exact blocker.
+- **Step budget.** 40 tool rounds by default, with a wrap-up warning at 80%.
+- **Risky commands** (SSH/firewall changes, HTTP DELETE against APIs, `rm -rf` on system or home paths, cloud
+  terminate/delete, reboot, ...) are refused unless the handoff included a rollback path.
+- **No blind overwrites.** A worker cannot `write_file` / `patch` a file that someone else changed after the worker
+  started, until it re-reads it.
 
-### 5. Dynamic Prompt Discipline & Autonomous Zero-Injection
-- Dynamically renders and registers prompt context (`proactive-agent.discipline`) matching the active configuration into the main agent's system prompt.
-- **Subagent & Cron Zero-Injection**: When running in a subagent or scheduled cron session (`platform in ("subagent", "cron")`, `session_id.startswith("cron_")`, `HERMES_CRON_SESSION`), prompt generation returns an empty string, ensuring background workers and cron jobs have zero prompt pollution and zero token overhead.
+### 4. Result checks, pivots and progress
 
-```text
-Role: Main dialogue orchestrator. Stay responsive; heavy execution never blocks the chat turn.
+- When a worker returns, the secretary's next turn gets a note: the evidence the worker reported, or a warning that it
+  claimed success without evidence, or that the plugin stopped it.
+- Each turn the secretary sees which workers are still running.
+- If a new task targets the same paths, hosts or domains as a running worker, the secretary is asked once to stop the
+  old worker (`delegate_task(action='stop')`) first.
+- While workers run, a progress line is posted to the chat every 5 minutes, and a short alert when a worker gets stuck
+  (gateway platforms; uses `ctx.post_message`, in the user's language).
 
-1. Triage & Dispatch-Then-Yield
-- LIGHT (read files, status checks, quick probes): finish in <=8 tool rounds, then answer.
-- HEAVY (multi-step edits, refactors, builds, test suites, training, commands likely >30s):
-  1. Scope minimally and aim to dispatch as early as possible, but MUST dispatch before tool round 8 or 120s:
-     - Complex reasoning or code tasks: fan out via delegate_task.
-     - Long shell commands: run terminal(background=True, notify=True).
-  2. Release turn immediately: output a concise one-line status to the user and end your turn. NEVER run sleep or poll.
+Only platforms in `governed_platforms` are affected (default `["weixin"]`). Other platforms, cron runs, and subagents
+spawned by ungoverned sessions are untouched.
 
-2. Hardware Governance Limits (Main Thread Only)
-- Foreground command >30s: auto-detached to background with completion notification. Do not wait; inform the user and end your turn.
-- At tool round 9 (round >=9) or >120s turn time: terminal, patch, write_file and execution tools are frozen. Only delegate_task, process_manage (kill/list; wait is blocked), memory, skill_manage, skill_view, skills_list remain. Do not retry; delegate remaining work or deliver current state.
+## Configuration
 
-3. Event Wakeup & Physical Verification
-- Asynchronous tasks wake the conversation automatically upon completion.
-- Verify physical on-disk artifacts and real exit codes before answering. Deliver verified results directly — never make the user ask "is it done?".
-- Never expose internal PIDs, session_ids, or raw commands. Keep output clean.
-```
+All keys live under `plugins.entries.proactive-agent.settings` in `~/.hermes/config.yaml` (Hermes also reads the older
+`config:` subtree; keys placed directly under `proactive-agent:` are ignored by Hermes). Each key can also be overridden
+with an environment variable `PROACTIVE_<KEY>` (upper case).
 
----
+| Key | Default | Meaning |
+|---|---|---|
+| `governed_platforms` | `["weixin"]` | Platforms whose main agent (and its subagents) are governed |
+| `terminal_auto_detach_seconds` | `30` | Foreground commands longer than this move to the background (0 disables) |
+| `turn_soft_seconds` | `60` | Yellow zone start |
+| `turn_hard_seconds` | `120` | Red zone start |
+| `turn_soft_output_chars` | `30000` | Yellow zone also starts after this much tool output |
+| `turn_hard_output_chars` | `80000` | Red zone also starts after this much tool output |
+| `handoff_min_context_chars` | `120` | Shorter `context` is returned once |
+| `handoff_summary_enabled` | `true` | Use an auxiliary model for the chat summary |
+| `handoff_summary_timeout_seconds` | `12` | Keep well under `plugins.hook_callback_timeout` (30 s) |
+| `handoff_memory_max_chars` | `4000` | Memory attached per handoff (0 disables) |
+| `worker_max_tool_rounds` | `40` | Worker step budget |
+| `worker_repeat_limit` | `3` | Repeats before a worker is stopped |
+| `worker_guard_risky_commands` | `true` | Refuse risky worker commands without a rollback path |
+| `worker_write_guard` | `true` | Refuse blind overwrites of files changed by others |
+| `verify_child_results` | `true` | Tell the secretary what to verify when a worker returns |
+| `progress_push_enabled` | `true` | Post progress lines and stuck alerts to the chat |
+| `progress_interval_seconds` | `300` | Seconds between progress lines |
 
-## ⚙️ Configuration Reference
-
-Parameters can be configured in your Hermes profile config (`config.yaml`), plugin settings, or environment variables:
-
-| Config Key | Env Var | Type | Default | Description |
-|---|---|---|---|---|
-| `governed_platforms` | `PROACTIVE_GOVERNED_PLATFORMS` | `list` | `["weixin"]` | Platforms subject to proactive agent governance (circuit breaker, prompt discipline, 30s terminal detach). Platforms not listed (e.g. cli, desktop) are completely exempt. |
-| `terminal_auto_detach_seconds` | `PROACTIVE_TERMINAL_AUTO_DETACH_SECONDS` | `int` | `30` | Max seconds a foreground terminal command can run before being detached into the background. |
-| `turn_max_tool_rounds` | `PROACTIVE_TURN_MAX_TOOL_ROUNDS` | `int` | `8` | Max serial tool rounds in the main agent turn before circuit breaker restricts execution. |
-| `turn_max_duration_seconds` | `PROACTIVE_TURN_MAX_DURATION_SECONDS` | `int` | `120` | Max cumulative tool execution duration (seconds) in the main agent turn before circuit breaker trips. |
-
-### Example `config.yaml`
 ```yaml
 plugins:
   entries:
     proactive-agent:
-      enabled: true
-      config:
+      settings:
         governed_platforms: ["weixin"]
-        terminal_auto_detach_seconds: 30
-        turn_max_tool_rounds: 8
-        turn_max_duration_seconds: 120
+        turn_soft_seconds: 60
+        turn_hard_seconds: 120
+        worker_max_tool_rounds: 40
 ```
 
-### ⚡ Subagent Configuration (Optional, Recommended for Production)
+Recommended delegation settings: keep `delegation.max_iterations` above `worker_max_tool_rounds` so the plugin's
+budget (which asks for a report) fires before Hermes' hard cap.
 
-The plugin works **out of the box (Zero-Config)**. When `delegation` is not configured, Hermes automatically causes subagents to inherit the parent agent's model, provider, and API credentials.
+### Upgrading from 0.1.x
 
-If your primary model is a premium tier (e.g. Claude Opus or GPT-4o) or subject to strict concurrency rate limits, we strongly recommend pinning delegation in `~/.hermes/config.yaml` to a fast, cost-effective, high-concurrency model (such as Gemini Flash or DeepSeek Flash) for optimal fan-out performance and cost efficiency:
+`turn_max_tool_rounds` and `turn_max_duration_seconds` are gone; the round-count circuit breaker was the main cause of
+premature, context-free delegation. Use `turn_soft_seconds` / `turn_hard_seconds` instead.
 
-```yaml
-delegation:
-  # Optional: pin dedicated provider and model for subagents (defaults to parent model)
-  provider: custom   # e.g., custom, openrouter, deepseek, etc.
-  model: deepseek-flash
-  max_concurrent_children: 5  # Max parallel child agents (default: 5)
-```
+## Install
 
----
-
-## 🚀 Installation & Usage
-
-### Install via Hermes CLI
 ```bash
-# Install plugin directly from GitHub
 hermes plugins install github:JerryLiu369/hermes-proactive-agent
-
-# Enable plugin
-hermes plugins enable proactive-agent
-
-# Verify plugin status
-hermes plugins list
-```
-
-### Manual Installation
-```bash
-git clone https://github.com/JerryLiu369/hermes-proactive-agent.git ~/.hermes/plugins/proactive-agent
 hermes plugins enable proactive-agent
 ```
 
-### Uninstall
+Manual install: clone into `~/.hermes/plugins/proactive-agent` and run `hermes plugins enable proactive-agent`.
+
+## Development
+
 ```bash
-hermes plugins disable proactive-agent
-hermes plugins uninstall proactive-agent
+pip install pytest pyyaml
+pytest -q
 ```
 
----
+The repo root is the plugin package; tests load it as a package (see `tests/conftest.py`).
 
-## 🔍 Troubleshooting & FAQ
+| Module | Role |
+|---|---|
+| `__init__.py` | hook wiring |
+| `config.py` | settings |
+| `context.py` | who is calling: governed main agent, child, or cron |
+| `secretary.py` | turn budget, background detach, conversation snapshot |
+| `handoff.py` | `delegate_task` gate and briefing |
+| `workers.py` | worker registry, guards, result checks, progress |
+| `guards.py` | command classification and text helpers |
+| `prompt.py` | system prompt section |
 
-| Question / Symptom | Root Cause | Recommended Action |
-|---|---|---|
-| **Foreground command detached after 30s** | Adaptive timer reached 30s threshold. | The command is running safely in background. Let the agent wrap up its turn; completion notification will arrive automatically. |
-| **Circuit breaker triggered (`[Circuit Breaker] Quota reached`)** | The agent executed >8 serial tool rounds or took >120s in a single turn. | The agent is prompted to delegate remaining work via `delegate_task` or deliver its current findings. |
-| **Do subagents inherit circuit breaker or terminal detach limits?** | Subagents are scoped to subtasks. | No. Subagents (`task_id.startswith("sa-")`, `platform="subagent"`) have full bypass (no 30s detach timer, no circuit breaker) and zero prompt injection overhead. |
-| **Does mid-turn user steering get blocked?** | Prior turns may have consumed the quota. | Any new user input or out-of-band message immediately resets turn counters and grants a fresh quota. |
-| **How to run tests locally?** | Standard testing workflow. | Run `pytest -v` in the root of the repository. |
+## Compatibility
 
----
+- Hermes Agent with `pre_tool_call` arg rewriting, `subagent_start` / `subagent_stop`, `ctx.llm` and `ctx.post_message`
+  (tested against Hermes v0.22.7). Missing optional features degrade quietly: no summary model falls back to a plain
+  extract; no `post_message` means no progress lines.
+- Python 3.10+.
 
-## 🛠️ Environment Compatibility
+## License
 
-- **Hermes Agent**: v0.8.0 and above
-- **Python**: 3.10, 3.11, 3.12+
-- **OS**: Linux, macOS, WSL
-
----
-
-## 📄 License
-
-This project is licensed under the [MIT License](LICENSE).
+[MIT](LICENSE)

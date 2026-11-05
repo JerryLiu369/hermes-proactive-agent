@@ -1,603 +1,511 @@
-"""
-Tests for proactive-agent governor plugin (v0.1.5).
-Validates positive platform allowlist (governed_platforms: default ["weixin"]),
-autonomous subagent and cron bypass, 30s terminal detach, and circuit breaker.
-"""
+"""Behaviour tests for proactive-agent v0.2 (secretary governance, handoff contract, worker guards)."""
 
 import json
 import os
 import sys
 import threading
-import yaml
-import pytest
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-# Ensure repo root is in python path
-REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if REPO_ROOT not in sys.path:
-    sys.path.insert(0, REPO_ROOT)
-
-import __init__ as plugin
-
-
-class MockPluginContext:
-    def __init__(self, config=None):
-        self.config = config or {}
-        self.hooks = {}
-        self.prompt_sections = {}
-
-    def get_config(self, key, default=None):
-        return self.config.get(key, default)
-
-    def register_hook(self, hook_name, fn):
-        self.hooks[hook_name] = fn
-
-    def register_system_prompt_section(self, name, renderer, position="after_memory", max_chars=2000):
-        self.prompt_sections[name] = {
-            "renderer": renderer,
-            "position": position,
-            "max_chars": max_chars,
-        }
-
-
-def test_manifest_validity():
-    manifest_path = os.path.join(REPO_ROOT, "plugin.yaml")
-    assert os.path.exists(manifest_path)
-    with open(manifest_path, "r", encoding="utf-8") as f:
-        data = yaml.safe_load(f)
-
-    assert data["name"] == "proactive-agent"
-    assert data["version"] == "0.1.6"
-    assert "description" in data and len(data["description"]) > 10
-    assert "hooks" in data
-    assert "pre_tool_call" in data["hooks"]
-    assert "config_schema" in data
-    assert data["config_schema"]["governed_platforms"]["type"] == "list"
-    assert data["config_schema"]["governed_platforms"]["default"] == ["weixin"]
-    assert "description" in data["config_schema"]["governed_platforms"]
-    assert data["config_schema"]["terminal_auto_detach_seconds"]["default"] == 30
-    assert data["config_schema"]["turn_max_tool_rounds"]["default"] == 5
-    assert data["config_schema"]["turn_max_duration_seconds"]["default"] == 90.0
-
-
-def test_plugin_registration():
-    mock_ctx = MockPluginContext()
-    plugin.register(mock_ctx)
-
-    expected_hooks = [
-        "pre_tool_call",
-        "post_tool_call",
-        "transform_tool_result",
-        "pre_llm_call",
-        "pre_api_request",
-        "agent_loop_stopped",
-        "on_session_reset",
-        "on_session_end",
-    ]
-    for hook in expected_hooks:
-        assert hook in mock_ctx.hooks, f"Hook {hook} was not registered"
-
-    assert "proactive-agent.discipline" in mock_ctx.prompt_sections
-
-
-def test_system_prompt_rendering_allowlist():
-    """Verify system prompt is only rendered for governed platforms (weixin by default)."""
-    mock_ctx = MockPluginContext()
-    plugin.register(mock_ctx)
-
-    renderer = mock_ctx.prompt_sections["proactive-agent.discipline"]["renderer"]
-
-    # Governed platform ("weixin") gets prompt discipline
-    content = renderer({"platform": "weixin"})
-    assert "Role: Main dialogue orchestrator" in content
-    assert "finish in <=5 tool rounds" in content
-    assert ">30s" in content
-    assert ">90s" in content
-    assert "round 6" in content
-    assert "delegate_task" in content
-    assert "process_manage (kill/list; wait is blocked)" in content
-    assert "Scope minimally and aim to dispatch as early as possible" in content
-    assert "before tool round 5 or 90s" in content
-
-    # Non-governed platforms are completely exempt (0 intrusion)
-    assert renderer({"platform": "cli"}) == ""
-    assert renderer({"platform": "desktop"}) == ""
-    assert renderer({"platform": "telegram"}) == ""
-    assert renderer({"platform": "slack"}) == ""
-    assert renderer(None) == ""
-    assert renderer({}) == ""
-
-    # Subagent and cron are completely exempt
-    assert renderer({"platform": "subagent"}) == ""
-    assert renderer({"platform": "cron"}) == ""
-    assert renderer({"platform": "weixin", "session_id": "cron_12345"}) == ""
-
-
-def test_circuit_breaker_enforcement_weixin():
-    """Verify circuit breaker trips on governed platform (weixin) at round 6 / 90s."""
-    turn_id = "test_turn_123"
-    session_id = "test_sess_123"
-    platform = "weixin"
-
-    plugin._on_session_clean(session_id=session_id)
-    plugin._on_pre_llm_call(turn_id=turn_id, session_id=session_id, task_id="main", platform=platform)
-
-    # Round 1..5: heavy tool allowed
-    for r in range(1, 6):
-        plugin._on_pre_api_request(turn_id=turn_id, session_id=session_id, task_id="main", api_request_id=f"req_{r}", platform=platform)
-        res = plugin._pre_tool_call("terminal", {"command": "ls"}, turn_id=turn_id, session_id=session_id, task_id="main")
-        assert res is None, f"Round {r} should not trip the circuit breaker"
-
-    # Round 6: heavy tool blocked
-    plugin._on_pre_api_request(turn_id=turn_id, session_id=session_id, task_id="main", api_request_id="req_6", platform=platform)
-    res = plugin._pre_tool_call("terminal", {"command": "ls"}, turn_id=turn_id, session_id=session_id, task_id="main")
-    assert res is not None
-    assert res.get("action") == "block"
-    assert "[Circuit Breaker]" in res.get("reason", "")
-    assert ">90s" in res.get("reason", "")
-    assert ">5 rounds" in res.get("reason", "")
-
-    # Allowed tools should pass even when tripped
-    for allowed_tool in ["delegate_task", "process_manage", "read_file", "search_files", "session_search", "skill_manage", "memory", "skill_view", "skills_list"]:
-        res = plugin._pre_tool_call(allowed_tool, {}, turn_id=turn_id, session_id=session_id, task_id="main")
-        assert res is None, f"Allowed tool {allowed_tool} should pass when circuit breaker is tripped"
-
-    # process_manage(wait) must be blocked on main thread even if process_manage is in allowed tools
-    res = plugin._pre_tool_call("process_manage", {"action": "wait"}, turn_id=turn_id, session_id=session_id, task_id="main")
-    assert res is not None
-    assert res.get("action") == "block"
-    assert "[Proactive Agent Policy]: process_manage(action='wait') is forbidden on main thread to prevent blocking." in res.get("reason", "")
-
-    # Subagent bypass even on weixin
-    res = plugin._pre_tool_call("terminal", {"command": "ls"}, turn_id=turn_id, session_id=session_id, task_id="sa-subtask-1")
-    assert res is None, "Subagents starting with 'sa-' must bypass the circuit breaker"
-    # Subagents can even call process_manage wait
-    res = plugin._pre_tool_call("process_manage", {"action": "wait"}, turn_id=turn_id, session_id=session_id, task_id="sa-subtask-1")
-    assert res is None, "Subagents must bypass process_manage wait restriction"
-    plugin._on_session_clean(session_id=session_id)
-
-
-def test_circuit_breaker_exempt_for_cli_and_desktop():
-    """Verify non-governed platforms (cli, desktop) are completely exempt from circuit breaker."""
-    for exempt_platform in ["cli", "desktop"]:
-        turn_id = f"test_turn_{exempt_platform}"
-        session_id = f"test_sess_{exempt_platform}"
-
-        plugin._on_session_clean(session_id=session_id)
-        plugin._on_pre_llm_call(turn_id=turn_id, session_id=session_id, task_id="main", platform=exempt_platform)
-
-        # Run 10 rounds: must never trip circuit breaker on cli / desktop
-        for r in range(1, 11):
-            plugin._on_pre_api_request(turn_id=turn_id, session_id=session_id, task_id="main", api_request_id=f"req_{r}", platform=exempt_platform)
-            res = plugin._pre_tool_call("terminal", {"command": "cargo build"}, turn_id=turn_id, session_id=session_id, task_id="main")
-            assert res is None, f"Platform {exempt_platform} at round {r} must NOT be blocked by circuit breaker"
-
-        plugin._on_session_clean(session_id=session_id)
-
-
-def test_process_manage_wait_forbidden_on_main_thread():
-    """Verify process_manage(action='wait') is blocked on main thread for governed platforms,
-    while allowed for subagents, exempt platforms, and other actions like kill/list."""
-    turn_id = "test_pm_turn"
-    session_id = "test_pm_sess"
-    platform = "weixin"
-
-    plugin._on_session_clean(session_id=session_id)
-    plugin._on_pre_llm_call(turn_id=turn_id, session_id=session_id, task_id="main", platform=platform)
-
-    # 1. Main thread on weixin: action='wait' is blocked on round 1
-    res = plugin._pre_tool_call("process_manage", {"action": "wait"}, turn_id=turn_id, session_id=session_id, task_id="main")
-    assert res is not None
-    assert res.get("action") == "block"
-    assert "[Proactive Agent Policy]: process_manage(action='wait') is forbidden on main thread to prevent blocking." in res.get("message", "")
-
-    # 2. Main thread on weixin: other actions (e.g. kill, list) are allowed
-    res_kill = plugin._pre_tool_call("process_manage", {"action": "kill"}, turn_id=turn_id, session_id=session_id, task_id="main")
-    assert res_kill is None
-    res_list = plugin._pre_tool_call("process_manage", {"action": "list"}, turn_id=turn_id, session_id=session_id, task_id="main")
-    assert res_list is None
-
-    # 3. Subagent on weixin: action='wait' is allowed (subagent bypass)
-    res_sub = plugin._pre_tool_call("process_manage", {"action": "wait"}, turn_id=turn_id, session_id=session_id, task_id="sa-subtask-99")
-    assert res_sub is None
-
-    # 4. Non-governed platform (cli): action='wait' is allowed
-    plugin._on_session_clean(session_id=session_id)
-    plugin._on_pre_llm_call(turn_id=turn_id, session_id=session_id, task_id="main", platform="cli")
-    res_cli = plugin._pre_tool_call("process_manage", {"action": "wait"}, turn_id=turn_id, session_id=session_id, task_id="main")
-    assert res_cli is None
-
-    plugin._on_session_clean(session_id=session_id)
-
-
-def test_adaptive_wait_platform_governance():
-    """Verify 30s auto-detach timer is applied ONLY on governed platforms (weixin)."""
-    class MockBaseEnv:
-        def _wait_for_process(self, proc, timeout=120, **kwargs):
-            return {"returncode": 0, "stdout": "done"}
-
-    mock_base_mod = MagicMock()
-    mock_base_mod.BaseEnvironment = MockBaseEnv
-    mock_interrupt_mod = MagicMock()
-
-    with patch.dict(sys.modules, {
-        "tools": MagicMock(),
-        "tools.environments": MagicMock(),
-        "tools.environments.base": mock_base_mod,
-        "tools.interrupt": mock_interrupt_mod,
-    }):
-        plugin._patched = False
-        plugin._install_adaptive_terminal_patch()
-
-        # 1. On "cli" -> timer NOT scheduled (exempt)
-        plugin._on_session_clean()
-        plugin._record_platform_context("cli", tid=1001)
-        try:
-            with patch("threading.Timer") as mock_timer:
-                env = MockBaseEnv()
-                proc = MagicMock()
-                res = env._wait_for_process(proc, timeout=120, watch_interrupt_tid=1001, yield_handler=MagicMock())
-                assert res == {"returncode": 0, "stdout": "done"}
-                mock_timer.assert_not_called()
-        finally:
-            plugin._on_session_clean()
-
-        # 2. On "weixin" -> timer IS scheduled
-        plugin._record_platform_context("weixin", tid=1002)
-        try:
-            with patch("threading.Timer") as mock_timer:
-                env = MockBaseEnv()
-                proc = MagicMock()
-                res = env._wait_for_process(proc, timeout=120, watch_interrupt_tid=1002, yield_handler=MagicMock())
-                assert res == {"returncode": 0, "stdout": "done"}
-                mock_timer.assert_called_once()
-                # Default timeout: 30s
-                assert mock_timer.call_args[0][0] == 30.0
-        finally:
-            plugin._on_session_clean()
-
-
-def test_adaptive_wait_subagent_bypass():
-    """Verify subagent completely bypasses 30s auto-detach timer even on weixin platform."""
-    class MockBaseEnv:
-        def _wait_for_process(self, proc, timeout=120, **kwargs):
-            return {"returncode": 0, "stdout": "done"}
-
-    mock_base_mod = MagicMock()
-    mock_base_mod.BaseEnvironment = MockBaseEnv
-    mock_interrupt_mod = MagicMock()
-
-    with patch.dict(sys.modules, {
-        "tools": MagicMock(),
-        "tools.environments": MagicMock(),
-        "tools.environments.base": mock_base_mod,
-        "tools.interrupt": mock_interrupt_mod,
-    }):
-        plugin._patched = False
-        plugin._install_adaptive_terminal_patch()
-
-        plugin._on_session_clean()
-        plugin._record_platform_context("weixin", tid=12345)
-        plugin._current_task_id.set("sa-child-42")
-        try:
-            with patch("threading.Timer") as mock_timer:
-                env = MockBaseEnv()
-                proc = MagicMock()
-                res = env._wait_for_process(
-                    proc,
-                    timeout=120,
-                    watch_interrupt_tid=12345,
-                    yield_handler=MagicMock(),
-                )
-                assert res == {"returncode": 0, "stdout": "done"}
-                mock_timer.assert_not_called()
-        finally:
-            plugin._on_session_clean()
-
-
-def test_transform_tool_result_quiet():
-    """Verify transform_tool_result transforms for governed platform and stays quiet for subagents/exempt platforms."""
-    plugin._on_session_clean()
-    tid = threading.get_ident()
-    raw_result = json.dumps({"status": "yielded_to_background", "session_id": "test_sess_abc"})
-
-    # 1. On weixin (governed) -> transformed
-    plugin._record_platform_context("weixin", tid=tid)
-    with plugin._timeout_yield_lock:
-        plugin._timeout_yield_tids.add(tid)
-    transformed = plugin._transform_tool_result("terminal", {}, raw_result, task_id="main", platform="weixin")
-    assert transformed is not None
-    data = json.loads(transformed)
-    note = data.get("note", "")
-    assert "(mention the session_id)" not in note
-    assert "write a concise text response informing the user that the command is running in the background, and release the conversation!" in note
-
-    # 2. Subagent on weixin -> returns None
-    with plugin._timeout_yield_lock:
-        plugin._timeout_yield_tids.add(tid)
-    subagent_transformed = plugin._transform_tool_result("terminal", {}, raw_result, task_id="sa-child-99", platform="weixin")
-    assert subagent_transformed is None
-
-    # 3. CLI (exempt platform) -> returns None
-    plugin._on_session_clean()
-    plugin._record_platform_context("cli", tid=tid)
-    with plugin._timeout_yield_lock:
-        plugin._timeout_yield_tids.add(tid)
-    cli_transformed = plugin._transform_tool_result("terminal", {}, raw_result, task_id="main", platform="cli")
-    assert cli_transformed is None
-    plugin._on_session_clean()
-
-
-def test_human_intervention_steer_reset():
-    """Verify steer message resets turn quota on weixin platform."""
-    turn_id = "test_turn_steer"
-    session_id = "test_sess_steer"
-    platform = "weixin"
-
-    plugin._on_session_clean(session_id=session_id)
-    plugin._on_pre_llm_call(turn_id=turn_id, session_id=session_id, task_id="main", platform=platform)
-
-    # Advance to round 6 to trip breaker
-    for r in range(1, 7):
-        plugin._on_pre_api_request(turn_id=turn_id, session_id=session_id, task_id="main", api_request_id=f"r_{r}", platform=platform)
-
-    # Check tripped
-    res = plugin._pre_tool_call("terminal", {"command": "ls"}, turn_id=turn_id, session_id=session_id, task_id="main")
-    assert res is not None
-
-    # User sends steer message mid-turn!
-    messages = [
-        {"role": "user", "content": "Initial task"},
-        {"role": "assistant", "content": "Working on it"},
-        {"role": "user", "content": "[OUT-OF-BAND USER MESSAGE] Please cancel that and do this [/OUT-OF-BAND USER MESSAGE]"}
-    ]
-    plugin._on_pre_api_request(turn_id=turn_id, session_id=session_id, task_id="main", api_request_id="r_steer", request_messages=messages, platform=platform)
-
-    # Circuit breaker should now be reset!
-    res = plugin._pre_tool_call("terminal", {"command": "ls"}, turn_id=turn_id, session_id=session_id, task_id="main")
-    assert res is None, "Human intervention must reset turn quota"
-    plugin._on_session_clean(session_id=session_id)
-
-
-def test_cron_zero_prompt_injection():
-    """Verify cron sessions receive zero prompt injection (completely empty discipline section)."""
-    mock_ctx = MockPluginContext()
-    plugin.register(mock_ctx)
-
-    renderer = mock_ctx.prompt_sections["proactive-agent.discipline"]["renderer"]
-
-    # Cron sessions by platform
-    assert renderer({"platform": "cron"}) == ""
-
-    # Cron sessions by session_id prefix / pattern
-    assert renderer({"platform": "weixin", "session_id": "cron_138c1eb86f83_20261104_093000"}) == ""
-    assert renderer({"platform": "weixin", "session_id": "cron:138c1eb86f83:79ea4521634d4b85a11f3a1debdb45c5"}) == ""
-    assert renderer({"platform": "weixin", "session_id": "local-abc:cron:138c1eb86f83:79ea4521"}) == ""
-
-    # Cron context via ContextVar
-    plugin._record_cron_context(True)
+import pytest
+import yaml
+
+from conftest import REPO_ROOT
+
+GOOD_CONTEXT = (
+    "Known: https://app.example.com/ping returns 522 since the deploy at 10:00; DNS record is proxied. "
+    "Target: /srv/app/wrangler.toml and the worker route for app.example.com. Do not touch other routes. "
+    "Stop after one redeploy if 522 persists. Evidence: curl -sI status line of the public URL."
+)
+CHILD = dict(task_id="sa-0-abc", session_id="child-1", turn_id="ct")
+
+
+def start_turn(plugin, session="s1", turn="t1", platform="weixin", history=None, user="please fix the site"):
+    return plugin._pre_llm_call(session_id=session, turn_id=turn, platform=platform,
+                                conversation_history=history or [], user_message=user)
+
+
+def main_tool(plugin, name, args=None, session="s1", turn="t1"):
+    return plugin._pre_tool_call(name, args or {}, session_id=session, turn_id=turn, task_id="main")
+
+
+def main_post(plugin, name, args, result, session="s1", turn="t1"):
+    plugin._post_tool_call(name, args, result, session_id=session, turn_id=turn, task_id="main")
+
+
+def spawn_worker(plugin, goal="Fix the 522 on app.example.com", context=GOOD_CONTEXT, sub_id="sa-0-abc",
+                 child_session="child-1"):
+    res = main_tool(plugin, "delegate_task", {"tasks": [{"goal": goal, "context": context}]})
+    assert res and res["action"] == "modify", res
+    plugin._subagent_start(parent_session_id="s1", child_session_id=child_session, child_subagent_id=sub_id,
+                           child_goal=goal)
+    worker = plugin.workers.lookup(task_id=sub_id)
+    assert worker is not None
+    return worker
+
+
+def w_tool(plugin, name, args, api="r1"):
+    return plugin._pre_tool_call(name, args, api_request_id=api, **CHILD)
+
+
+def w_post(plugin, name, args, result, api="r1"):
+    plugin._post_tool_call(name, args, result, api_request_id=api, **CHILD)
+
+
+# ---------------------------------------------------------------- manifest & registration
+
+def test_manifest_matches_code(plugin):
+    with open(os.path.join(REPO_ROOT, "plugin.yaml"), encoding="utf-8") as f:
+        manifest = yaml.safe_load(f)
+    assert manifest["version"] == plugin.__version__ == "0.2.0"
+    for hook in ("pre_tool_call", "post_tool_call", "transform_tool_result", "pre_llm_call", "pre_api_request",
+                 "subagent_start", "subagent_stop", "agent_loop_stopped", "on_session_end", "on_session_reset",
+                 "on_session_finalize"):
+        assert hook in manifest["hooks"]
+    schema = manifest["config_schema"]
+    for key, default in plugin.config.DEFAULTS.items():
+        assert key in schema, key
+        assert schema[key]["default"] == default, key
+    assert schema["turn_soft_seconds"]["default"] == 60.0
+    assert schema["turn_hard_seconds"]["default"] == 120.0
+
+
+def test_register_wires_hooks_prompt_and_aux_task(plugin, make_ctx):
+    ctx = make_ctx()
+    assert set(ctx.hooks) >= {"pre_tool_call", "subagent_start", "subagent_stop", "pre_llm_call"}
+    assert "proactive-agent.discipline" in ctx.prompt_sections
+    assert plugin.handoff.AUX_TASK in ctx.aux_tasks
+
+
+def test_prompt_only_for_governed_main(plugin, make_ctx):
+    ctx = make_ctx()
+    render = ctx.prompt_sections["proactive-agent.discipline"]["renderer"]
+    text = render({"platform": "weixin"})
+    assert "~60s" in text and "At 120s" in text and "30s" in text
+    for info in ({"platform": "cli"}, {"platform": "subagent"}, {"platform": "cron"},
+                 {"platform": "weixin", "session_id": "cron_1"}, None, {}):
+        assert render(info) == ""
+
+
+# ---------------------------------------------------------------- secretary turn budget
+
+def test_turn_budget_yellow_then_red(plugin, make_ctx):
+    make_ctx()
+    start_turn(plugin)
+    assert main_tool(plugin, "terminal", {"command": "ls"}) is None
+
+    plugin.secretary._turns["s1"]["start"] -= 65
+    assert main_tool(plugin, "terminal", {"command": "ls"}) is None, "yellow must not block"
+    note = plugin._transform_tool_result("terminal", {}, '{"output": "ok"}', session_id="s1", task_id="main")
+    assert "Within the next 1-2 steps" in json.loads(note)["proactive_agent_note"]
+    assert plugin._transform_tool_result("terminal", {}, '{"output": "ok"}', session_id="s1", task_id="main") is None
+
+    plugin.secretary._turns["s1"]["start"] -= 60
+    blocked = main_tool(plugin, "terminal", {"command": "ls"})
+    assert blocked["action"] == "block" and ">120s" in blocked["message"]
+    for allowed in ("read_file", "delegate_task", "memory", "process_manage"):
+        args = {"tasks": [{"goal": "g", "context": GOOD_CONTEXT}]} if allowed == "delegate_task" else {}
+        res = main_tool(plugin, allowed, args)
+        assert res is None or res.get("action") != "block", allowed
+
+
+def test_turn_budget_counts_tool_output(plugin, make_ctx):
+    make_ctx(config={"turn_soft_output_chars": 100, "turn_hard_output_chars": 200})
+    start_turn(plugin)
+    main_post(plugin, "read_file", {"path": "/x"}, "a" * 150)
+    assert plugin.secretary.zone("s1") == "yellow"
+    main_post(plugin, "read_file", {"path": "/x"}, "a" * 100)
+    assert main_tool(plugin, "patch", {"path": "/x"})["action"] == "block"
+
+
+def test_new_turn_and_steer_reset_budget(plugin, make_ctx):
+    make_ctx()
+    start_turn(plugin)
+    plugin.secretary._turns["s1"]["start"] -= 200
+    assert main_tool(plugin, "terminal", {"command": "ls"})["action"] == "block"
+    steer = [{"role": "user", "content": "[OUT-OF-BAND USER MESSAGE] stop, do X instead"}]
+    plugin._pre_api_request(session_id="s1", turn_id="t1", request_messages=steer)
+    assert main_tool(plugin, "terminal", {"command": "ls"}) is None
+    plugin.secretary._turns["s1"]["start"] -= 200
+    start_turn(plugin, turn="t2")
+    assert main_tool(plugin, "terminal", {"command": "ls"}, turn="t2") is None
+
+
+def test_ungoverned_platforms_are_untouched(plugin, make_ctx):
+    make_ctx()
+    for platform in ("cli", "desktop", "telegram"):
+        session = f"s-{platform}"
+        start_turn(plugin, session=session, platform=platform)
+        assert main_tool(plugin, "process_manage", {"action": "wait"}, session=session) is None
+        assert main_tool(plugin, "terminal", {"command": "grep -rn x ~/.hermes"}, session=session) is None
+        assert main_tool(plugin, "delegate_task", {"tasks": [{"goal": "g"}]}, session=session) is None
+
+
+def test_cron_sessions_are_untouched(plugin, make_ctx):
+    make_ctx()
+    start_turn(plugin, session="cron_abc_1")
+    assert main_tool(plugin, "process_manage", {"action": "wait"}, session="cron_abc_1") is None
+
+
+def test_governed_platforms_from_env(plugin, make_ctx):
+    make_ctx()
+    with patch.dict(os.environ, {"PROACTIVE_GOVERNED_PLATFORMS": "telegram,slack"}):
+        start_turn(plugin, session="tg", platform="telegram")
+        assert main_tool(plugin, "process_manage", {"action": "wait"}, session="tg")["action"] == "block"
+        start_turn(plugin, session="wx", platform="weixin")
+        assert main_tool(plugin, "process_manage", {"action": "wait"}, session="wx") is None
+
+
+def test_bool_settings_parse_from_env(plugin, make_ctx):
+    make_ctx()
+    with patch.dict(os.environ, {"PROACTIVE_WORKER_WRITE_GUARD": "false"}):
+        assert plugin.config.get("worker_write_guard") is False
+
+
+def test_main_blocks_wait_and_unbounded_scans(plugin, make_ctx):
+    make_ctx()
+    start_turn(plugin)
+    assert main_tool(plugin, "process_manage", {"action": "wait"})["action"] == "block"
+    assert main_tool(plugin, "process_manage", {"action": "list"}) is None
+    assert main_tool(plugin, "terminal", {"command": "grep -rnw '/home/ubuntu/.hermes' -e 'proactive'"})["action"] == "block"
+    assert main_tool(plugin, "terminal", {"command": "nmap -p 1-10000 1.2.3.4"})["action"] == "block"
+    assert main_tool(plugin, "terminal", {"command": "grep -rn TODO ./src"}) is None
+    assert main_tool(plugin, "terminal", {"command": "rg proactive /home/ubuntu/project/plugins"}) is None
+
+
+def test_yielded_terminal_result_explains_background(plugin, make_ctx):
+    make_ctx()
+    start_turn(plugin)
+    raw = json.dumps({"output": "Uploading 40%", "status": "yielded_to_background", "session_id": "proc_1"})
+    out = json.loads(plugin._transform_tool_result("terminal", {}, raw, session_id="s1", task_id="main"))
+    assert "NOT failed" in out["note"] and out["output"] == "Uploading 40%"
+
+
+def test_plugin_errors_never_block_tools(plugin, make_ctx):
+    make_ctx()
+    start_turn(plugin)
+    with patch.object(plugin.secretary, "pre_tool_call", side_effect=RuntimeError("boom")):
+        assert main_tool(plugin, "terminal", {"command": "ls"}) is None
+
+
+# ---------------------------------------------------------------- handoff contract
+
+def test_thin_handoff_returned_once_then_enriched(plugin, make_ctx):
+    make_ctx()
+    history = [{"role": "user", "content": "autosub 又 522 了，别自己改 edgetunnel 的代码"},
+               {"role": "assistant", "content": "我看了，DNS 是代理状态"}]
+    start_turn(plugin, history=history, user="帮我修一下")
+    first = main_tool(plugin, "delegate_task", {"tasks": [{"goal": "修复 522", "context": None}]})
+    assert first["action"] == "block" and "Exact targets" in first["message"]
+
+    second = main_tool(plugin, "delegate_task", {"tasks": [{"goal": "修复 522", "context": None}]})
+    assert second["action"] == "modify"
+    task = second["args"]["tasks"][0]
+    assert plugin.handoff.BRIEFING_MARKER in task["context"]
+    assert "别自己改 edgetunnel" in task["context"], "fallback summary keeps the user's words"
+    assert "Write the final report in Chinese." in task["context"]
+    assert task["output_schema"]["required"] == ["status", "summary"]
+
+
+def test_handoff_uses_llm_summary_and_memory(plugin, make_ctx, tmp_path):
+    calls = []
+
+    class FakeLLM:
+        def complete(self, **kw):
+            calls.append(kw)
+            return SimpleNamespace(text="- User wants the 522 fixed without editing upstream code")
+
+    (tmp_path / "memories").mkdir()
+    (tmp_path / "memories" / "MEMORY.md").write_text("Never deploy with --env production", encoding="utf-8")
+    fake_constants = SimpleNamespace(get_hermes_home=lambda: tmp_path)
+    make_ctx(llm=FakeLLM())
+    with patch.dict(sys.modules, {"hermes_constants": fake_constants}):
+        start_turn(plugin, history=[{"role": "user", "content": "fix it"}])
+        res = main_tool(plugin, "delegate_task", {"tasks": [{"goal": "Fix 522", "context": GOOD_CONTEXT}]})
+    ctx_text = res["args"]["tasks"][0]["context"]
+    assert ctx_text.startswith(GOOD_CONTEXT)
+    assert "without editing upstream code" in ctx_text
+    assert "Never deploy with --env production" in ctx_text
+    assert calls and calls[0]["timeout"] == 12.0 and calls[0]["task"] == plugin.handoff.AUX_TASK
+
+
+def test_llm_failure_falls_back_to_extract(plugin, make_ctx):
+    class BrokenLLM:
+        def complete(self, **kw):
+            raise TimeoutError("slow")
+
+    make_ctx(llm=BrokenLLM())
+    start_turn(plugin, history=[{"role": "user", "content": "the deploy script must stay bash"}])
+    res = main_tool(plugin, "delegate_task", {"tasks": [{"goal": "Fix", "context": GOOD_CONTEXT}]})
+    assert "the deploy script must stay bash" in res["args"]["tasks"][0]["context"]
+
+
+def test_risky_handoff_needs_rollback(plugin, make_ctx):
+    make_ctx()
+    start_turn(plugin)
+    risky = GOOD_CONTEXT + " Change sshd port to 36422 via ssh.socket override and update iptables."
+    first = main_tool(plugin, "delegate_task", {"tasks": [{"goal": "Move SSH port", "context": risky}]})
+    assert first["action"] == "block" and "Rollback path" in first["message"]
+
+    start_turn(plugin, turn="t2")
+    safe = risky + " Rollback: keep port 22 open until 36422 is verified from outside."
+    res = plugin._pre_tool_call("delegate_task", {"tasks": [{"goal": "Move SSH port", "context": safe}]},
+                                session_id="s1", turn_id="t2", task_id="main")
+    assert res["action"] == "modify"
+    assert "Risky changes are allowed only as described" in res["args"]["tasks"][0]["context"]
+
+
+def test_legacy_single_goal_shape(plugin, make_ctx):
+    make_ctx()
+    start_turn(plugin)
+    res = main_tool(plugin, "delegate_task", {"goal": "Fix", "context": GOOD_CONTEXT})
+    assert res["action"] == "modify" and "tasks" not in res["args"]
+    assert plugin.handoff.BRIEFING_MARKER in res["args"]["context"]
+
+
+def test_list_and_steer_actions_pass_through(plugin, make_ctx):
+    make_ctx()
+    start_turn(plugin)
+    assert main_tool(plugin, "delegate_task", {"action": "list"}) is None
+    assert main_tool(plugin, "delegate_task", {"action": "steer", "subagent_id": "sa-1", "message": "x"}) is None
+
+
+# ---------------------------------------------------------------- workers
+
+def test_worker_only_governed_under_governed_parent(plugin, make_ctx):
+    make_ctx()
+    start_turn(plugin, session="cli-s", platform="cli")
+    plugin._subagent_start(parent_session_id="cli-s", child_session_id="c9", child_subagent_id="sa-9", child_goal="g")
+    assert plugin.workers.lookup(task_id="sa-9") is None
+    assert plugin._pre_tool_call("terminal", {"command": "nmap 1.2.3.4"}, task_id="sa-9", session_id="c9") is None
+
+
+def test_worker_fast_fail_on_repeated_identical_step(plugin, make_ctx):
+    posted = []
+    make_ctx(post_message=lambda text: posted.append(text) or SimpleNamespace(ok=True))
+    start_turn(plugin, user="又 522 了")
+    worker = spawn_worker(plugin)
+    curl = {"command": 'curl -sI "https://app.example.com/ping?_t=$RANDOM"'}
+    for i in range(3):
+        assert w_tool(plugin, "terminal", curl, api=f"r{i}") is None
+        result = json.dumps({"output": f"HTTP/2 522 \ndate: Wed, 04 Nov 2026 12:24:3{i} GMT\ncf-ray: a55398{i}",
+                             "exit_code": 0})
+        w_post(plugin, "terminal", curl, result, api=f"r{i}")
+    assert worker["stop_reason"] and "HTTP/2 522" in worker["stop_reason"]
+    note = plugin._transform_tool_result("terminal", curl, '{"output": "x"}', **CHILD)
+    assert "STOP" in json.loads(note)["proactive_agent_note"]
+    blocked = w_tool(plugin, "terminal", {"command": "ls"}, api="r9")
+    assert blocked["action"] == "block" and "final report" in blocked["message"]
+
+
+def test_worker_fast_fail_on_same_failure_with_different_args(plugin, make_ctx):
+    make_ctx()
+    start_turn(plugin)
+    worker = spawn_worker(plugin)
+    for i, port in enumerate((22, 2222, 36422)):
+        args = {"command": f"ssh -p {port} ubuntu@10.0.0.1 true"}
+        w_post(plugin, "terminal", args, json.dumps({"output": "", "error": "Connection refused", "exit_code": 255}),
+               api=f"r{i}")
+    assert worker["stop_reason"] and "same failure" in worker["stop_reason"]
+
+
+def test_worker_step_budget(plugin, make_ctx):
+    make_ctx(config={"worker_max_tool_rounds": 3})
+    start_turn(plugin)
+    spawn_worker(plugin)
+    for i in range(3):
+        assert w_tool(plugin, "read_file", {"path": f"/tmp/f{i}"}, api=f"r{i}") is None
+    blocked = w_tool(plugin, "read_file", {"path": "/tmp/f9"}, api="r3")
+    assert blocked["action"] == "block" and "step budget" in blocked["message"]
+
+
+def test_worker_risky_and_scan_commands(plugin, make_ctx):
+    make_ctx()
+    start_turn(plugin)
+    spawn_worker(plugin)
+    assert w_tool(plugin, "terminal", {"command": "sudo iptables -I INPUT 1 -p tcp --dport 36422 -j ACCEPT"})["action"] == "block"
+    assert w_tool(plugin, "terminal", {"command": "curl -X DELETE https://api.cloudflare.com/client/v4/zones/z/dns_records/r"})["action"] == "block"
+    assert w_tool(plugin, "execute_code", {"code": "for p in range(1, 10000): s.connect_ex((ip, p))"})["action"] == "block"
+    assert w_tool(plugin, "terminal", {"command": "npx wrangler deploy --config wrangler.toml"}) is None
+
+
+def test_worker_risky_allowed_with_rollback_handoff(plugin, make_ctx):
+    make_ctx()
+    start_turn(plugin)
+    context = GOOD_CONTEXT + " Update iptables for 36422. Rollback: keep port 22 open until 36422 is verified."
+    spawn_worker(plugin, goal="Move SSH port", context=context)
+    assert w_tool(plugin, "terminal", {"command": "sudo iptables -I INPUT 1 -p tcp --dport 36422 -j ACCEPT"}) is None
+
+
+def test_worker_write_guard_blocks_blind_overwrite(plugin, make_ctx, tmp_path):
+    make_ctx()
+    start_turn(plugin)
+    worker = spawn_worker(plugin)
+    target = tmp_path / "memory_autocommit.sh"
+    target.write_text("#!/bin/bash\necho tested by another worker\n", encoding="utf-8")
+    os.utime(target, (worker["spawn_wall"] + 5, worker["spawn_wall"] + 5))
+    args = {"path": str(target), "content": "python version"}
+    blocked = w_tool(plugin, "write_file", args)
+    assert blocked["action"] == "block" and "changed by someone else" in blocked["message"]
+
+    w_post(plugin, "read_file", {"path": str(target)}, '{"content": "..."}')
+    assert w_tool(plugin, "write_file", args) is None
+
+
+def test_worker_can_create_new_files(plugin, make_ctx, tmp_path):
+    make_ctx()
+    start_turn(plugin)
+    spawn_worker(plugin)
+    assert w_tool(plugin, "write_file", {"path": str(tmp_path / "new.txt"), "content": "x"}) is None
+
+
+# ---------------------------------------------------------------- results, pivots, progress
+
+def test_result_without_evidence_flags_verification(plugin, make_ctx):
+    make_ctx()
+    start_turn(plugin)
+    spawn_worker(plugin)
+    plugin._subagent_stop(parent_session_id="s1", child_session_id="child-1", child_status="completed",
+                          child_summary="All fixed, 143 nodes OK", tool_call_history=[], duration_ms=120000)
+    injected = start_turn(plugin, turn="t2")
+    assert "no verifiable evidence" in injected["context"]
+    assert start_turn(plugin, turn="t3") is None, "notes are delivered once"
+
+
+def test_result_with_evidence_lists_it(plugin, make_ctx):
+    make_ctx()
+    start_turn(plugin)
+    spawn_worker(plugin)
+    summary = json.dumps({"status": "completed", "summary": "ok",
+                          "evidence": ["curl -sI https://app.example.com/ping -> HTTP/2 200"]})
+    plugin._subagent_stop(parent_session_id="s1", child_session_id="child-1", child_status="completed",
+                          child_summary=summary, tool_call_history=[], duration_ms=60000)
+    injected = start_turn(plugin, turn="t2")
+    assert "HTTP/2 200" in injected["context"] and "Spot-check" in injected["context"]
+
+
+def test_stopped_worker_result_is_reported_as_blocked(plugin, make_ctx):
+    make_ctx()
+    start_turn(plugin)
+    worker = spawn_worker(plugin)
+    worker["stop_reason"] = "hit the same failure 3 times"
+    plugin._subagent_stop(parent_session_id="s1", child_session_id="child-1", child_status="completed",
+                          child_summary="done", tool_call_history=[], duration_ms=1000)
+    assert "The plugin stopped it" in start_turn(plugin, turn="t2")["context"]
+
+
+def test_turn_end_keeps_workers_and_notes(plugin, make_ctx):
+    make_ctx()
+    start_turn(plugin)
+    spawn_worker(plugin)
+    plugin._subagent_stop(parent_session_id="s1", child_session_id="child-1", child_status="completed",
+                          child_summary="done", tool_call_history=[], duration_ms=1000)
+    plugin._on_turn_end(session_id="s1", completed=True)
+    assert "Check this subagent result" in start_turn(plugin, turn="t2")["context"]
+
+
+def test_session_reset_clears_everything(plugin, make_ctx):
+    make_ctx()
+    start_turn(plugin)
+    spawn_worker(plugin)
+    plugin._on_session_clean(session_id="s1")
+    assert start_turn(plugin, turn="t2") is None
+
+
+def test_running_workers_are_listed_each_turn(plugin, make_ctx):
+    make_ctx()
+    start_turn(plugin)
+    spawn_worker(plugin)
+    assert "Subagents still running" in start_turn(plugin, turn="t2")["context"]
+
+
+def test_pivot_on_same_targets_asks_to_stop_old_worker(plugin, make_ctx):
+    make_ctx()
+    start_turn(plugin)
+    ctx_a = GOOD_CONTEXT + " Write /home/ubuntu/.hermes/scripts/memory_autocommit.sh in Python."
+    spawn_worker(plugin, goal="Python autocommit", context=ctx_a)
+    ctx_b = GOOD_CONTEXT + " Write /home/ubuntu/.hermes/scripts/memory_autocommit.sh in pure Bash."
+    first = main_tool(plugin, "delegate_task", {"tasks": [{"goal": "Bash autocommit", "context": ctx_b}]})
+    assert first["action"] == "block" and "action='stop'" in first["message"] and "sa-0-abc" in first["message"]
+    assert main_tool(plugin, "delegate_task", {"tasks": [{"goal": "Bash autocommit", "context": ctx_b}]})["action"] == "modify"
+
+
+def test_stopping_old_worker_clears_pivot(plugin, make_ctx):
+    make_ctx()
+    start_turn(plugin)
+    ctx_a = GOOD_CONTEXT + " Write /home/ubuntu/.hermes/scripts/memory_autocommit.sh in Python."
+    spawn_worker(plugin, goal="Python autocommit", context=ctx_a)
+    assert main_tool(plugin, "delegate_task", {"action": "stop", "subagent_id": "sa-0-abc"}) is None
+    ctx_b = GOOD_CONTEXT + " Write /home/ubuntu/.hermes/scripts/memory_autocommit.sh in pure Bash."
+    assert main_tool(plugin, "delegate_task", {"tasks": [{"goal": "Bash", "context": ctx_b}]})["action"] == "modify"
+
+
+def test_progress_tick_posts_to_chat(plugin, make_ctx):
+    posted = []
+    done = threading.Event()
+
+    def post(text):
+        posted.append(text)
+        done.set()
+        return SimpleNamespace(ok=True)
+
+    make_ctx(post_message=post, config={"progress_interval_seconds": 3600})
+    start_turn(plugin, user="帮我部署一下")
+    spawn_worker(plugin)
+    plugin.workers._progress_tick("s1")
+    assert done.wait(2)
+    assert posted[0].startswith("后台进展：1 个子任务在跑")
+
+
+# ---------------------------------------------------------------- background detach
+
+class _FakeEnv:
+    def _wait_for_process(self, proc, timeout=120, **kwargs):
+        return {"returncode": 0, "output": "done"}
+
+
+def _install_patch(plugin):
+    base = MagicMock()
+    base.BaseEnvironment = _FakeEnv
+    modules = {"tools": MagicMock(), "tools.environments": MagicMock(), "tools.environments.base": base,
+               "tools.interrupt": MagicMock()}
+    original = _FakeEnv._wait_for_process
+    plugin.secretary._patched = False
+    with patch.dict(sys.modules, modules):
+        plugin.secretary.install_detach_patch()
+    return original
+
+
+def test_detach_timer_only_for_governed_main(plugin, make_ctx):
+    make_ctx()
+    original = _install_patch(plugin)
     try:
-        assert renderer(None) == ""
-        assert renderer({"platform": "weixin"}) == ""
+        start_turn(plugin, session="wx-1", platform="weixin")
+        start_turn(plugin, session="cli-1", platform="cli")
+        for session, expected in (("wx-1", True), ("cli-1", False)):
+            with patch.dict(os.environ, {"HERMES_SESSION_ID": session}), patch("threading.Timer") as timer:
+                res = _FakeEnv()._wait_for_process(MagicMock(), timeout=120, watch_interrupt_tid=1,
+                                                   yield_handler=MagicMock())
+                assert res["output"] == "done"
+                assert timer.called is expected, session
+                if expected:
+                    assert timer.call_args[0][0] == 30.0
     finally:
-        plugin._on_session_clean()
-
-    # Governed platform weixin gets discipline prompt
-    assert renderer({"platform": "weixin", "session_id": "sess_123"}) != ""
+        _FakeEnv._wait_for_process = original
+        plugin.secretary._patched = False
 
 
-def test_cron_circuit_breaker_bypass():
-    """Verify Cron tasks are completely exempt from the circuit breaker (>5 rounds or >90s) even on weixin."""
-    # 1. Bypass by task_id ("cron:...")
-    turn_id = "turn_cron_1"
-    session_id = "local-cron-session-1"
-    platform = "weixin"
-    plugin._on_session_clean(session_id=session_id)
-
-    task_id_cron = "cron:138c1eb86f83:79ea4521634d4b85a11f3a1debdb45c5"
-    plugin._on_pre_llm_call(turn_id=turn_id, session_id=session_id, task_id=task_id_cron, platform=platform)
-
-    for r in range(1, 11):
-        plugin._on_pre_api_request(turn_id=turn_id, session_id=session_id, task_id=task_id_cron, api_request_id=f"r_{r}", platform=platform)
-        res = plugin._pre_tool_call("terminal", {"command": f"step {r}"}, turn_id=turn_id, session_id=session_id, task_id=task_id_cron)
-        assert res is None, f"Cron task at round {r} must NOT be blocked by circuit breaker"
-        plugin._post_tool_call("terminal", {"command": f"step {r}"}, '{"output": "ok"}', turn_id=turn_id, session_id=session_id, task_id=task_id_cron, duration_ms=25000)
-
-    plugin._on_session_clean(session_id=session_id)
-
-    # 2. Bypass by session_id ("cron_...")
-    turn_id_2 = "turn_cron_2"
-    session_id_2 = "cron_138c1eb86f83_20261104_093000"
-    plugin._on_pre_llm_call(turn_id=turn_id_2, session_id=session_id_2, task_id="main", platform=platform)
-    for r in range(1, 11):
-        plugin._on_pre_api_request(turn_id=turn_id_2, session_id=session_id_2, task_id="main", api_request_id=f"r2_{r}", platform=platform)
-        res = plugin._pre_tool_call("read_file", {"path": f"file_{r}.txt"}, turn_id=turn_id_2, session_id=session_id_2, task_id="main")
-        assert res is None, f"Cron session_id at round {r} must NOT be blocked"
-
-    plugin._on_session_clean(session_id=session_id_2)
-
-    # 3. Bypass by platform="cron"
-    turn_id_3 = "turn_cron_3"
-    session_id_3 = "custom_sess_3"
-    plugin._on_pre_llm_call(turn_id=turn_id_3, session_id=session_id_3, task_id="main", platform="cron")
-    for r in range(1, 11):
-        plugin._on_pre_api_request(turn_id=turn_id_3, session_id=session_id_3, task_id="main", api_request_id=f"r3_{r}", platform="cron")
-        res = plugin._pre_tool_call("write_file", {"path": "test.txt", "content": "hi"}, turn_id=turn_id_3, session_id=session_id_3, task_id="main", platform="cron")
-        assert res is None, f"Cron platform at round {r} must NOT be blocked"
-
-    plugin._on_session_clean(session_id=session_id_3)
-
-
-def test_cron_adaptive_wait_bypass():
-    """Verify Cron tasks bypass 30s auto-detach timer in adaptive wait."""
-    class MockBaseEnv:
-        def _wait_for_process(self, proc, timeout=120, **kwargs):
-            return {"returncode": 0, "stdout": "done"}
-
-    mock_base_mod = MagicMock()
-    mock_base_mod.BaseEnvironment = MockBaseEnv
-    mock_interrupt_mod = MagicMock()
-
-    with patch.dict(sys.modules, {
-        "tools": MagicMock(),
-        "tools.environments": MagicMock(),
-        "tools.environments.base": mock_base_mod,
-        "tools.interrupt": mock_interrupt_mod,
-    }):
-        plugin._patched = False
-        plugin._install_adaptive_terminal_patch()
-
-        # Set cron context via task_id on weixin
-        plugin._record_platform_context("weixin", tid=12345)
-        plugin._current_task_id.set("cron:138c1eb86f83:execution_42")
-        try:
-            with patch("threading.Timer") as mock_timer:
-                env = MockBaseEnv()
-                proc = MagicMock()
-                res = env._wait_for_process(
-                    proc,
-                    timeout=120,
-                    watch_interrupt_tid=12345,
-                    yield_handler=MagicMock(),
-                )
-                assert res == {"returncode": 0, "stdout": "done"}
-                mock_timer.assert_not_called()
-        finally:
-            plugin._on_session_clean()
-
-
-def test_cron_transform_tool_result_bypass():
-    """Verify Cron tasks do not have terminal output rewritten."""
-    plugin._on_session_clean()
-    tid = threading.get_ident()
-    with plugin._timeout_yield_lock:
-        plugin._timeout_yield_tids.add(tid)
-
-    raw_result = json.dumps({"status": "yielded_to_background", "session_id": "cron_sess_abc"})
-
-    # Cron task_id should return None (not rewritten)
-    cron_transformed = plugin._transform_tool_result(
-        "terminal", {}, raw_result, task_id="cron:138c1eb86f83:exec_99", platform="weixin"
-    )
-    assert cron_transformed is None
-
-    # Cron session_id should return None
-    with plugin._timeout_yield_lock:
-        plugin._timeout_yield_tids.add(tid)
-    cron_transformed_sid = plugin._transform_tool_result(
-        "terminal", {}, raw_result, session_id="cron_138c1eb86f83_20261104", platform="weixin"
-    )
-    assert cron_transformed_sid is None
-    plugin._on_session_clean()
-
-
-def test_cron_detection_runtime_hooks():
-    """Verify _is_cron_context accurately catches core Hermes cron signals."""
-    plugin._on_session_clean()
-
-    # 1. Hermes current_cron_execution
-    mock_identity = MagicMock()
-    mock_identity.current_cron_execution.return_value = MagicMock()
-    with patch.dict(sys.modules, {"cron": MagicMock(), "cron.execution_identity": mock_identity}):
-        assert plugin._is_cron_context() is True
-    plugin._on_session_clean()
-
-    # 2. Gateway current_execution
-    mock_session_cron = MagicMock()
-    mock_session_cron.current_execution.return_value = ("auth", "sid", "jid", "eid")
-    with patch.dict(sys.modules, {"gateway": MagicMock(), "gateway.session_cron": mock_session_cron}):
-        assert plugin._is_cron_context() is True
-    plugin._on_session_clean()
-
-    # 3. HERMES_CRON_SESSION env in gateway session context
-    mock_session_context = MagicMock()
-    mock_session_context.get_session_env.return_value = "1"
-    with patch.dict(sys.modules, {"gateway": MagicMock(), "gateway.session_context": mock_session_context}):
-        assert plugin._is_cron_context() is True
-    plugin._on_session_clean()
-
-    # 4. OS environment variable
-    with patch.dict(os.environ, {"HERMES_CRON_SESSION": "1"}):
-        assert plugin._is_cron_context() is True
-    plugin._on_session_clean()
-
-    with patch.dict(os.environ, {"_HERMES_CRON_EXTERNAL_WORKER": "exec_abc"}):
-        assert plugin._is_cron_context() is True
-    plugin._on_session_clean()
-
-
-def test_governed_platforms_custom_plugin_config():
-    """Verify governed_platforms can be customized via plugin context configuration."""
-    mock_ctx = MockPluginContext({"governed_platforms": ["desktop", "telegram"]})
-    plugin.register(mock_ctx)
-
-    renderer = mock_ctx.prompt_sections["proactive-agent.discipline"]["renderer"]
-
-    # Desktop and telegram are now governed!
-    assert "Role: Main dialogue orchestrator" in renderer({"platform": "desktop"})
-    assert "Role: Main dialogue orchestrator" in renderer({"platform": "telegram"})
-
-    # Weixin and cli are now exempt!
-    assert renderer({"platform": "weixin"}) == ""
-    assert renderer({"platform": "cli"}) == ""
-
-    # Test circuit breaker follows custom configuration
-    turn_id = "test_custom_desktop"
-    session_id = "sess_custom_desktop"
-    plugin._on_session_clean(session_id=session_id)
-    plugin._on_pre_llm_call(turn_id=turn_id, session_id=session_id, task_id="main", platform="desktop")
-
-    for r in range(1, 10):
-        plugin._on_pre_api_request(turn_id=turn_id, session_id=session_id, task_id="main", api_request_id=f"r_{r}", platform="desktop")
-
-    res = plugin._pre_tool_call("terminal", {"command": "ls"}, turn_id=turn_id, session_id=session_id, task_id="main")
-    assert res is not None
-    assert res.get("action") == "block"
-    plugin._on_session_clean(session_id=session_id)
-
-
-def test_governed_platforms_env_var():
-    """Verify PROACTIVE_GOVERNED_PLATFORMS environment variable overrides defaults."""
-    # 1. Comma-separated string
-    with patch.dict(os.environ, {"PROACTIVE_GOVERNED_PLATFORMS": "cli,slack"}):
-        mock_ctx = MockPluginContext()
-        plugin.register(mock_ctx)
-        renderer = mock_ctx.prompt_sections["proactive-agent.discipline"]["renderer"]
-
-        assert "Role: Main dialogue orchestrator" in renderer({"platform": "cli"})
-        assert "Role: Main dialogue orchestrator" in renderer({"platform": "slack"})
-        assert renderer({"platform": "weixin"}) == ""
-        assert renderer({"platform": "desktop"}) == ""
-
-    # 2. JSON list format
-    with patch.dict(os.environ, {"PROACTIVE_GOVERNED_PLATFORMS": '["discord", "telegram"]'}):
-        mock_ctx = MockPluginContext()
-        plugin.register(mock_ctx)
-        renderer = mock_ctx.prompt_sections["proactive-agent.discipline"]["renderer"]
-
-        assert "Role: Main dialogue orchestrator" in renderer({"platform": "discord"})
-        assert "Role: Main dialogue orchestrator" in renderer({"platform": "telegram"})
-        assert renderer({"platform": "weixin"}) == ""
-        assert renderer({"platform": "cli"}) == ""
-
-
-def test_governed_platforms_empty_disables_governance():
-    """Verify setting governed_platforms to empty list disables all governance everywhere."""
-    mock_ctx = MockPluginContext({"governed_platforms": []})
-    plugin.register(mock_ctx)
-    renderer = mock_ctx.prompt_sections["proactive-agent.discipline"]["renderer"]
-
-    assert renderer({"platform": "weixin"}) == ""
-    assert renderer({"platform": "cli"}) == ""
-    assert renderer({"platform": "desktop"}) == ""
-
-    # Circuit breaker never trips even after 10 rounds on weixin
-    turn_id = "test_empty_allowlist"
-    session_id = "sess_empty_allowlist"
-    plugin._on_session_clean(session_id=session_id)
-    plugin._on_pre_llm_call(turn_id=turn_id, session_id=session_id, task_id="main", platform="weixin")
-    for r in range(1, 11):
-        plugin._on_pre_api_request(turn_id=turn_id, session_id=session_id, task_id="main", api_request_id=f"r_{r}", platform="weixin")
-        res = plugin._pre_tool_call("terminal", {"command": "echo hi"}, turn_id=turn_id, session_id=session_id, task_id="main")
-        assert res is None, "Empty allowlist must disable circuit breaker"
-    plugin._on_session_clean(session_id=session_id)
+def test_detach_skipped_for_children(plugin, make_ctx):
+    make_ctx()
+    original = _install_patch(plugin)
+    child_ctx = SimpleNamespace(is_delegated_child_context=lambda: True)
+    try:
+        start_turn(plugin, session="wx-1", platform="weixin")
+        with patch.dict(os.environ, {"HERMES_SESSION_ID": "wx-1"}), \
+                patch.dict(sys.modules, {"agent": MagicMock(), "agent.delegation_context": child_ctx}), \
+                patch("threading.Timer") as timer:
+            _FakeEnv()._wait_for_process(MagicMock(), timeout=120, watch_interrupt_tid=1, yield_handler=MagicMock())
+            timer.assert_not_called()
+    finally:
+        _FakeEnv._wait_for_process = original
+        plugin.secretary._patched = False

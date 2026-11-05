@@ -43,7 +43,7 @@ jobs:
 
       - name: Python syntax check and linting
         run: |
-          python -m py_compile __init__.py tests/test_plugin.py
+          python -m py_compile *.py tests/*.py
           flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
 
       - name: Run unit & smoke tests
