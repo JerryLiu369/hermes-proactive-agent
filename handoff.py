@@ -50,6 +50,14 @@ def forget(session_id: str = "") -> None:
             _returned.clear()
 
 
+def end_turn(session_id: str) -> None:
+    """Per-turn return markers are useless once the turn is over."""
+    with _lock:
+        seen = _returned.get(session_id)
+        if seen:
+            seen.difference_update([k for k in seen if k.startswith("thin:")])
+
+
 def _once(session_id: str, key: str) -> bool:
     """True the first time a (session, key) pair is seen."""
     with _lock:
@@ -231,8 +239,8 @@ def gate(session_id: str, turn_id: str, args: Optional[dict], history: List[dict
     if action != "spawn":
         return None
 
-    legacy = not isinstance(args.get("tasks"), list)
-    tasks = [dict(t) for t in args.get("tasks") or [] if isinstance(t, dict)] if not legacy else (
+    single_goal = not isinstance(args.get("tasks"), list)
+    tasks = [dict(t) for t in args.get("tasks") or [] if isinstance(t, dict)] if not single_goal else (
         [{"goal": args.get("goal"), "context": args.get("context"), "output_schema": args.get("output_schema")}]
         if args.get("goal") else [])
     if not tasks:
@@ -273,7 +281,7 @@ def gate(session_id: str, turn_id: str, args: Optional[dict], history: List[dict
         handoffs.append({"goal": goal, "risky_ok": risky_ok, "targets": guards.targets_in(text), "lang": lang})
     workers.expect_children(session_id, handoffs)
 
-    if legacy:
+    if single_goal:
         return {"action": "modify", "args": {"context": tasks[0]["context"], "output_schema": tasks[0]["output_schema"]}}
     return {"action": "modify", "args": {"tasks": tasks}}
 

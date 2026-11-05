@@ -1,7 +1,7 @@
 # Hermes Proactive Agent（`proactive-agent`）
 
 [![Hermes Plugin](https://img.shields.io/badge/Hermes-Plugin-blue.svg)](https://hermes-agent.nousresearch.com)
-[![Version](https://img.shields.io/badge/version-0.2.0-green.svg)](https://github.com/JerryLiu369/hermes-proactive-agent)
+[![Version](https://img.shields.io/badge/version-0.1.9-green.svg)](https://github.com/JerryLiu369/hermes-proactive-agent)
 [![CI](https://github.com/JerryLiu369/hermes-proactive-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/JerryLiu369/hermes-proactive-agent/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python: 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
@@ -15,11 +15,11 @@
 - **主代理（秘书）**：保持随时能回话，自己负责思考和判断，掌握完整的对话。
 - **子代理（工人）**：负责耗时的执行工作，开工时拿到完整的交接单，干活过程受到约束。
 
-## 为什么要做 0.2
+## 为什么需要它
 
-0.1.x 的实际使用数据（[issue #1](https://github.com/JerryLiu369/hermes-proactive-agent/issues/1)）说明，原来的管控方向反了：秘书干 5 轮或 90 秒就被熔断，还没弄清问题就被迫派活；工人却可以不受约束地跑到 250 轮。子代理本身没有记忆，也看不到聊天记录，于是拿到的交接说明几乎是空的，结果反复执行同一条失败的命令、扫端口、互相覆盖成果，还在没有核实的情况下报告“成功”。
+Hermes 的子代理开工时没有记忆，也看不到聊天记录。如果不加管理，聊天代理要么什么都自己干，把对话卡住好几分钟；要么过早派活、交接说明几乎是空的，子代理随后反复执行同一条失败的命令、扫端口、覆盖别人的成果，还在没有核实的情况下报告“成功”。
 
-0.2 把方向反过来：给秘书思考的空间，只用温和的时间预算；每次派活都带上秘书已知的信息；工人则要遵守严格、可检查的规则。
+这个插件给秘书思考的空间，只用温和的时间预算；每次派活都带上秘书已知的信息；工人则要遵守严格、可检查的规则。
 
 ## 功能
 
@@ -63,7 +63,7 @@
 
 ## 配置
 
-所有配置项写在 `~/.hermes/config.yaml` 的 `plugins.entries.proactive-agent.settings` 下。Hermes 也兼容旧的 `config:` 写法，但直接写在 `proactive-agent:` 下面的配置项会被 Hermes 忽略。每个配置项也可以用环境变量 `PROACTIVE_<配置名大写>` 覆盖。
+所有配置项写在 `~/.hermes/config.yaml` 的 `plugins.entries.proactive-agent.settings` 下。直接写在 `proactive-agent:` 下面的配置项会被 Hermes 忽略。每个配置项也可以用环境变量 `PROACTIVE_<配置名大写>` 覆盖。
 
 | 配置项 | 默认值 | 含义 |
 |---|---|---|
@@ -97,10 +97,6 @@ plugins:
 ```
 
 建议把 `delegation.max_iterations` 设得比 `worker_max_tool_rounds` 大。这样插件的步数上限会先触发，让工人先交一份汇报，而不是直接撞上 Hermes 的硬上限。
-
-### 从 0.1.x 升级
-
-`turn_max_tool_rounds` 和 `turn_max_duration_seconds` 已经删除。按轮数熔断正是导致秘书在没有背景的情况下过早派活的主因，请改用 `turn_soft_seconds` 和 `turn_hard_seconds`。
 
 ## 安装
 

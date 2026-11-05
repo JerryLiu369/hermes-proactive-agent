@@ -8,7 +8,7 @@
 - Target: Hermes Agent (tested with v0.22.7)
 - Language: Python 3.10+
 - License: MIT
-- Version: 0.2.0
+- Version: 0.1.9
 
 Roles:
 - Main agent ("secretary"): keeps the chat responsive, investigates and decides, owns the conversation.
@@ -42,7 +42,7 @@ Only platforms in governed_platforms (default ["weixin"]) are affected. Cron run
 
 ## Configuration
 
-Keys under plugins.entries.proactive-agent.settings (legacy config: also read; environment override: PROACTIVE_<KEY>):
+Keys under plugins.entries.proactive-agent.settings (environment override: PROACTIVE_<KEY>):
 
 | Key | Default |
 |---|---|

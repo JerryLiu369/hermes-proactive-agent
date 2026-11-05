@@ -1,4 +1,4 @@
-"""Behaviour tests for proactive-agent v0.2 (secretary governance, handoff contract, worker guards)."""
+"""Behaviour tests for proactive-agent (secretary governance, handoff contract, worker guards)."""
 
 import json
 import os
@@ -7,7 +7,6 @@ import threading
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-import pytest
 import yaml
 
 from conftest import REPO_ROOT
@@ -57,10 +56,9 @@ def w_post(plugin, name, args, result, api="r1"):
 def test_manifest_matches_code(plugin):
     with open(os.path.join(REPO_ROOT, "plugin.yaml"), encoding="utf-8") as f:
         manifest = yaml.safe_load(f)
-    assert manifest["version"] == plugin.__version__ == "0.2.0"
+    assert manifest["version"] == plugin.__version__ == "0.1.9"
     for hook in ("pre_tool_call", "post_tool_call", "transform_tool_result", "pre_llm_call", "pre_api_request",
-                 "subagent_start", "subagent_stop", "agent_loop_stopped", "on_session_end", "on_session_reset",
-                 "on_session_finalize"):
+                 "subagent_start", "subagent_stop", "on_session_end", "on_session_reset", "on_session_finalize"):
         assert hook in manifest["hooks"]
     schema = manifest["config_schema"]
     for key, default in plugin.config.DEFAULTS.items():
@@ -255,7 +253,20 @@ def test_risky_handoff_needs_rollback(plugin, make_ctx):
     assert "Risky changes are allowed only as described" in res["args"]["tasks"][0]["context"]
 
 
-def test_legacy_single_goal_shape(plugin, make_ctx):
+def test_turn_end_drops_per_turn_return_markers(plugin, make_ctx):
+    make_ctx()
+    start_turn(plugin)
+    assert main_tool(plugin, "delegate_task", {"tasks": [{"goal": "g", "context": "x"}]})["action"] == "block"
+    plugin._on_turn_end(session_id="s1")
+    assert not any(k.startswith("thin:") for k in plugin.handoff._returned.get("s1", set()))
+
+
+def test_home_relative_paths_are_targets(plugin):
+    targets = plugin.guards.targets_in("edit ~/.hermes/scripts/a.sh and /srv/app/x.toml")
+    assert targets == {"~/.hermes/scripts/a.sh", "/srv/app/x.toml"}
+
+
+def test_single_goal_shape(plugin, make_ctx):
     make_ctx()
     start_turn(plugin)
     res = main_tool(plugin, "delegate_task", {"goal": "Fix", "context": GOOD_CONTEXT})
@@ -490,6 +501,22 @@ def test_detach_timer_only_for_governed_main(plugin, make_ctx):
                 assert timer.called is expected, session
                 if expected:
                     assert timer.call_args[0][0] == 30.0
+    finally:
+        _FakeEnv._wait_for_process = original
+        plugin.secretary._patched = False
+
+
+def test_detach_leaves_a_foreign_yield_alone(plugin, make_ctx):
+    make_ctx()
+    original = _install_patch(plugin)
+    interrupt = MagicMock()
+    try:
+        start_turn(plugin, session="wx-1", platform="weixin")
+        with patch.dict(os.environ, {"HERMES_SESSION_ID": "wx-1"}), \
+                patch.dict(sys.modules, {"tools": MagicMock(), "tools.interrupt": interrupt}), \
+                patch("threading.Timer"):
+            _FakeEnv()._wait_for_process(MagicMock(), timeout=120, watch_interrupt_tid=1, yield_handler=MagicMock())
+        interrupt.consume_yield.assert_not_called()
     finally:
         _FakeEnv._wait_for_process = original
         plugin.secretary._patched = False

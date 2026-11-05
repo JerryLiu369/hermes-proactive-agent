@@ -1,7 +1,7 @@
 # Hermes Proactive Agent (`proactive-agent`)
 
 [![Hermes Plugin](https://img.shields.io/badge/Hermes-Plugin-blue.svg)](https://hermes-agent.nousresearch.com)
-[![Version](https://img.shields.io/badge/version-0.2.0-green.svg)](https://github.com/JerryLiu369/hermes-proactive-agent)
+[![Version](https://img.shields.io/badge/version-0.1.9-green.svg)](https://github.com/JerryLiu369/hermes-proactive-agent)
 [![CI](https://github.com/JerryLiu369/hermes-proactive-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/JerryLiu369/hermes-proactive-agent/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python: 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
@@ -16,16 +16,14 @@ personal assistant that manages workers, instead of a worker that blocks the cha
 - The **main agent** (the "secretary") stays responsive, does the thinking, and owns the conversation.
 - **Subagents** (the "workers") do slow execution, with a complete brief and under supervision.
 
-## Why 0.2
+## Why
 
-Field data from 0.1.x ([issue #1](https://github.com/JerryLiu369/hermes-proactive-agent/issues/1)) showed the
-governance was pointed the wrong way: the main agent was cut off after 5 tool rounds / 90 s and forced to delegate
-before it understood the problem, while subagents ran unsupervised for up to 250 rounds. Subagents start with no
-memory and cannot see the chat, so they got near-empty briefs, looped on the same failing command, scanned ports,
-overwrote each other's work and reported unverified success.
+Hermes subagents start with no memory and cannot see the chat. Left alone, a chat agent either does everything itself
+and blocks the conversation for minutes, or delegates early with a near-empty brief, after which the subagent loops on
+the same failing command, scans ports, overwrites other work and reports success it never checked.
 
-0.2 reverses this: the secretary gets room to think and a gentle budget, every handoff carries what the secretary
-knows, and workers are held to tight, checkable rules.
+This plugin gives the secretary room to think under a gentle time budget, makes every handoff carry what the
+secretary knows, and holds workers to tight, checkable rules.
 
 ## What it does
 
@@ -80,9 +78,9 @@ spawned by ungoverned sessions are untouched.
 
 ## Configuration
 
-All keys live under `plugins.entries.proactive-agent.settings` in `~/.hermes/config.yaml` (Hermes also reads the older
-`config:` subtree; keys placed directly under `proactive-agent:` are ignored by Hermes). Each key can also be overridden
-with an environment variable `PROACTIVE_<KEY>` (upper case).
+All keys live under `plugins.entries.proactive-agent.settings` in `~/.hermes/config.yaml`. Keys placed directly under
+`proactive-agent:` are ignored by Hermes. Each key can also be overridden with an environment variable
+`PROACTIVE_<KEY>` (upper case).
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -117,11 +115,6 @@ plugins:
 
 Recommended delegation settings: keep `delegation.max_iterations` above `worker_max_tool_rounds` so the plugin's
 budget (which asks for a report) fires before Hermes' hard cap.
-
-### Upgrading from 0.1.x
-
-`turn_max_tool_rounds` and `turn_max_duration_seconds` are gone; the round-count circuit breaker was the main cause of
-premature, context-free delegation. Use `turn_soft_seconds` / `turn_hard_seconds` instead.
 
 ## Install
 

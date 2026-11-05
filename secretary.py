@@ -144,7 +144,8 @@ def pre_tool_call(session_id: str, turn_id: str, tool_name: str, args: Optional[
     if tool_name == "delegate_task":
         with _lock:
             history = list(_history.get(session_id) or [])
-            trace = list(_turns[session_id]["trace"])
+            st = _turns.get(session_id)
+            trace = list(st["trace"]) if st else []
         return handoff.gate(session_id, turn_id, args, history, trace, language(session_id))
     return None
 
@@ -241,15 +242,18 @@ def install_detach_patch() -> None:
             detach = float(config.get("terminal_auto_detach_seconds"))
             if yield_handler is None or watch_interrupt_tid is None or detach <= 0 or not _governed_tool_thread():
                 return original(self, proc, **call)
-            done = threading.Event()
+            state = {"done": False, "fired": False}
+            state_lock = threading.Lock()
 
             def _fire() -> None:
-                if done.is_set() or (getattr(proc, "poll", None) and proc.poll() is not None):
-                    return
-                try:
-                    request_yield(watch_interrupt_tid)
-                except Exception as e:
-                    logger.warning("proactive-agent: request_yield failed: %s", e)
+                with state_lock:
+                    if state["done"] or (getattr(proc, "poll", None) and proc.poll() is not None):
+                        return
+                    state["fired"] = True
+                    try:
+                        request_yield(watch_interrupt_tid)
+                    except Exception as e:
+                        logger.warning("proactive-agent: request_yield failed: %s", e)
 
             timer = threading.Timer(detach, _fire)
             timer.daemon = True
@@ -257,13 +261,18 @@ def install_detach_patch() -> None:
             try:
                 return original(self, proc, **call)
             finally:
-                done.set()
                 timer.cancel()
-                try:
-                    from tools.interrupt import consume_yield
-                    consume_yield(watch_interrupt_tid)
-                except Exception:
-                    pass
+                with state_lock:
+                    state["done"] = True
+                    fired = state["fired"]
+                if fired:
+                    # Our yield may land after the process already exited; never leave it pending
+                    # for the next command on this thread. A user's own yield is left alone.
+                    try:
+                        from tools.interrupt import consume_yield
+                        consume_yield(watch_interrupt_tid)
+                    except Exception:
+                        pass
 
         BaseEnvironment._wait_for_process = _wait_for_process
         _patched = True

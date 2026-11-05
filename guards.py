@@ -57,7 +57,7 @@ _ROLLBACK_WORDS = re.compile(
 )
 
 _TARGET_RE = re.compile(
-    r"(?:~|/)[\w.\-]+(?:/[\w.\-]+)+"  # paths with at least two segments
+    r"~?/[\w.\-]+(?:/[\w.\-]+)+"  # paths with at least two segments
     r"|\b(?:\d{1,3}\.){3}\d{1,3}\b"  # IPv4
     r"|\b[a-z0-9][a-z0-9\-]*(?:\.[a-z0-9\-]+)*\.(?:com|net|org|io|dev|top|cn|app|xyz|cloud|ai|me|co|site)\b",
     re.IGNORECASE,

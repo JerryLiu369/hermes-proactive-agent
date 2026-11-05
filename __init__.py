@@ -27,7 +27,7 @@ from typing import Any, Optional
 if __package__:
     from . import config, context, handoff, prompt, secretary, workers
 
-__version__ = "0.2.0"
+__version__ = "0.1.9"
 
 logger = logging.getLogger("hermes.plugins.proactive_agent")
 
@@ -123,17 +123,11 @@ def _subagent_stop(**kw: Any) -> None:
 
 
 @_guarded
-def _on_loop_stopped(**kw: Any) -> None:
-    session_id = str(kw.get("session_key") or kw.get("session_id") or "")
-    if session_id:
-        secretary.forget(session_id)
-
-
-@_guarded
 def _on_turn_end(session_id: str = "", **kw: Any) -> None:
     # Hermes fires on_session_end after every run_conversation, so only per-turn state goes here;
     # workers, pending result notes and progress timers must outlive the turn.
     secretary.forget(session_id)
+    handoff.end_turn(session_id)
 
 
 @_guarded
@@ -155,7 +149,6 @@ def register(ctx: Any) -> None:
         "transform_tool_result": _transform_tool_result,
         "subagent_start": _subagent_start,
         "subagent_stop": _subagent_stop,
-        "agent_loop_stopped": _on_loop_stopped,
         "on_session_end": _on_turn_end,
         "on_session_reset": _on_session_clean,
         "on_session_finalize": _on_session_clean,
