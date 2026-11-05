@@ -1,40 +1,96 @@
 name: proactive-agent
-version: "0.1.6"
-description: "Proactive agent governor: adaptive 30s terminal detach, 5-turn/90s subagent circuit breaker, positive platform allowlist (weixin by default), and full autonomous subagent & cron bypass."
+version: "0.1.9"
+description: "Secretary-style governance for Hermes chat agents: soft/hard turn budget, background detach, a handoff contract for delegate_task (memory + chat summary attached), fail-fast and safety guards for subagents, result checks and progress updates."
 author: Jerry Liu
 license: MIT
 hooks:
+  - pre_llm_call
+  - pre_api_request
   - pre_tool_call
   - post_tool_call
   - transform_tool_result
-  - pre_llm_call
-  - pre_api_request
-  - agent_loop_stopped
+  - subagent_start
+  - subagent_stop
   - on_session_end
   - on_session_reset
+  - on_session_finalize
 provides_hooks:
+  - pre_llm_call
+  - pre_api_request
   - pre_tool_call
   - post_tool_call
   - transform_tool_result
-  - pre_llm_call
-  - pre_api_request
-  - agent_loop_stopped
+  - subagent_start
+  - subagent_stop
   - on_session_end
   - on_session_reset
+  - on_session_finalize
 config_schema:
   governed_platforms:
     type: list
     default: ["weixin"]
-    description: "Platforms subject to proactive agent governance (circuit breaker, prompt discipline, 30s terminal detach). Platforms not listed (e.g. cli, desktop) are completely exempt."
+    description: "Platforms whose main chat agent (and the subagents it spawns) are governed. Unlisted platforms are untouched."
   terminal_auto_detach_seconds:
     type: int
     default: 30
-    description: "Max seconds a foreground terminal command can run before being detached to the background."
-  turn_max_tool_rounds:
-    type: int
-    default: 5
-    description: "Max serial tool rounds in the main agent turn before circuit breaker restricts execution to subagents."
-  turn_max_duration_seconds:
+    description: "Foreground terminal commands running longer than this move to the background (0 disables)."
+  turn_soft_seconds:
     type: number
-    default: 90.0
-    description: "Max total tool execution duration in the main agent turn before circuit breaker restricts execution to subagents."
+    default: 60.0
+    description: "Yellow zone: after this many seconds in one turn, tool results carry a reminder to answer or delegate."
+  turn_hard_seconds:
+    type: number
+    default: 120.0
+    description: "Red zone: after this many seconds in one turn, only read-only tools and delegate_task stay available."
+  turn_soft_output_chars:
+    type: int
+    default: 30000
+    description: "Yellow zone also starts once this many characters of tool output entered the turn."
+  turn_hard_output_chars:
+    type: int
+    default: 80000
+    description: "Red zone also starts once this many characters of tool output entered the turn."
+  handoff_min_context_chars:
+    type: int
+    default: 120
+    description: "delegate_task context shorter than this is returned once for completion."
+  handoff_summary_enabled:
+    type: bool
+    default: true
+    description: "Summarize the chat with an auxiliary model for each handoff (falls back to a plain extract)."
+  handoff_summary_timeout_seconds:
+    type: number
+    default: 12.0
+    description: "Timeout for the handoff summary call. Keep it well under plugins.hook_callback_timeout (30s)."
+  handoff_memory_max_chars:
+    type: int
+    default: 4000
+    description: "Max characters of USER.md + MEMORY.md attached to each handoff (0 disables)."
+  worker_max_tool_rounds:
+    type: int
+    default: 40
+    description: "Subagent step budget. Past it, every tool call is refused and the subagent must report."
+  worker_repeat_limit:
+    type: int
+    default: 3
+    description: "Stop a subagent after the same step gives the same result, or the same failure, this many times."
+  worker_guard_risky_commands:
+    type: bool
+    default: true
+    description: "Refuse risky subagent commands (SSH/firewall, deletes, VM lifecycle) unless the handoff gave a rollback path."
+  worker_write_guard:
+    type: bool
+    default: true
+    description: "Refuse subagent writes to files changed by someone else after the subagent started, until it re-reads them."
+  verify_child_results:
+    type: bool
+    default: true
+    description: "Tell the main agent what to verify when a subagent returns."
+  progress_push_enabled:
+    type: bool
+    default: true
+    description: "Post progress lines and stuck-task alerts into the chat while subagents run."
+  progress_interval_seconds:
+    type: int
+    default: 300
+    description: "Seconds between progress lines while subagents run."

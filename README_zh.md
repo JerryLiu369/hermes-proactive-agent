@@ -1,7 +1,7 @@
-# Hermes Proactive Agent Governor (`proactive-agent`)
+# Hermes Proactive Agent（`proactive-agent`）
 
 [![Hermes Plugin](https://img.shields.io/badge/Hermes-Plugin-blue.svg)](https://hermes-agent.nousresearch.com)
-[![Version](https://img.shields.io/badge/version-0.1.5-green.svg)](https://github.com/JerryLiu369/hermes-proactive-agent)
+[![Version](https://img.shields.io/badge/version-0.1.9-green.svg)](https://github.com/JerryLiu369/hermes-proactive-agent)
 [![CI](https://github.com/JerryLiu369/hermes-proactive-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/JerryLiu369/hermes-proactive-agent/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python: 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
@@ -10,225 +10,128 @@
 
 ---
 
-**Hermes Proactive Agent Governor** (`proactive-agent`) 是专为 [Hermes Agent](https://hermes-agent.nousresearch.com) 设计的执行治理与自我约束插件。它从根源杜绝前台长命令卡死终端、打破单轮大模型硬跑单体工具的死循环，并在用户中途插话时提供精准容错自愈能力。
+`proactive-agent` 是 [Hermes Agent](https://hermes-agent.nousresearch.com) 的插件，目标是把聊天里的主代理变成会管人的个人助理，而不是一个卡住聊天、自己埋头干活的工人。
 
-## 🎯 核心治理哲学：重任务通通异步 (All Heavy Tasks Asynchronous)
+- **主代理（秘书）**：保持随时能回话，自己负责思考和判断，掌握完整的对话。
+- **子代理（工人）**：负责耗时的执行工作，开工时拿到完整的交接单，干活过程受到约束。
 
-自主大模型 Agent 在日常执行任务中最容易陷入以下失控陷阱：
-- **前台卡死**：执行编译、拉取镜像、微调等耗时任务时一直卡在前台等待，导致与用户的聊天窗口彻底卡死，触发网关超时；
-- **连环试错死循环**：遇到报错时在单轮内陷入盲目的“单体工具连环试错”（接连执行 10~15 轮 `terminal` / `patch`），烧光上下文并最终超时；
-- **死板配额锁死**：用户中途发消息纠偏，Agent 却受死板配额限制拒绝执行。
+## 为什么需要它
 
-`proactive-agent` 树立四大执行支柱：
-1. **先回执后委派 (Reply first, then delegate)**：遇到复杂非平凡任务，首轮简短回执用户并释放交互，绝不在主线程单体硬跑或 sleep 等待。
-2. **全面拥抱后台挂起与子代理委派 (Background execution & delegation)**：耗时任务主动或自适应挂后台；多步骤目标通过 `delegate_task` 并发分发给隔离子代理。
-3. **静默执行 (Quiet execution)**：不在对话中复读内部 PID、执行器 ID 或裸命令。
-4. **物料物理核验 (Verify before claiming done)**：交付前核验磁盘物料与真实执行结果。
+Hermes 的子代理开工时没有记忆，也看不到聊天记录。如果不加管理，聊天代理要么什么都自己干，把对话卡住好几分钟；要么过早派活、交接说明几乎是空的，子代理随后反复执行同一条失败的命令、扫端口、覆盖别人的成果，还在没有核实的情况下报告“成功”。
 
----
+这个插件给秘书思考的空间，只用温和的时间预算；每次派活都带上秘书已知的信息；工人则要遵守严格、可检查的规则。
 
-## 🏛️ 系统架构与执行流转图
+## 功能
 
-```text
-+----------------------------------------------------------------------------------------------------+
-|                                    Hermes Proactive Agent Governor                                 |
-+----------------------------------------------------------------------------------------------------+
-|                                                                                                    |
-|   +-----------------------+                                                                        |
-|   |   用户发起请求 / 轮次   |                                                                        |
-|   +-----------+-----------+                                                                        |
-|               |                                                                                    |
-|               v                                                                                    |
-|   +-----------------------+              用户中途介入纠偏 (Steer / 插话)                             |
-|   |  模型思考与意图生成     |<....................................................................+   |
-|   +-----------+-----------+                                                                     :   |
-|               |                                                                                 :   |
-|       +-------+-------+                                                                         :   |
-|       |               |                                                                         :   |
-|       v (Terminal长命令)v (常规单体工具)                                                          :   |
-|  +---------+    +----------------------------+                                                  :   |
-|  | 前台执行|    |       熔断器检测逻辑        |                                                  :   |
-|  | 监控计时|    |   - 单轮串行轮次 > 8 轮?   |                                                  :   |
-|  +----+----+    |   - 单轮累计耗时 > 120 秒?  |                                                  :   |
-|       |         +--------------+-------------+                                                  :   |
-|       |                        |                                                                :   |
-|   [ > 30s? ]            +------+------+                                                         :   |
-|    /     \              |             |                                                         :   |
-|   是      否           未超限        触发熔断 (>8轮 / >120s)                                     :   |
-|   |        |            |             |                                                         :   |
-|   v        v            v             v                                                         :   |
-| [挂起后台] [正常完成]  [执行工具]   [冻结重型单体执行工具]                                       :   |
-| (零杀进程) (回显结果)   (累计耗时)   (terminal/patch/write)                                     :   |
-|   |                     |             |                                                         :   |
-|   |                     |             v                                                         :   |
-|   |                     |     [强制要求 delegate_task                                           :   |
-|   |                     |      拆解并委派隔离子代理]                                            :   |
-|   |                     |             |                                                         :   |
-|   +------------+--------+             |                                                         :   |
-|                |                      |                                                         :   |
-|                v                      v                                                         :   |
-|       +------------------------------------+                                                    :   |
-|       |   原子状态跟踪器与动态注入治理器   |                                                    :   |
-|       |  (Prompt 注入 / 配额守护 / 内存防漏)|<...................................................+   |
-|       +-----------------+------------------+                                                        |
-|                         |                                                                           |
-|                         v                                                                           |
-|       +------------------------------------+                                                        |
-|       |      即刻交还轮次，保持交互丝滑响应   |                                                        |
-|       +------------------------------------+                                                        |
-+----------------------------------------------------------------------------------------------------+
-```
+### 1. 秘书的单轮预算（主代理）
 
----
+| 档位 | 默认触发条件（可配置） | 效果 |
+|---|---|---|
+| 绿区 | 时间和输出量都没超 | 不干预 |
+| 黄区 | 本轮已过 60 秒，或工具输出累计 3 万字符 | 在下一个工具结果后附一次提醒：1 到 2 步内要么回复用户，要么派活 |
+| 红区 | 120 秒，或累计 8 万字符 | 拒绝改文件、执行命令这类工具；只读工具和 `delegate_task` 仍可用 |
 
-## ⚡ 解决三大 Agent 核心痛点与治理机制
+- 用户中途插话会把预算清零。
+- 前台命令超过 30 秒，会通过 Hermes 自带的机制转到后台：进程继续运行，结束后自动通知。返回给秘书的结果会说明命令没有失败，并附上目前已有的输出。
+- `process_manage(action='wait')`、对家目录、`/` 或 `~/.hermes` 的无边界 `grep -r` / `rg` / `find`，以及端口扫描，都会被拒绝。
 
-### 核心机制：正向白名单治理机制 (Positive Platform Allowlist)
-- **设计理念**：默认将主动治理（提示词注入、熔断器、30s 终端脱壳）严格限定在配置的平台列表中（`governed_platforms`，默认仅 `["weixin"]`）。
-- **完全放行，0 侵入**：未在白名单中的平台（例如 `cli`、`desktop`、`telegram`、`slack` 等）完全免于治理，享受原生纯粹的 Hermes 执行体验，绝不误触脱壳或熔断。
-- **高度可配置**：可通过插件配置（`governed_platforms: ["weixin", "telegram"]`）或环境变量 `PROACTIVE_GOVERNED_PLATFORMS="weixin,telegram"` 灵活扩展；配置为空列表则全局彻底关闭治理。
+### 2. 交接单（`delegate_task`）
 
-### 痛点一：前台长命令卡死终端与超时 (Adaptive Terminal Detach > 30s)
-- **痛点分析**：大模型使用前台 `terminal` 运行长命令（如编译项目、训练脚本、大文件下载）时，终端会阻塞数分钟直至超时爆掉，期间用户无法在 IM/CLI 得到任何响应。如果直接粗暴重写 `terminal` 工具，又会破坏 Hermes 原生线程中断与消息接入协议。
-- **治理机制**：
-  - 非侵入式挂接底层 `BaseEnvironment._wait_for_process`，无缝接入原生 `yield_handler`。
-  - 一旦前台命令执行超过设定阈值（默认 `30s`），在**不杀进程**的前提下，将正在运行的 `Popen` 进程平滑过户至后台 `process_registry`，标记完成自动推送通知（`notify_on_complete=True`）。
-  - 自动通过 `transform_tool_result` 注入指引，明确告知模型：“该命令已转入后台异步运行，切勿 polling / sleep-wait，立即向用户回复并释放对话轮次！”
-  - **子代理与 Cron 任务彻底豁免脱壳**：子代理（`task_id.startswith("sa-")`，`platform="subagent"`）与无人值守定时任务（`platform="cron"`，`task_id.startswith("cron:")`，`HERMES_CRON_SESSION`）完全跳过 30s 定时器，保证隔离子任务与后台批处理流水线长期执行不受脱壳打断。
+- **说明太简略，退回一次。** 如果 `context` 不足 120 个字符，或者任务涉及危险操作（SSH、防火墙、删除、虚拟机生命周期）却没写回退办法，插件每轮退回一次，并告诉秘书该补哪些内容。第二次提交一定放行。
+- **自动附带背景信息。** 每个放行的任务都会附上：
+  - 对话摘要：用户要什么、已经查明了什么、试过什么、哪些不能动。摘要由辅助模型（`ctx.llm`）生成，超时 12 秒；失败时改用最近消息和工具结果的简单摘录。
+  - 用户的 `USER.md` 和 `MEMORY.md`（有长度上限）。
+  - 工作规则：只做份内的事、遇错快停、不做无边界搜索、核实真实结果、做不完就上报卡点。
+  - 默认的 `output_schema`（`status`、`summary`、`evidence`、`blockers`、`files_changed`），任务自带时不覆盖。
+- 摘要走名为 `proactive_handoff_summary` 的辅助任务。默认跟随 `compression` 用的模型，也可以单独指定。
 
-### 痛点二：单轮连续硬跑单体工具死循环 (Turn Circuit Breaker > 8 轮 / > 120s)
-- **痛点分析**：Agent 在面对难以解决的代码报错时，容易陷入“修改 -> 报错 -> 修改 -> 报错”的单体死循环。
-- **治理机制**：
-  - **并发工具合并计轮**：现代 LLM 单次回复常并发吐出 2~4 个工具调用，插件在 `pre_api_request` 维度计轮，确保一次模型思考只算一轮，绝不误触熔断。
-  - **硬熔断限制**：当主轮次工具调用达到第 9 轮（`> 8` 轮），或累计工具执行耗时达到 `120s` 时，立刻熔断重型单体执行工具（`terminal`, `patch`, `write_file`, `execute_code`）。
-  - **元认知与自进化工具白名单放行**：
-    - `delegate_task`：强制要求模型拆解任务，分发给隔离子代理并行处理；
-    - `skill_manage` / `memory`：允许模型在熔断状态下沉淀经验与教训，杜绝“为存经验不得不派子代理”的动作形变；
-    - `skill_view` / `skills_list`：允许检索规则。
-  - **子代理与 Cron 任务彻底豁免放行**：子代理（`task_id.startswith("sa-")`）与无人值守定时任务（`platform="cron"`，`task_id.startswith("cron:")`，`HERMES_CRON_SESSION`）拥有完全的自治执行权限，自动绕过熔断，避免自动化长流程被误杀。
+### 3. 工人护栏（受管会话派出的子代理）
 
-### 痛点三：用户中途介入插话容错自愈 (Human Intervention & Steer Self-Healing)
-- **痛点分析**：若熔断配额过于死板，当用户在单轮中途发送纠偏消息（Steer Message）时，Agent 会因为配额耗尽而直接拒止。
-- **治理机制**：
-  - 精准嗅探消息列表中的 `display_kind == "steer"` 及 `[OUT-OF-BAND USER MESSAGE]` 标记。
-  - 一旦检测到人类中途介入或开启新轮次，立即原子级重置本轮 round_count 与耗时计数器，给予 Agent 全新配额以遵从用户的最新指示。
-  - 会话重置（`on_session_reset`）、会话结束（`on_session_end`）与中断（`agent_loop_stopped`）时自动清理状态，杜绝内存泄漏。
+- **遇错快停。** 同一个调用连续 3 次得到相同结果，或者同一种失败出现 3 次，就叫停这个工人：后续工具调用一律拒绝，要求它以 `blocked` 状态汇报具体卡在哪里。
+- **步数上限。** 默认 40 轮工具调用，用到 80% 时提醒它收尾。
+- **危险命令**（改 SSH 或防火墙、对 API 发 HTTP DELETE、对系统或家目录 `rm -rf`、删除云资源或终止实例、重启等）会被拒绝，除非交接单里写了回退办法。
+- **禁止盲写覆盖。** 如果某个文件在工人开工后被别人改过，工人在重新读一遍之前，不能对它 `write_file` 或 `patch`。
 
-### 动态系统提示词注入与后台自治任务零注入
-- 自动根据当前生效的阈值参数，将行为规范（`proactive-agent.discipline`）动态编译并注入到 Hermes 主对话系统提示词中。
-- **子代理与 Cron 彻底零注入**：当处于子代理或 Cron 定时任务会话（`platform in ("subagent", "cron")`，`session_id.startswith("cron_")`，`HERMES_CRON_SESSION`）时，提示词生成器直接返回空字符串 `""`，不产生任何额外 token 开销，绝不混淆后台自动化任务的角色定位。
+### 4. 验收、换方案和进度
 
-```text
-Role: Main dialogue orchestrator. Stay responsive; heavy execution never blocks the chat turn.
+- 工人交活后，秘书在下一轮会收到一条提示：列出工人给出的证据；如果工人声称成功却没有证据，或者是被插件叫停的，也会明确指出。
+- 每一轮，秘书都能看到还有哪些工人在跑。
+- 新任务和正在运行的工人涉及相同的路径、主机或域名时，插件会提醒秘书一次，先用 `delegate_task(action='stop')` 停掉旧工人。
+- 工人运行期间，每 5 分钟往聊天里发一句进度；工人被叫停时立即发一条提醒。这需要运行在网关平台上，通过 `ctx.post_message` 发送，语言跟随用户。
 
-1. Triage & Dispatch-Then-Yield
-- LIGHT (read files, status checks, quick probes): finish in <=8 tool rounds, then answer.
-- HEAVY (multi-step edits, refactors, builds, test suites, training, commands likely >30s):
-  1. 仅做必要探查，尽量尽早派发；但必须在满 8 轮工具或 120s 耗时硬上限前完成派发:
-     - Complex reasoning or code tasks: fan out via delegate_task.
-     - Long shell commands: run terminal(background=True, notify=True).
-  2. Release turn immediately: output a concise one-line status to the user and end your turn. NEVER run sleep or poll.
+只有 `governed_platforms` 里的平台会受影响，默认是 `["weixin"]`。其他平台、定时任务，以及由不受管会话派出的子代理，都不受影响。
 
-2. Hardware Governance Limits (Main Thread Only)
-- Foreground command >30s: auto-detached to background with completion notification. Do not wait; inform the user and end your turn.
-- At tool round 9 (round >=9) or >120s turn time: terminal, patch, write_file and execution tools are frozen. Only delegate_task, process_manage (kill/list; wait is blocked), memory, skill_manage, skill_view, skills_list remain. Do not retry; delegate remaining work or deliver current state.
+## 配置
 
-3. Event Wakeup & Physical Verification
-- Asynchronous tasks wake the conversation automatically upon completion.
-- Verify physical on-disk artifacts and real exit codes before answering. Deliver verified results directly — never make the user ask "is it done?".
-- Never expose internal PIDs, session_ids, or raw commands. Keep output clean.
-```
+所有配置项写在 `~/.hermes/config.yaml` 的 `plugins.entries.proactive-agent.settings` 下。直接写在 `proactive-agent:` 下面的配置项会被 Hermes 忽略。每个配置项也可以用环境变量 `PROACTIVE_<配置名大写>` 覆盖。
 
----
+| 配置项 | 默认值 | 含义 |
+|---|---|---|
+| `governed_platforms` | `["weixin"]` | 受管的平台，对其主代理和它派出的子代理生效 |
+| `terminal_auto_detach_seconds` | `30` | 前台命令超过这个秒数就转到后台（0 表示关闭） |
+| `turn_soft_seconds` | `60` | 进入黄区的秒数 |
+| `turn_hard_seconds` | `120` | 进入红区的秒数 |
+| `turn_soft_output_chars` | `30000` | 工具输出达到这个字符数也进入黄区 |
+| `turn_hard_output_chars` | `80000` | 工具输出达到这个字符数也进入红区 |
+| `handoff_min_context_chars` | `120` | `context` 少于这个字符数时退回一次 |
+| `handoff_summary_enabled` | `true` | 是否用辅助模型生成对话摘要 |
+| `handoff_summary_timeout_seconds` | `12` | 摘要调用的超时，要明显小于 `plugins.hook_callback_timeout`（30 秒） |
+| `handoff_memory_max_chars` | `4000` | 每次交接附带的记忆上限（0 表示不附带） |
+| `worker_max_tool_rounds` | `40` | 工人的步数上限 |
+| `worker_repeat_limit` | `3` | 重复多少次就叫停工人 |
+| `worker_guard_risky_commands` | `true` | 没写回退办法时，拒绝工人执行危险命令 |
+| `worker_write_guard` | `true` | 禁止覆盖别人改过的文件 |
+| `verify_child_results` | `true` | 工人交活后提醒秘书核实什么 |
+| `progress_push_enabled` | `true` | 往聊天里推送进度和卡住提醒 |
+| `progress_interval_seconds` | `300` | 两次进度推送之间的秒数 |
 
-## ⚙️ 参数配置说明
-
-可在 Hermes 配置文件 `config.yaml` 或系统环境变量中自定义参数：
-
-| 配置项 | 对应环境变量 | 类型 | 默认值 | 作用说明 |
-|---|---|---|---|---|
-| `governed_platforms` | `PROACTIVE_GOVERNED_PLATFORMS` | `list` | `["weixin"]` | 纳入主动治理的平台白名单列表；未在列表中的平台（如 cli, desktop）彻底豁免放行 |
-| `terminal_auto_detach_seconds` | `PROACTIVE_TERMINAL_AUTO_DETACH_SECONDS` | `int` | `30` | 前台命令最大允许执行秒数，超过后自动安全挂起至后台运行 |
-| `turn_max_tool_rounds` | `PROACTIVE_TURN_MAX_TOOL_ROUNDS` | `int` | `8` | 主代理单轮最大串行工具调用轮数，超过后触发重任务熔断 |
-| `turn_max_duration_seconds` | `PROACTIVE_TURN_MAX_DURATION_SECONDS` | `int` | `120` | 主代理单轮工具执行累计最大秒数，超过后触发熔断 |
-
-### 配置示例 `config.yaml`
 ```yaml
 plugins:
   entries:
     proactive-agent:
-      enabled: true
-      config:
+      settings:
         governed_platforms: ["weixin"]
-        terminal_auto_detach_seconds: 30
-        turn_max_tool_rounds: 8
-        turn_max_duration_seconds: 120
+        turn_soft_seconds: 60
+        turn_hard_seconds: 120
+        worker_max_tool_rounds: 40
 ```
 
-### ⚡ 子代理配置（可选，生产环境推荐）
+建议把 `delegation.max_iterations` 设得比 `worker_max_tool_rounds` 大。这样插件的步数上限会先触发，让工人先交一份汇报，而不是直接撞上 Hermes 的硬上限。
 
-本插件**开箱即用（Zero-Config）**。若未配置 `delegation`，Hermes 会默认让子代理自动继承主 Agent 的模型和凭据。
+## 安装
 
-如果你的主模型单价较高或有并发调用限制（如 Claude Opus / GPT-4o），强烈建议在 `~/.hermes/config.yaml` 中为子代理配置轻量、高并发的专属模型（如 DeepSeek Flash、Gemini Flash），以获得最佳的并发调研速度与成本效益：
-
-```yaml
-delegation:
-  # 可选：指定子代理专用 provider 与模型（缺省则自动继承主模型）
-  provider: custom   # 例如 custom, openrouter, deepseek 等
-  model: deepseek-flash
-  max_concurrent_children: 5  # 最大并发子代理数（默认 5）
-```
-
----
-
-## 🚀 安装与使用
-
-### 通过 Hermes CLI 安装
 ```bash
-# 从 GitHub 仓库一键安装
 hermes plugins install github:JerryLiu369/hermes-proactive-agent
-
-# 启用插件
-hermes plugins enable proactive-agent
-
-# 检查已安装插件列表与状态
-hermes plugins list
-```
-
-### 手动安装
-```bash
-git clone https://github.com/JerryLiu369/hermes-proactive-agent.git ~/.hermes/plugins/proactive-agent
 hermes plugins enable proactive-agent
 ```
 
-### 卸载
+手动安装：把仓库克隆到 `~/.hermes/plugins/proactive-agent`，然后运行 `hermes plugins enable proactive-agent`。
+
+## 开发
+
 ```bash
-hermes plugins disable proactive-agent
-hermes plugins uninstall proactive-agent
+pip install pytest pyyaml
+pytest -q
 ```
 
----
+仓库根目录就是插件包，测试以包的方式加载它（见 `tests/conftest.py`）。
 
-## 🔍 常见排障与 FAQ
+| 模块 | 作用 |
+|---|---|
+| `__init__.py` | 注册钩子 |
+| `config.py` | 读取配置 |
+| `context.py` | 判断调用方：受管主代理、子代理还是定时任务 |
+| `secretary.py` | 单轮预算、长命令转后台、对话快照 |
+| `handoff.py` | `delegate_task` 交接单检查与背景附带 |
+| `workers.py` | 工人登记、护栏、验收提醒、进度推送 |
+| `guards.py` | 命令分类与文本工具函数 |
+| `prompt.py` | 系统提示词片段 |
 
-| 现象 / 疑问 | 触发机制与原因 | 建议排障与操作 |
-|---|---|---|
-| **前台执行命令在 30 秒后转入后台** | 触发了自适应前台超时机制，避免阻塞聊天界面。 | 属于正常预期行为。进程在后台安全运行，命令完成时会自动收到推送；Agent 无需轮询等待。 |
-| **工具调用报错 `[Circuit Breaker] Quota reached`** | Agent 在单轮内调用单体工具超过 8 轮或工具执行总时长超过 120 秒。 | Agent 被要求拆解子任务并使用 `delegate_task` 委派子代理并行处理，或先回复用户当前进展。 |
-| **子代理（Subagent）会被熔断或脱壳限制吗？** | 子代理拥有独立生命周期。 | 不会。以 `sa-` 开头的子任务 ID 或 `platform="subagent"` 自动跳过 30s 脱壳定时器与熔断检测，且享受 0 提示词注入开销。 |
-| **中途发送了纠偏消息，Agent 会被卡住吗？** | 包含自愈检测。 | 不会。用户中途发送 Steer / 插话消息后，插件会自动清零单轮计数器并重置执行耗时，重新赋予完整配额。 |
-| **如何在本地运行测试？** | 项目包含完备的测试套件。 | 在项目根目录下执行 `pytest -v` 即可运行全部单元测试。 |
+## 兼容性
 
----
+- 需要 Hermes Agent 支持以下能力：`pre_tool_call` 改写参数、`subagent_start` / `subagent_stop`、`ctx.llm` 和 `ctx.post_message`。已在 Hermes v0.22.7 上测试。缺少可选能力时会安静降级：没有摘要模型就改用简单摘录；没有 `post_message` 就不推送进度。
+- Python 3.10 及以上。
 
-## 🛠️ 环境兼容性
+## License
 
-- **Hermes Agent**: v0.8.0 及以上版本
-- **Python**: 3.10, 3.11, 3.12+
-- **操作系统**: Linux, macOS, WSL
-
----
-
-## 📄 License
-
-本项目采用 [MIT License](LICENSE) 开源协议。
+[MIT](LICENSE)

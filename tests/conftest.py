@@ -1,0 +1,63 @@
+"""Load the plugin the way Hermes does: the repo root as a package with submodules."""
+
+import importlib.util
+import os
+import sys
+
+import pytest
+
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+PACKAGE = "proactive_agent_under_test"
+
+
+def _load():
+    if PACKAGE in sys.modules:
+        return sys.modules[PACKAGE]
+    spec = importlib.util.spec_from_file_location(
+        PACKAGE, os.path.join(REPO_ROOT, "__init__.py"), submodule_search_locations=[REPO_ROOT])
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[PACKAGE] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+class FakeContext:
+    def __init__(self, config=None, llm=None, post_message=None):
+        self.config = config or {}
+        self.hooks = {}
+        self.prompt_sections = {}
+        self.aux_tasks = {}
+        if llm is not None:
+            self.llm = llm
+        if post_message is not None:
+            self.post_message = post_message
+
+    def get_config(self, key, default=None):
+        return self.config.get(key, default)
+
+    def register_hook(self, name, fn):
+        self.hooks[name] = fn
+
+    def register_system_prompt_section(self, name, renderer, position="after_memory", max_chars=2000):
+        self.prompt_sections[name] = {"renderer": renderer, "position": position, "max_chars": max_chars}
+
+    def register_auxiliary_task(self, name, **kwargs):
+        self.aux_tasks[name] = kwargs
+
+
+@pytest.fixture
+def plugin():
+    module = _load()
+    module._on_session_clean()
+    yield module
+    module._on_session_clean()
+    module.config.set_ctx(None)
+
+
+@pytest.fixture
+def make_ctx(plugin):
+    def _make(**kwargs):
+        ctx = FakeContext(**kwargs)
+        plugin.register(ctx)
+        return ctx
+    return _make
