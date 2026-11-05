@@ -14,6 +14,15 @@ Roles:
 - Main agent ("secretary"): keeps the chat responsive, investigates and decides, owns the conversation.
 - Subagents ("workers"): do slow execution with a complete brief, under supervision.
 
+## Design
+
+The plugin follows one task through four stages: turn budget (secretary) -> handoff contract (delegate_task) -> worker guards (subagent) -> result check and progress (back to the secretary).
+
+Principles:
+- The secretary thinks, workers execute: the chat is never held for minutes; slow work goes to the background or to a worker.
+- A handoff carries everything the worker needs: workers start with no memory and no view of the chat, so briefs are checked and context is attached.
+- Workers are supervised, results are verified: stuck workers stop early, risky or conflicting changes are refused, evidence is checked before reporting.
+
 ## Capabilities
 
 ### Secretary turn budget
