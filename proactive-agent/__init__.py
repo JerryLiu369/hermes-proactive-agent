@@ -10,8 +10,10 @@ keeps four promises, one module each:
 2. Subagents start informed (handoff): a thin or clashing delegate_task brief is returned once;
    an accepted one carries the user's words, memory, running and unfinished tasks, working rules
    and a result schema.
-3. Subagents do not spin (workers): a subagent that gets the same result from the same step
-   again and again is stopped.
+3. Subagents do not spin or guess (workers, handoff, reports): a subagent that gets the same
+   result from the same step again and again is stopped; one that needs a decision it should not make, or
+   is refused by approval or a rule, ends with a question that the main agent answers or takes
+   to the user.
 4. Results are checked, reported and remembered (reports, ledger): the main agent is told what
    to verify when a subagent returns, a result stays unreported until the user has heard it (a
    user message that cuts into the report gets it repeated), and a persistent ledger records
@@ -67,7 +69,8 @@ def _pre_llm_call(**kw: Any) -> Optional[dict]:
     secretary.on_turn_start(session_id, turn_id, context.platform_for(**kw),
                             kw.get("conversation_history"), kw.get("user_message"))
     turn = secretary.turn_facts(session_id, turn_id)
-    notes = reports.pending_notes(session_id, turn["key"] if turn else turn_id, kw.get("user_message"))
+    notes = reports.pending_notes(session_id, turn["key"] if turn else turn_id, kw.get("user_message"),
+                                  by_user=secretary.by_user(kw.get("user_message")))
     return {"context": notes} if notes else None
 
 
@@ -106,7 +109,7 @@ def _transform_tool_result(tool_name: str = "", args: Optional[dict] = None, res
                            **kw: Any) -> Optional[str]:
     worker = _worker_for(**kw)
     if worker is not None:
-        return workers.transform_tool_result(worker, tool_name, result)
+        return workers.transform_tool_result(worker, tool_name, args, result)
     session_id = _main_session(**kw)
     if not session_id:
         return None

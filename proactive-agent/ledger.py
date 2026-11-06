@@ -2,9 +2,9 @@
 
 Only the plugin's hooks write it, and no model is called. It lives in Hermes' plugin-data
 directory, so a gateway restart keeps what was running, which files each task changed, how it
-ended and whether the user has heard the result yet. The main agent reads it through result and
-restart notes, which wait in the ledger until that chat's next turn; workers read it through
-their handoff briefing.
+ended, whether the user has heard the result yet and whether its question is still open.
+The main agent reads it through result and restart notes, which wait in the ledger until that
+chat's next turn; workers read it through their handoff briefing.
 """
 
 from __future__ import annotations
@@ -214,9 +214,11 @@ def mark_stopped(task_id: str, parent: str) -> None:
 
 
 def finish(task_id: str, status: str, summary: str = "", evidence: Iterable[str] = (),
-           blockers: Iterable[str] = (), files: Iterable[str] = (), unreported: bool = False) -> None:
+           blockers: Iterable[str] = (), files: Iterable[str] = (), unreported: bool = False,
+           question: str = "", options: Iterable[str] = ()) -> None:
     """Close a task. *unreported* marks a result the user should hear about; it stays marked until
-    a turn of the main agent that saw it ends with a reply nobody interrupted (see reports)."""
+    a turn of the main agent that saw it ends with a reply nobody interrupted (see reports). A
+    *question* marks a task that waits for a decision until the chat dispatches again."""
     add_files(task_id, files)
     now = time.time()
     with _lock:
@@ -227,7 +229,9 @@ def finish(task_id: str, status: str, summary: str = "", evidence: Iterable[str]
         status = (status or "").strip().lower()
         t.update(status=status if status and status != RUNNING else "unknown", ended=now, summary=str(summary or "")[:600],
                  evidence=[str(e)[:200] for e in evidence][:5], blockers=[str(b)[:200] for b in blockers][:5],
-                 unreported=bool(unreported), shown=0, shown_turn="", wakes=0)
+                 unreported=bool(unreported), shown=0, shown_turn="", wakes=0,
+                 question=str(question or "")[:600], options=[str(o)[:200] for o in options][:6],
+                 awaiting=bool(str(question or "").strip()), asked_turn="")
         _put(t)
         _prune(t["parent"], now)
 
@@ -267,10 +271,25 @@ def unreported_in_turn(parent: str, turn: str) -> List[dict]:
         return [t for t in _unreported(parent) if t.get("shown_turn") == turn]
 
 
-def settle(task_ids: Iterable[str]) -> None:
-    """The user has heard these results."""
+def settle(task_ids: Iterable[str], turn: str) -> None:
+    """The user has heard these results, in the reply of *turn*."""
+    def change(t: dict):
+        t["unreported"] = False
+        if t.get("awaiting") and not t.get("asked_turn"):
+            t["asked_turn"] = turn
     for task_id in task_ids:
-        _update(task_id, lambda t: t.update(unreported=False))
+        _update(task_id, change)
+
+
+def mark_asked(task_ids: Iterable[str], turn: str) -> None:
+    """The question of these tasks reached the main agent in *turn*."""
+    for task_id in task_ids:
+        _update(task_id, lambda t: t.update(asked_turn=turn))
+
+
+def stop_awaiting(task_ids: Iterable[str]) -> None:
+    for task_id in task_ids:
+        _update(task_id, lambda t: t.update(awaiting=False))
 
 
 def add_wake(task_ids: Iterable[str]) -> None:
@@ -326,10 +345,19 @@ def running(parent: str) -> List[dict]:
                        (parent, RUNNING, time.time() - _RUNNING_HORIZON_S), order="started ASC")
 
 
-def _unreported(parent: str) -> List[dict]:
-    rows = _select("parent = ? AND status != ? AND ended >= ?", (parent, RUNNING, time.time() - _REPORT_HORIZON_S),
+def _recent(parent: str) -> List[dict]:
+    return _select("parent = ? AND status != ? AND ended >= ?", (parent, RUNNING, time.time() - _REPORT_HORIZON_S),
                    order="ended ASC")
-    return [t for t in rows if t.get("unreported")]
+
+
+def _unreported(parent: str) -> List[dict]:
+    return [t for t in _recent(parent) if t.get("unreported")]
+
+
+def awaiting_decision(parent: str) -> List[dict]:
+    """Tasks of *parent* that ended with a question and no dispatch since."""
+    with _lock:
+        return [t for t in _recent(parent) if t.get("awaiting")]
 
 
 def unfinished(parent: str, within_seconds: float = 86400.0, limit: int = 3) -> List[dict]:

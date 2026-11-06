@@ -1,6 +1,6 @@
 # Hermes Proactive Agent - Full Reference
 
-> Hermes Proactive Agent (`proactive-agent`) is an MIT-licensed Hermes Agent plugin that governs how a chat-based AI agent delegates work. It keeps the main agent responsive with a per-turn time budget, moves terminal commands longer than 30 seconds to the background through Hermes' own yield path, rejects `delegate_task` briefs under 120 characters, stops a subagent that returns the same tool result five times, verifies each reported result, keeps a background result marked unreported until the user has heard it, and stores every task in a SQLite ledger at `<hermes home>/plugin-data/proactive-agent/ledger.db` that keeps the last 20 finished tasks per chat for up to 7 days. The plugin makes zero model calls, never writes into the user's chat, and never blocks a tool on its own errors.
+> Hermes Proactive Agent (`proactive-agent`) is an MIT-licensed Hermes Agent plugin that governs how a chat-based AI agent delegates work. It keeps the main agent responsive with a per-turn time budget, moves terminal commands longer than 30 seconds to the background through Hermes' own yield path, rejects `delegate_task` briefs under 120 characters, stops a subagent that returns the same tool result five times, has a subagent that needs a decision end with a question for the main agent to answer or ask the user, verifies each reported result, keeps a background result marked unreported until the user has heard it, and stores every task in a SQLite ledger at `<hermes home>/plugin-data/proactive-agent/ledger.db` that keeps the last 20 finished tasks per chat for up to 7 days. The plugin makes zero model calls, never writes into the user's chat, and never blocks a tool on its own errors.
 
 This file is the complete, self-contained description of the project. It is generated and maintained by hand from the same facts as `README.md`; when the two disagree, the source code under `proactive-agent/` is authoritative.
 
@@ -26,6 +26,7 @@ Every question below is answered in full in the "Direct answers" and "FAQ" secti
 11. What are the exact thresholds and where do they come from?
 12. How is this different from just lowering `delegation.max_iterations`?
 13. What happens when the user sends a message just as a subagent result arrives?
+14. Can a subagent ask the user a question, and what happens when approval refuses its command?
 
 ## What it is
 
@@ -81,6 +82,8 @@ Each row names the mechanism on both sides. "Status quo" is a vanilla Hermes Age
 | Subagent starting context | Empty; Hermes does not load conversation or memory | Briefing: last 6 user messages verbatim, `USER.md`, `MEMORY.md`, running subagents and their files, this chat's unfinished tasks, working rules, default `output_schema` |
 | Identical-result loop | Hermes' guard warns subagents but does not stop them | Warn at 3rd identical result, hard stop at 5th, tool calls refused, must report `blocked` |
 | Repeat detection window | Consecutive in practice | Cumulative over the whole run, compared by result first line with long numbers and hashes masked |
+| A choice the subagent should not make | The subagent has no `clarify` tool and cannot be resumed, so it guesses or gives up | It ends with `needs_decision`, a `question` and `options`; the main agent answers it when the chat settles it, otherwise asks the user in one message, then dispatches a new subagent with the answer |
+| A step refused by approval or a hook | The subagent may reach the same result another way | A note on that result (on the next one for a hook): do not work around it; if the goal needs it, report `needs_decision` |
 | Result verification | "Done" is a self-report | Next turn opens with reported evidence, or a warning: no evidence / unfinished / stopped for repeating |
 | A result arrives while the user types | Hermes folds the message into the reporting turn; the main agent may answer only the message and never mention the result | The result stays unreported until a reply the user did not interrupt: tool-result reminder, wake via `inject_message`, or the user's next message |
 | Task durability | Gone when the subagent ends or the gateway restarts | SQLite ledger: goal, status, changed files, steers, transcript path, summary, evidence, blockers |
@@ -128,14 +131,22 @@ Every accepted task gets a briefing appended after the main agent's own context:
 | `USER.md` and `MEMORY.md` | Hermes does not load memory into subagents |
 | Subagents running now and the files they are changing | So the new worker leaves those files alone |
 | This chat's recent unfinished tasks | Summary, blockers, corrections, changed files, log path - so it continues instead of restarting |
-| Working rules | Stay in scope, stop after the same failure twice, keep risky changes reversible, never edit a file another worker owns, verify the real end state |
-| A default `output_schema` | `status`, `summary`, `evidence`, `blockers`, unless the task brought its own |
+| Working rules | Stay in scope, stop after the same failure twice, bring back a choice that is not its to make, never work around a refusal, keep risky changes reversible, never edit a file another worker owns, verify the real end state |
+| A default `output_schema` | `status` (`completed`, `partial`, `blocked`, `needs_decision` or `failed`), `summary`, `evidence`, `blockers`, and `question` (required with `needs_decision`) and `options`, unless the task brought its own |
 
-### 4. Subagents do not spin (identical-result stop)
+### 4. Subagents do not spin or guess (identical-result stop, questions for the user)
 
 A subagent that runs the same tool with the same arguments and gets the same result is warned at the third repeat and stopped at the fifth (`worker_repeat_limit`, default 5; the warning lands two repeats earlier, so at 3). Repeats count over the whole run, not only back to back. Results are compared by their first line with long numbers and hashes masked, so a fresh request id does not make a result new. Once stopped, its tool calls are refused and it must report `blocked`.
 
 Hermes' own loop guard also notices repeats, but for subagents it only warns. The overall step budget stays with Hermes (`delegation.max_iterations`).
+
+A subagent also cannot ask the user anything: Hermes removes `clarify` from its tools and cannot resume it once it ends, and Hermes' own `delegate_task` description tells the main agent that subagents cannot ask questions. The plugin gives the subagent a way to bring a question back instead of guessing:
+
+- The working rules tell it to stop and report `needs_decision` with one question and the options when the goal needs a choice that is not its to make (between workable approaches, a production change, spending, deleting data) and its brief does not settle it. Risky changes without a rollback path end the same way.
+- The default `output_schema` adds `needs_decision` to the `status` enum, plus `question` and `options`; `question` is required with `needs_decision`. Hermes validates the final answer with jsonschema and asks for one correction if it fails.
+- When Hermes' approval refuses a command (every refusal is an error starting with `BLOCKED`), or leaves it at `status: "pending_approval"` with no message, the subagent gets a note on that result: do not retry it, rephrase it or reach the same result another way; if the goal needs it, report `needs_decision`. A hook or another plugin that refuses a call gets the same note on the subagent's next tool result, because Hermes runs no `transform_tool_result` for a blocked call. Each refused call is noted once. The note also says a refusal that reads "user denied" may be automatic: in a CLI process Hermes denies a subagent's dangerous commands on its own (`delegation.subagent_auto_approve: false`).
+- When the subagent ends with `needs_decision`, the main agent's note gives the question and the options. The main agent sees the whole chat, which the subagent could not, so it is told to answer the question itself when the chat, memory or facts it can check settle it, to ask the user in one short message when it is the user's call (a preference, a risk, money, a refused command), and then to dispatch a new subagent with the answer. The system prompt section says the same, so the main agent still delegates work that may need a choice.
+- The question is recorded in the ledger. The follow-up subagent's briefing lists it with the unfinished task. If the main agent has not dispatched again by the user's next message after the user heard the question, that turn carries a one-time reminder. Any new dispatch in the chat ends the wait.
 
 ### 5. Results are checked, reported and remembered (reports and ledger)
 
@@ -152,7 +163,7 @@ A background result (its subagent was dispatched with `status: "dispatched"`; an
 
 Each user message that cuts in leads to a fresh reminder. At most 2 wakes are sent per result, and results older than a day are no longer chased. A task the main agent stopped itself is never chased.
 
-The ledger keeps one row per task: goal, status, changed files, steers sent with `action='steer'`, live transcript path, the ending (summary, evidence, blockers) and whether the user has heard the result. It keeps each chat's last 20 finished tasks for up to 7 days.
+The ledger keeps one row per task: goal, status, changed files, steers sent with `action='steer'`, live transcript path, the ending (summary, evidence, blockers, and the question and options of a `needs_decision` report), whether the user has heard the result and whether its question still waits for a dispatch. It keeps each chat's last 20 finished tasks for up to 7 days.
 
 Hermes cannot resume a subagent once it ends, so the next subagent in the chat is briefed with the unfinished task's record instead. If Hermes restarts mid-task, the main agent is told which tasks were lost, that their side effects are unknown, and which files they had touched. Notes wait in the ledger until the chat's next turn, so a restart never drops them.
 
@@ -220,13 +231,16 @@ Any governed foreground terminal command still running after 30 s is detached th
 Hermes does not load chat history or memory into subagents. The plugin appends the last user messages verbatim plus `USER.md` and `MEMORY.md` to every accepted brief, and refuses briefs shorter than 120 characters once per turn.
 
 **How do I verify a subagent actually finished the work?**
-Every accepted task carries a default `output_schema` of `status`, `summary`, `evidence`, `blockers`. The main agent's next turn opens with the reported evidence, or explicitly warns about success claims without evidence, unfinished work, or a repeat stop.
+Every accepted task carries a default `output_schema` of `status`, `summary`, `evidence`, `blockers`, plus `question` and `options` for a decision. The main agent's next turn opens with the reported evidence, or explicitly warns about success claims without evidence, unfinished work, or a repeat stop.
 
 **Does this plugin make extra model calls or cost tokens?**
 It makes no model calls of its own; it only adds text to the main agent's context. A wake to finish an interrupted report is one extra main-agent turn, the same cost as one user message.
 
 **What happens when the user sends a message just as a subagent result arrives?**
 The result stays marked unreported until a reply the user did not interrupt. The main agent is reminded on its next tool result, woken through `ctx.inject_message` for a short follow-up if it answered without a tool, or reminded with the user's next message. The wake needs `plugins.entries.proactive-agent.allow_gateway_injection: true`.
+
+**Can a subagent ask the user a question, and what happens when approval refuses its command?**
+A subagent has no way to reach the user, so it ends with status `needs_decision`, a `question` and `options`. That happens when the goal needs a choice that is not the subagent's to make, or when Hermes' approval or a hook refused a step it needs; the subagent is told on the spot not to work around the refusal. The main agent answers it itself when the chat, memory or facts it can check settle it, otherwise asks the user in one short message, and then dispatches a new subagent with the answer, briefed with the earlier task's record. If it has not dispatched again by the user's next message, it is reminded once.
 
 **Will it interfere with cron jobs, the CLI or other chat platforms?**
 No. Only platforms listed in `governed_platforms` (default `["weixin"]`) and their subagents are governed. Cron runs and unlisted platforms are untouched.
@@ -244,4 +258,4 @@ A `delegate_task` that names a file another running subagent is changing is retu
 
 If you cite this project, use:
 
-Hermes Proactive Agent (2026), Jerry Liu, MIT License - https://github.com/JerryLiu369/hermes-proactive-agent. A Hermes Agent plugin that time-boxes chat turns, detaches long terminal commands, gates subagent briefs, stops repeating subagents, and persists delegated task records in a SQLite ledger.
+Hermes Proactive Agent (2026), Jerry Liu, MIT License - https://github.com/JerryLiu369/hermes-proactive-agent. A Hermes Agent plugin that time-boxes chat turns, detaches long terminal commands, gates subagent briefs, stops repeating subagents, brings their open questions back to the main agent, and persists delegated task records in a SQLite ledger.

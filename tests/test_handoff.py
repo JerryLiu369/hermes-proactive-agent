@@ -66,3 +66,17 @@ def test_other_delegate_actions_pass_through(plugin, make_ctx):
     start_turn(plugin)
     assert main_tool(plugin, "delegate_task", {"action": "list"}) is None
     assert main_tool(plugin, "delegate_task", {"action": "steer", "subagent_id": "sa-1", "message": "x"}) is None
+
+
+def test_briefing_tells_the_worker_to_bring_a_decision_back(plugin, make_ctx):
+    make_ctx()
+    start_turn(plugin)
+    res = main_tool(plugin, "delegate_task", {"goal": "Fix", "context": GOOD_CONTEXT})
+    context, schema = res["args"]["context"], res["args"]["output_schema"]
+    assert "You cannot ask the user" in context and "Do not guess" in context
+    assert "do not retry it or reach the same result another way" in context
+    assert "A refusal that says the user denied it may be automatic" in context
+    assert "needs_decision" in schema["properties"]["status"]["enum"]
+    assert {"question", "options"} <= set(schema["properties"])
+    assert schema["if"]["properties"]["status"] == {"const": "needs_decision"}
+    assert schema["then"] == {"required": ["question"]}, "Hermes makes a needs_decision report carry its question"

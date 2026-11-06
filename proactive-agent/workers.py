@@ -1,4 +1,5 @@
-"""Delegated workers: the registry of running subagents and the stop on repeated steps.
+"""Delegated workers: the registry of running subagents, the stop on repeated steps, and the note
+when approval or a rule refuses a step.
 
 A worker is governed only when the main agent that spawned it is governed. Its counters live
 here, in memory; what the task is, which files it changed and how it ended go to the ledger.
@@ -76,6 +77,7 @@ def on_subagent_start(is_parent_governed: Callable[[str], bool], **kw: Any) -> N
         "pending_note": None,
         "stop_reason": None,
         "stop_noted": False,
+        "refused": set(),
         "done": False,
         "stopped_by_parent": False,
     }
@@ -120,6 +122,41 @@ def reset_all() -> None:
         _by_session.clear()
 
 
+# ---------------------------------------------------------------- refused steps
+
+_REFUSED = ("[proactive-agent] {what} Do not retry it, rephrase it or reach the same result another way. If the goal "
+            "needs it, stop now and report status \"needs_decision\": what was refused, why it is needed, and the "
+            "options. The main agent decides or asks the user. A refusal that says the user denied it may be automatic.")
+
+
+def _approval_refusal(result: Any) -> Optional[str]:
+    """What Hermes' approval did to a call: refused it (every refusal is an error starting with
+    BLOCKED), or left it waiting for an answer this run cannot wait for (terminal status
+    "pending_approval", which carries no message of its own)."""
+    data = util.json_object(result)
+    if data is None:
+        return None
+    if data.get("status") == "pending_approval" or data.get("approval_pending"):
+        return "This command did not run: it is waiting for the user's approval, and this run cannot wait for it."
+    error = data.get("error")
+    if isinstance(error, str) and error.lstrip().startswith("BLOCKED"):
+        return "Hermes' approval or a safety rule refused this call, so it did not run."
+    return None
+
+
+def _first_refusal(w: dict, tool_name: str, args: Optional[dict]) -> bool:
+    key = util.call_signature(tool_name, args)
+    with _lock:
+        if key in w["refused"]:
+            return False
+        w["refused"].add(key)
+    return True
+
+
+def _joined(*notes: Optional[str]) -> Optional[str]:
+    return "\n".join(n for n in notes if n) or None
+
+
 # ---------------------------------------------------------------- repeat stop
 
 def _stop_message(w: dict) -> str:
@@ -141,6 +178,14 @@ def pre_tool_call(w: dict, tool_name: str, args: Optional[dict], **kw: Any) -> O
 
 def post_tool_call(w: dict, tool_name: str, args: Optional[dict], result: Any, **kw: Any) -> None:
     if kw.get("error_type") == "plugin_block":
+        # A hook or plugin refused the call. Hermes runs no transform_tool_result for a blocked
+        # call, so the note rides on the worker's next tool result. The plugin's own STOP is not news.
+        message = str(kw.get("error_message") or "")
+        if not message.startswith("[proactive-agent]") and _first_refusal(w, tool_name, args):
+            note = _REFUSED.format(what=f"Your earlier call {util.describe_call(tool_name, args)} was refused by a hook "
+                                        f"or plugin rule (\"{util.short(message, 160)}\") and did not run.")
+            with _lock:
+                w["pending_note"] = _joined(w["pending_note"], note)
         return
     args = args or {}
     if is_write(tool_name) and isinstance(args.get("path"), str) and kw.get("status") != "error":
@@ -161,16 +206,20 @@ def post_tool_call(w: dict, tool_name: str, args: Optional[dict], result: Any, *
         if count >= limit and w["stop_reason"] is None:
             w["stop_reason"] = stopped = f"ran the same step {count} times with the same result: {step}"
         elif count == warn_at:
-            w["pending_note"] = (f"[proactive-agent] You ran the same step {count} times with the same result: {step}. "
-                                 f"Change approach or report the blocker; at {limit} repeats you will be stopped.")
+            w["pending_note"] = _joined(
+                w["pending_note"], f"[proactive-agent] You ran the same step {count} times with the same result: {step}. "
+                                   f"Change approach or report the blocker; at {limit} repeats you will be stopped.")
     if stopped:
         logger.warning("proactive-agent: stopping worker %s: %s", w["id"], stopped)
 
 
-def transform_tool_result(w: dict, tool_name: str, result: Any) -> Optional[str]:
+def transform_tool_result(w: dict, tool_name: str, args: Optional[dict], result: Any) -> Optional[str]:
     with _lock:
         if w["stop_reason"] and not w["stop_noted"]:
             w["stop_noted"] = True
             return util.append_note(result, _stop_message(w))
         note, w["pending_note"] = w["pending_note"], None
+    refusal = _approval_refusal(result)
+    if refusal and _first_refusal(w, tool_name, args):
+        note = _joined(note, _REFUSED.format(what=refusal))
     return util.append_note(result, note) if note else None
