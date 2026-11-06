@@ -29,7 +29,7 @@ Five problems when a chat agent delegates on its own, and the plugin's answer to
 
 ### 1. The chat stays responsive
 - From 60 s in one turn: one note to answer or delegate within 1-2 steps.
-- From 120 s: editing and execution pause; reading, delegate_task and wrap-up tools remain (memory, todo, clarify, send_message, process_manage list/poll/log/kill).
+- From 120 s: editing and execution pause; reading, delegate_task and wrap-up tools remain (memory, skill_view/skills_list/skill_manage, todo_list, clarify, process_manage list/poll/log/kill).
 - A mid-turn user message restarts the clock.
 - Terminal commands still running after 30 s move to the background via Hermes' yield path; Hermes reports when they end.
 - process_manage(action='wait') is refused.

@@ -56,7 +56,8 @@ The main agent may think and investigate, but every turn has a budget.
 | from 120 s | editing and execution pause; reading, `delegate_task` and wrap-up tools remain |
 
 - A message from you mid-turn restarts the clock.
-- Wrap-up tools are `memory`, `todo`, `clarify`, `send_message`, and `process_manage` to list, poll, read logs or kill.
+- Wrap-up tools are `memory`, the skill tools, `todo_list`, `clarify`, and `process_manage` to list, poll, read logs or
+  kill.
 - A terminal command still running after 30 s moves to the background through Hermes' own yield path. It keeps
   running, Hermes reports when it ends, and the main agent is told it has not failed.
 - Waiting on a background job (`process_manage(action='wait')`) is refused, since it would freeze the chat again.

@@ -12,10 +12,11 @@ from . import config, context, handoff, util, workers
 
 logger = logging.getLogger("hermes.plugins.proactive_agent")
 
-# Still available once the turn budget is spent: reading, delegating and wrapping up.
+# Still available once the turn budget is spent: reading, delegating and wrapping up (memory, skills,
+# the todo list, a question to the user). Names are Hermes' registered tool names.
 RED_ALLOWED_TOOLS = {
     "delegate_task", "process_manage", "read_file", "search_files", "session_search", "memory",
-    "skill_view", "skills_list", "todo", "clarify", "send_message",
+    "skill_view", "skills_list", "skill_manage", "todo_list", "clarify",
 }
 # process_manage stays only for looking at background jobs or ending them, not for driving them.
 RED_PROCESS_ACTIONS = {"list", "poll", "log", "kill"}

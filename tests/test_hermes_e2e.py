@@ -144,3 +144,14 @@ def test_background_detach_with_real_wait_loop(hermes, monkeypatch):
         proc.wait()
     assert result.get("yielded_session_id") == "proc_e2e"
     assert time.monotonic() - started < 6, "yield should fire after ~1s, not wait for the process"
+
+
+def test_tool_names_the_plugin_relies_on_exist_in_hermes(hermes):
+    import model_tools  # noqa: F401  (registers Hermes' built-in tools)
+    from tools.registry import registry
+
+    plugin = next(m for name, m in sys.modules.items()
+                  if name.endswith("proactive-agent.secretary") or name.endswith("proactive_agent.secretary"))
+    names = set(plugin.RED_ALLOWED_TOOLS) | {"terminal", "delegate_task", "process_manage", "write_file", "patch"}
+    missing = sorted(n for n in names if registry.get_entry(n) is None)
+    assert not missing, f"tools renamed or removed in Hermes: {missing}"

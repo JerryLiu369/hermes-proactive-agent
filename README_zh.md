@@ -51,7 +51,7 @@ delegation:
 | 120 秒起 | 暂停改文件和执行命令；读取、`delegate_task` 和收尾用的工具仍可用 |
 
 - 你在一轮中途发来新消息，计时重新开始。
-- 收尾用的工具是 `memory`、`todo`、`clarify`、`send_message`，以及只用于查看、轮询、读日志或结束后台任务的 `process_manage`。
+- 收尾用的工具是 `memory`、技能相关工具、`todo_list`、`clarify`，以及只用于查看、轮询、读日志或结束后台任务的 `process_manage`。
 - 终端命令跑了 30 秒还没结束，就通过 Hermes 自带的机制转到后台：进程继续跑，结束时 Hermes 会通知，主代理也会被告知命令没有失败。
 - 拒绝干等后台任务（`process_manage(action='wait')`），因为那会让聊天再次卡住。
 

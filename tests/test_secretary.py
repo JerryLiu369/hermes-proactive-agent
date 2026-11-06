@@ -85,7 +85,10 @@ def test_red_zone_keeps_only_reading_and_wrap_up(plugin, make_ctx):
         assert main_tool(plugin, "process_manage", {"action": action}) is None, action
     for action in ("write", "submit"):
         assert main_tool(plugin, "process_manage", {"action": action})["action"] == "block", action
-    assert main_tool(plugin, "skill_manage", {"action": "create"})["action"] == "block"
+    for allowed in ("skill_manage", "todo_list", "clarify", "memory", "session_search"):
+        assert main_tool(plugin, allowed, {}) is None, allowed
+    for paused in ("write_file", "patch", "terminal", "execute_code"):
+        assert main_tool(plugin, paused, {})["action"] == "block", paused
 
 
 def test_quoted_yield_json_does_not_replace_the_result(plugin, make_ctx):
