@@ -105,11 +105,17 @@ def load(path: Optional[Path] = None) -> List[dict]:
         _db.execute("DELETE FROM tasks WHERE started < ?", (now - _KEEP_SECONDS,))
         _db.execute("DELETE FROM notes WHERE created < ?", (now - _KEEP_SECONDS,))
         _db.commit()
-        lost = [t for t in _select("status = ?", (RUNNING,))
-                if t["pid"] != os.getpid() and not _alive(int(t["pid"] or 0))]
-        for t in lost:
-            t["status"], t["ended"] = LOST, now
-            _put(t)
+        lost = []
+        for t in _select("status = ?", (RUNNING,)):
+            if t["pid"] == os.getpid() or _alive(int(t["pid"] or 0)):
+                continue
+            # Conditional, so of two processes starting together only one claims (and reports) the task.
+            claimed = _db.execute("UPDATE tasks SET status = ?, ended = ? WHERE id = ? AND status = ?",
+                                  (LOST, now, t["id"], RUNNING)).rowcount
+            _db.commit()
+            if claimed == 1:
+                t["status"], t["ended"] = LOST, now
+                lost.append(t)
         return lost
 
 
@@ -150,6 +156,7 @@ def _update(task_id: str, change) -> None:
 def _prune(parent: str, now: float) -> None:
     db = _conn()
     db.execute("DELETE FROM tasks WHERE started < ?", (now - _KEEP_SECONDS,))
+    db.execute("DELETE FROM notes WHERE created < ?", (now - _KEEP_SECONDS,))
     db.execute("DELETE FROM tasks WHERE parent = ? AND status != ? AND id NOT IN (SELECT id FROM tasks "
                "WHERE parent = ? AND status != ? ORDER BY ended DESC LIMIT ?)",
                (parent, RUNNING, parent, RUNNING, _KEEP_FINISHED_PER_PARENT))

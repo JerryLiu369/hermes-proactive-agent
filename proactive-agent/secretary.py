@@ -15,8 +15,10 @@ logger = logging.getLogger("hermes.plugins.proactive_agent")
 # Still available once the turn budget is spent: reading, delegating and wrapping up.
 RED_ALLOWED_TOOLS = {
     "delegate_task", "process_manage", "read_file", "search_files", "session_search", "memory",
-    "skill_view", "skills_list", "skill_manage", "todo", "clarify", "send_message",
+    "skill_view", "skills_list", "todo", "clarify", "send_message",
 }
+# process_manage stays only for looking at background jobs or ending them, not for driving them.
+RED_PROCESS_ACTIONS = {"list", "poll", "log", "kill"}
 _KEEP_USER_MESSAGES = 6
 
 _lock = threading.Lock()
@@ -100,21 +102,19 @@ def on_api_request(session_id: str, turn_id: str, messages: Any) -> None:
             _turns[session_id] = _new_turn(turn_id or st["turn_id"], len(steers))
 
 
-def _block(message: str) -> dict:
-    return {"action": "block", "message": message, "reason": message}
-
-
 def pre_tool_call(session_id: str, turn_id: str, tool_name: str, args: Optional[dict]) -> Optional[dict]:
     args = args or {}
     if tool_name == "process_manage" and args.get("action") == "wait":
-        return _block("[proactive-agent] process_manage(action='wait') blocks the chat. Background jobs notify you "
+        return util.block("[proactive-agent] process_manage(action='wait') blocks the chat. Background jobs notify you "
                       "when they finish; tell the user what is running and end your turn.")
     with _lock:
         _turn(session_id, turn_id)
-    if tool_name not in RED_ALLOWED_TOOLS and zone(session_id) == "red":
+    paused = tool_name not in RED_ALLOWED_TOOLS or (
+        tool_name == "process_manage" and str(args.get("action") or "") not in RED_PROCESS_ACTIONS)
+    if paused and zone(session_id) == "red":
         hard = int(float(config.get("turn_hard_seconds")))
-        return _block(f"[proactive-agent] This turn has run for more than {hard}s, so editing and execution tools "
-                      "are paused. Answer the user now with what you know, or hand the rest to delegate_task.")
+        return util.block(f"[proactive-agent] This turn has run for more than {hard}s, so editing and execution tools "
+                          "are paused. Answer the user now with what you know, or hand the rest to delegate_task.")
     if tool_name == "delegate_task":
         return handoff.gate(session_id, turn_id, args, user_words(session_id))
     return None
@@ -122,8 +122,9 @@ def pre_tool_call(session_id: str, turn_id: str, tool_name: str, args: Optional[
 
 def transform_tool_result(session_id: str, tool_name: str, result: Any) -> Optional[str]:
     if tool_name == "terminal":
-        data = util.parse_json(result)
-        if isinstance(data, dict) and data.get("status") == "yielded_to_background":
+        data = util.json_object(result)
+        if data is not None and data.get("status") == "yielded_to_background":
+            data = dict(data)
             detach = config.get("terminal_auto_detach_seconds")
             data["note"] = (
                 f"[proactive-agent] Still running: this command took longer than {detach}s, so it moved to the "

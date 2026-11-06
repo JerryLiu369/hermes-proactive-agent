@@ -76,3 +76,45 @@ def test_detach_skipped_for_children(plugin, make_ctx):
     finally:
         _FakeEnv._wait_for_process = original
         plugin.secretary._patched = False
+
+
+def test_detach_fires_a_yield_and_consumes_it(plugin, make_ctx):
+    make_ctx()
+    original = _install_patch(plugin)
+    interrupt = MagicMock()
+    timers = []
+
+    class _Timer:
+        def __init__(self, delay, fn):
+            self.fn = fn
+            timers.append(self)
+            self.daemon = False
+
+        def start(self):
+            pass
+
+        def cancel(self):
+            pass
+
+    proc = MagicMock()
+    proc.poll.return_value = None
+
+    def wait(self, proc, timeout=120, **kwargs):
+        timers[0].fn()  # the command outlives the detach delay while the original wait runs
+        return {"returncode": 0, "output": "partial"}
+
+    _FakeEnv._wait_for_process = wait
+    plugin.secretary._patched = False
+    try:
+        with patch.dict(sys.modules, {"tools": MagicMock(), "tools.environments": MagicMock(),
+                                      "tools.environments.base": MagicMock(BaseEnvironment=_FakeEnv),
+                                      "tools.interrupt": interrupt}):
+            plugin.secretary.install_detach_patch()
+            start_turn(plugin, session="wx-1", platform="weixin")
+            with patch.dict(os.environ, {"HERMES_SESSION_ID": "wx-1"}), patch("threading.Timer", _Timer):
+                _FakeEnv()._wait_for_process(proc, timeout=120, watch_interrupt_tid=7, yield_handler=MagicMock())
+        interrupt.request_yield.assert_called_once_with(7)
+        interrupt.consume_yield.assert_called_once_with(7)
+    finally:
+        _FakeEnv._wait_for_process = original
+        plugin.secretary._patched = False

@@ -121,8 +121,12 @@ def test_session_reset_clears_everything(plugin, make_ctx):
     make_ctx()
     start_turn(plugin)
     spawn_worker(plugin)
+    _stop(plugin, "done")
     plugin._on_session_clean(session_id="s1")
-    assert start_turn(plugin, turn="t2") is None
+    assert plugin.workers.lookup(task_id="sa-0-abc") is None
+    assert "s1" not in plugin.secretary._turns and plugin.secretary.user_words("s1") == []
+    assert plugin.context.platform_for(session_id="s1") == ""
+    assert "Subagent finished" in start_turn(plugin, turn="t2")["context"], "pending notes outlive the reset"
 
 
 def test_running_workers_are_not_injected_each_turn(plugin, make_ctx):

@@ -20,8 +20,8 @@ def test_turn_budget_reminds_then_pauses_edits(plugin, make_ctx):
     plugin.secretary._turns["s1"]["start"] -= 60
     blocked = main_tool(plugin, "patch", {"path": "/x"})
     assert blocked["action"] == "block" and "more than 120s" in blocked["message"]
-    for allowed in ("read_file", "memory", "process_manage"):
-        assert main_tool(plugin, allowed, {}) is None, allowed
+    for allowed, args in (("read_file", {}), ("memory", {}), ("process_manage", {"action": "list"})):
+        assert main_tool(plugin, allowed, args) is None, allowed
     res = main_tool(plugin, "delegate_task", {"tasks": [{"goal": "g", "context": GOOD_CONTEXT}]})
     assert res["action"] == "modify"
 
@@ -75,3 +75,21 @@ def test_plugin_errors_never_block_tools(plugin, make_ctx):
     start_turn(plugin)
     with patch.object(plugin.secretary, "pre_tool_call", side_effect=RuntimeError("boom")):
         assert main_tool(plugin, "terminal", {"command": "ls"}) is None
+
+
+def test_red_zone_keeps_only_reading_and_wrap_up(plugin, make_ctx):
+    make_ctx()
+    start_turn(plugin)
+    plugin.secretary._turns["s1"]["start"] -= 130
+    for action in ("list", "poll", "log", "kill"):
+        assert main_tool(plugin, "process_manage", {"action": action}) is None, action
+    for action in ("write", "submit"):
+        assert main_tool(plugin, "process_manage", {"action": action})["action"] == "block", action
+    assert main_tool(plugin, "skill_manage", {"action": "create"})["action"] == "block"
+
+
+def test_quoted_yield_json_does_not_replace_the_result(plugin, make_ctx):
+    make_ctx()
+    start_turn(plugin)
+    raw = 'previous run printed {"status": "yielded_to_background", "session_id": "p1"} and then more output'
+    assert plugin._transform_tool_result("terminal", {}, raw, session_id="s1", task_id="main") is None

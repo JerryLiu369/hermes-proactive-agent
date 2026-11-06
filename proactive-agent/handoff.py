@@ -17,7 +17,7 @@ BRIEFING_MARKER = "=== Handoff briefing (attached by proactive-agent) ==="
 DEFAULT_OUTPUT_SCHEMA: Dict[str, Any] = {
     "type": "object",
     "properties": {
-        "status": {"type": "string", "enum": ["completed", "partial", "blocked", "failed"]},
+        "status": {"type": "string", "enum": list(workers.REPORT_STATUSES)},
         "summary": {"type": "string", "description": "What was done and the verified end state."},
         "evidence": {"type": "array", "items": {"type": "string"},
                      "description": "Checkable proof: URL + status code, command + exit code, file path, service state."},
@@ -124,7 +124,8 @@ def _mentions(text: str, path: str) -> bool:
         path = path[2:]
     if not path:
         return False
-    norm = text.replace("\\", "/")
+    # "./x" and "x" name the same file; drop the prefix so a one-segment path still matches.
+    norm = re.sub(r"(?<![\w.])\./", "", text.replace("\\", "/"))
     candidates = [(path, r"[\w.\-/]")]
     tail = "/".join(path.split("/")[-2:])
     if "/" in tail:
@@ -164,10 +165,6 @@ def _clash_message(other: dict, files: List[str]) -> str:
     )
 
 
-def _block(message: str) -> dict:
-    return {"action": "block", "message": message, "reason": message}
-
-
 def _first_this_turn(seen: Dict[str, str], session_id: str, turn_id: str) -> bool:
     with _lock:
         first = seen.get(session_id) != turn_id
@@ -200,12 +197,12 @@ def gate(session_id: str, turn_id: str, args: Optional[dict], user_words: List[s
     min_chars = int(config.get("handoff_min_context_chars"))
     thin = [t for t in tasks if len(str(t.get("context") or "").strip()) < min_chars]
     if thin and _first_this_turn(_returned_turn, session_id, turn_id):
-        return _block(_return_message(str(thin[0].get("goal") or "")))
+        return util.block(_return_message(str(thin[0].get("goal") or "")))
 
     running = workers.running_tasks(session_id)
     clash = _clash(tasks, running)
     if clash and _first_this_turn(_clash_turn, session_id, turn_id):
-        return _block(_clash_message(*clash))
+        return util.block(_clash_message(*clash))
 
     briefing = _briefing(user_words, session_id, running)
     for t in tasks:

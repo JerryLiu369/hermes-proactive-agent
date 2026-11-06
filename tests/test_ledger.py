@@ -214,7 +214,7 @@ def test_status_comes_from_the_report_not_from_quoted_json(plugin, make_ctx):
 
     spawn_worker(plugin, sub_id="sa-2", child_session="child-3")
     _stop(plugin, json.dumps({"status": "running", "summary": "still going"}), child="child-3")
-    assert plugin.ledger.get("sa-2")["status"] == "completed", "a finished task is never recorded as running"
+    assert plugin.ledger.get("sa-2")["status"] == "partial", "a finished task is never recorded as running or done"
 
 
 def test_closing_after_reset_normalises_the_status(plugin, make_ctx):
@@ -266,3 +266,55 @@ def test_thin_brief_is_returned_again_next_turn_without_turn_ids(plugin, make_ct
     plugin._on_turn_end(session_id="s1")
     start_turn(plugin, turn="")
     assert main_tool(plugin, "delegate_task", thin, turn="")["action"] == "block"
+
+
+def test_nonstandard_report_status_is_not_done(plugin, make_ctx):
+    make_ctx()
+    start_turn(plugin)
+    spawn_worker(plugin)
+    _stop(plugin, json.dumps({"status": "in_progress", "summary": "half migrated", "blockers": ["disk full"]}))
+    task = plugin.ledger.get("sa-0-abc")
+    assert task["status"] == "partial" and task["summary"] == "half migrated" and task["blockers"] == ["disk full"]
+    assert "did not finish" in start_turn(plugin, turn="t2")["context"]
+    spawn_worker(plugin, sub_id="sa-1", child_session="child-2")
+    _stop(plugin, json.dumps({"status": "error", "summary": "crashed"}), child="child-2")
+    assert plugin.ledger.get("sa-1")["status"] == "failed"
+
+
+def test_stopped_worker_is_not_flagged_as_stuck(plugin, make_ctx):
+    posted = []
+    make_ctx(post_message=lambda text: posted.append(text))
+    start_turn(plugin)
+    worker = spawn_worker(plugin)
+    main_tool(plugin, "delegate_task", {"action": "stop", "subagent_id": "sa-0-abc"})
+    curl = {"command": "curl -sI https://app.example.com/ping"}
+    for i in range(6):
+        w_post(plugin, "terminal", curl, json.dumps({"output": "HTTP/2 522", "exit_code": 0}), api=f"r{i}")
+    assert worker["stop_reason"] is None and posted == []
+    _stop(plugin, "Interrupted", status="interrupted")
+    assert plugin.ledger.get("sa-0-abc")["status"] == "stopped"
+
+
+def test_only_one_process_claims_a_lost_task(plugin, tmp_path, monkeypatch):
+    path = tmp_path / "race.db"
+    plugin.ledger.load(path)
+    plugin.ledger.start("sa-x", "s1", "goal", "c-x")
+    plugin.ledger._db.execute("UPDATE tasks SET pid = 0 WHERE id = 'sa-x'")
+    plugin.ledger._db.commit()
+
+    def other_process_claims_first(pid):
+        with sqlite3.connect(str(path)) as other:
+            other.execute("UPDATE tasks SET status = 'lost' WHERE id = 'sa-x'")
+        return False
+
+    monkeypatch.setattr(plugin.ledger, "_alive", other_process_claims_first)
+    assert plugin.ledger.load(path) == [], "the task another process already claimed is not reported twice"
+    assert plugin.ledger.get("sa-x")["status"] == "lost"
+
+
+def test_one_segment_path_with_dot_slash(plugin):
+    mentions = plugin.handoff._mentions
+    assert mentions("edit ./wrangler.toml", "wrangler.toml")
+    assert mentions("edit wrangler.toml", "./wrangler.toml")
+    assert not mentions("edit app/wrangler.toml", "wrangler.toml")
+    assert not mentions("edit ../wrangler.toml", "wrangler.toml")

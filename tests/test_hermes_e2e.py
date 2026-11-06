@@ -82,6 +82,14 @@ def test_handoff_gate_rewrites_args_through_hermes(hermes):
     assert task["output_schema"]["required"] == ["status", "summary"]
 
 
+def test_single_goal_handoff_keeps_the_goal_through_hermes(hermes):
+    _start_turn()
+    block, modified = _pre_tool("delegate_task", {"goal": "修复 522", "context": CONTEXT})
+    assert block is None
+    assert modified["goal"] == "修复 522", "Hermes merges modify args into the original call"
+    assert "Handoff briefing" in modified["context"]
+
+
 def test_worker_limits_through_hermes(hermes):
     _start_turn()
     _, modified = _pre_tool("delegate_task", {"tasks": [{"goal": "修复 522", "context": CONTEXT}]})

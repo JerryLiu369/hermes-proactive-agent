@@ -23,8 +23,10 @@ _by_session: Dict[str, str] = {}
 
 _STALE_AFTER_S = 6 * 3600.0
 _DONE_KEEP_S = 600.0
+# The status values of handoff.DEFAULT_OUTPUT_SCHEMA, plus words workers use for the same outcomes.
+REPORT_STATUSES = ("completed", "partial", "blocked", "failed")
 _DONE_STATUSES = ("completed", "complete", "success", "done")
-_REPORT_STATUSES = ("completed", "partial", "blocked", "failed")
+_FAILED_STATUSES = ("error", "failure", "aborted", "cancelled", "canceled")
 _WRITE_HINTS = ("write", "edit", "patch")
 _READ_HINTS = ("read", "search", "list", "view")
 
@@ -109,10 +111,6 @@ def record_dispatch(result: Any) -> None:
 
 # ---------------------------------------------------------------- runtime checks
 
-def _block(message: str) -> dict:
-    return {"action": "block", "message": message, "reason": message}
-
-
 def _stop_message(w: dict) -> str:
     return (f"[proactive-agent] STOP: {w['stop_reason']}. Do not call more tools. Write your final report now: "
             "status \"blocked\", what you tried, the exact blocker, and what you need from the main agent or the user.")
@@ -126,9 +124,8 @@ def _is_write(tool_name: str) -> bool:
 def _succeeded(result: Any, status: Any) -> bool:
     if status not in (None, "success", "ok"):
         return False
-    data = util.parse_json(result) if isinstance(result, str) and result.strip().startswith("{") else result
-    return not (isinstance(data, dict) and (data.get("error") or data.get("ok") is False
-                                            or data.get("success") is False))
+    data = util.json_object(result)
+    return not (data is not None and (data.get("error") or data.get("ok") is False or data.get("success") is False))
 
 
 def pre_tool_call(w: dict, tool_name: str, args: Optional[dict], **kw: Any) -> Optional[dict]:
@@ -140,7 +137,7 @@ def pre_tool_call(w: dict, tool_name: str, args: Optional[dict], **kw: Any) -> O
             w["rounds"].add(round_id)
         if w["stop_reason"]:
             w["stop_noted"] = True
-            return _block(_stop_message(w))
+            return util.block(_stop_message(w))
     return None
 
 
@@ -150,6 +147,9 @@ def post_tool_call(w: dict, tool_name: str, args: Optional[dict], result: Any, *
     args = args or {}
     if _is_write(tool_name) and isinstance(args.get("path"), str) and _succeeded(result, kw.get("status")):
         ledger.add_files(w["id"], [args["path"]])
+    if w["stopped_by_parent"]:
+        # The main agent already stopped it; its last in-flight calls are not a stuck loop.
+        return
     limit = max(2, int(config.get("worker_repeat_limit")))
     warn_at = limit - 2 if limit >= 4 else 0
     outcome = util.result_signature(result)
@@ -202,19 +202,23 @@ def _strings(value: Any) -> List[str]:
 
 
 def _report(summary: Any) -> dict:
-    """The worker's structured report, or {} when the summary is plain text (which may quote unrelated JSON)."""
-    parsed = util.parse_json(summary)
-    if not isinstance(parsed, dict):
-        return {}
-    own = str(parsed.get("status") or "").lower()
-    return parsed if own in _REPORT_STATUSES + _DONE_STATUSES or (not own and "summary" in parsed) else {}
+    """The worker's structured report: a summary that is itself a JSON object with a status or a summary.
+    Plain text that merely quotes some JSON is not a report."""
+    data = util.json_object(summary)
+    return data if data is not None and ("status" in data or "summary" in data) else {}
 
 
 def _outcome(report: dict, child_status: Any) -> str:
-    """How the task ended. Hermes' failed/interrupted wins over a self-reported success."""
+    """How the task ended. Hermes' failed/interrupted wins over a self-reported success, and a status word
+    outside the schema still counts as not done rather than falling back to Hermes' "completed"."""
     hermes = str(child_status or "").lower()
-    own = str(report.get("status") or "").lower()
-    own = "completed" if own in _DONE_STATUSES else own if own in _REPORT_STATUSES else ""
+    own = str(report.get("status") or "").strip().lower()
+    if own in _DONE_STATUSES:
+        own = "completed"
+    elif own in _FAILED_STATUSES:
+        own = "failed"
+    elif own and own not in REPORT_STATUSES:
+        own = "partial"
     if hermes in ("failed", "interrupted") and own in ("", "completed"):
         return hermes
     return own or (hermes if hermes in ("completed", "failed", "interrupted") else "unknown")

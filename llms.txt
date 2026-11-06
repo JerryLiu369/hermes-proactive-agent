@@ -26,7 +26,7 @@ One simple step per stage of a task: turn budget (secretary) -> handoff (delegat
 
 ### Turn budget
 - From 60 s in one turn: a one-time reminder to answer or delegate within 1-2 steps.
-- From 120 s: editing and execution tools pause; read-only tools and delegate_task remain.
+- From 120 s: editing and execution tools pause; reading, delegate_task and wrap-up tools remain (memory, todo, clarify, send_message, process_manage list/poll/log/kill).
 - A mid-turn user message (steer) resets the budget.
 - Foreground terminal commands longer than 30 s move to the background via Hermes' yield path and notify on completion.
 - process_manage(action='wait') is refused.
@@ -39,7 +39,6 @@ One simple step per stage of a task: turn budget (secretary) -> handoff (delegat
 ### Worker limits
 - Same tool, same arguments, same result: a note after 3 repeats, a stop after 5 (the worker must report "blocked"; the user gets an alert).
 - The step budget is Hermes' delegation.max_iterations.
-- Workers keep the skills index and skill_view.
 
 ### Results and task ledger
 - When a worker returns, the secretary's next turn notes the reported evidence, missing evidence, an unfinished task or a plugin stop.

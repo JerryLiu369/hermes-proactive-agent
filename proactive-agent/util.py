@@ -58,6 +58,21 @@ def parse_json(value: Any) -> Any:
     return None
 
 
+def json_object(value: Any) -> Optional[dict]:
+    """*value* as a dict when it IS a JSON object (or a fenced one), not when it merely quotes one."""
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str) or not value.strip().startswith(("{", "```")):
+        return None
+    data = parse_json(value)
+    return data if isinstance(data, dict) else None
+
+
+def block(message: str) -> dict:
+    """A pre_tool_call directive that refuses the call; *message* becomes the tool result."""
+    return {"action": "block", "message": message, "reason": message}
+
+
 def append_note(result: Any, note: str, key: str = "proactive_agent_note") -> str:
     """Attach a note to a tool result without breaking JSON results."""
     data = parse_json(result) if isinstance(result, str) else result

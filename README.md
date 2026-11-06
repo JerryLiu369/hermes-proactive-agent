@@ -72,7 +72,7 @@ calls.
 |---|---|
 | under 60 s | nothing |
 | from 60 s | a one-time note on the next tool result: answer the user or delegate within 1-2 steps |
-| from 120 s | editing and execution tools are paused; read-only tools and `delegate_task` stay available |
+| from 120 s | editing and execution tools are paused; reading, `delegate_task` and wrap-up tools (`memory`, `todo`, `clarify`, `send_message`, and `process_manage` to list, poll, read logs or kill) stay available |
 
 - A message from you mid-turn resets the budget.
 - Foreground commands longer than 30 s move to the background through Hermes' own yield path. The process keeps
@@ -105,7 +105,6 @@ These apply to subagents spawned by a governed session.
   status `blocked`. You get a short alert in the chat.
 - **Step budget.** Left to Hermes' `delegation.max_iterations`. When it runs out, Hermes gives the worker one last call
   without tools to write its report and tells the secretary the task was cut short.
-- **Skills.** Workers keep the skills index and `skill_view`, like the main agent.
 
 ### 4. Results and task ledger
 
