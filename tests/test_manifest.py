@@ -7,11 +7,11 @@ from unittest.mock import patch
 
 import yaml
 
-from helpers import REPO_ROOT
+from helpers import PLUGIN_DIR, REPO_ROOT
 
 
 def test_versions_and_manifest_match_code(plugin):
-    with open(os.path.join(REPO_ROOT, "plugin.yaml"), encoding="utf-8") as f:
+    with open(os.path.join(PLUGIN_DIR, "plugin.yaml"), encoding="utf-8") as f:
         manifest = yaml.safe_load(f)
     with open(os.path.join(REPO_ROOT, "pyproject.toml"), encoding="utf-8") as f:
         pyproject_version = re.search(r'^version = "([^"]+)"', f.read(), re.MULTILINE).group(1)

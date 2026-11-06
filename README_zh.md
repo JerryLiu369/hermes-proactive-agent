@@ -21,11 +21,11 @@
 ## 安装
 
 ```bash
-hermes plugins install github:JerryLiu369/hermes-proactive-agent
+hermes plugins install JerryLiu369/hermes-proactive-agent/proactive-agent
 hermes plugins enable proactive-agent
 ```
 
-手动安装：把仓库克隆到 `~/.hermes/plugins/proactive-agent`，然后运行 `hermes plugins enable proactive-agent`。
+插件本体在仓库的 `proactive-agent/` 目录里，Hermes 只会安装这个目录。手动安装：把 `proactive-agent/` 复制到 `~/.hermes/plugins/proactive-agent`，然后运行 `hermes plugins enable proactive-agent`。
 
 建议同时调低 Hermes 的工人步数上限。一个工人调用模型超过 60 次左右，通常已经卡住了；上限低一些，它会更早交汇报。
 
@@ -122,25 +122,26 @@ plugins:
 
 ```bash
 uv run --group dev pytest          # 或者：pip install --group dev && pytest
-uv run --group dev flake8
+uv run --group dev ruff check
 ```
 
 `tests/test_hermes_e2e.py` 在能导入 `hermes_cli` 时，会通过真实的 Hermes 加载插件运行，否则自动跳过。
 
-Hermes 会把整个仓库当作插件目录安装，所以各模块直接放在仓库根目录：
-
 ```
 .
-├── plugin.yaml        Hermes 插件清单：钩子和配置项
-├── __init__.py        入口：register() 注册钩子
-├── config.py          读取配置
-├── context.py         判断调用方：受管主代理、工人还是定时任务
-├── secretary.py       单轮预算、长命令转后台
-├── handoff.py         delegate_task 检查与附带内容
-├── workers.py         重复叫停、结果提示、进度推送
-├── prompt.py          系统提示词片段
-├── util.py            文本和工具结果的辅助函数
-└── tests/             每个模块一个测试文件，外加针对 Hermes 的端到端测试
+├── proactive-agent/       插件本体（Hermes 安装的就是这个目录）
+│   ├── plugin.yaml        插件清单：钩子和配置项
+│   ├── __init__.py        入口：register() 注册钩子
+│   ├── config.py          读取配置
+│   ├── context.py         判断调用方：受管主代理、工人还是定时任务
+│   ├── secretary.py       单轮预算、长命令转后台
+│   ├── handoff.py         delegate_task 检查与附带内容
+│   ├── workers.py         重复叫停、结果提示、进度推送
+│   ├── prompt.py          系统提示词片段
+│   └── util.py            文本和工具结果的辅助函数
+├── tests/                 每个模块一个测试文件，外加针对 Hermes 的端到端测试
+├── pyproject.toml         项目信息、开发依赖、ruff 和 pytest 配置
+└── llms.txt               给语言模型看的项目摘要
 ```
 
 ## 兼容性

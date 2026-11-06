@@ -4,6 +4,7 @@ import json
 import os
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+PLUGIN_DIR = os.path.join(REPO_ROOT, "proactive-agent")
 
 GOOD_CONTEXT = (
     "Known: https://app.example.com/ping returns 522 since the deploy at 10:00; DNS record is proxied. "
