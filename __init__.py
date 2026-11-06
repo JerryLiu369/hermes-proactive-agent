@@ -8,9 +8,10 @@ subagents (the "workers") do the slow execution:
    delegate_task stay available. Long foreground commands move to the background.
 2. Handoff: a too-short delegate_task brief is returned once; accepted ones get the user's
    recent messages, memory, working rules and a result schema attached.
-3. Workers: a step budget, and a stop after the same step gives the same result again and again.
-4. Results and progress: the secretary is told what to check when a worker returns, sees which
-   workers still run, and the user gets periodic progress lines.
+3. Workers: a stop after the same step gives the same result again and again (the step budget
+   is Hermes' own delegation.max_iterations).
+4. Results and progress: the secretary is told what to check when a worker returns, and the
+   user gets periodic progress lines.
 
 Only platforms listed in ``governed_platforms`` (default: weixin) are affected; cron runs and
 workers spawned by ungoverned sessions are never touched.
@@ -26,7 +27,7 @@ from typing import Any, Optional
 if __package__:
     from . import config, context, handoff, prompt, secretary, workers
 
-__version__ = "0.1.10"
+__version__ = "0.1.11"
 
 logger = logging.getLogger("hermes.plugins.proactive_agent")
 

@@ -1,4 +1,4 @@
-"""Delegated workers: step budget, fail-fast on repeated steps, result notes and progress lines.
+"""Delegated workers: stop on repeated steps, result notes and progress lines.
 
 A worker is governed only when the main agent that spawned it is governed.
 """
@@ -80,7 +80,6 @@ def on_subagent_start(is_parent_governed: Callable[[str], bool], language_of: Ca
         "pending_note": None,
         "stop_reason": None,
         "stop_noted": False,
-        "budget_warned": False,
         "done": False,
         "stopped_by_parent": False,
         # Captured on the parent's thread so progress lines reach the user's chat later.
@@ -112,9 +111,6 @@ def pre_tool_call(w: dict, tool_name: str, args: Optional[dict], **kw: Any) -> O
         round_id = kw.get("api_request_id") or kw.get("tool_call_id") or ""
         if round_id:
             w["rounds"].add(round_id)
-        budget = int(config.get("worker_max_tool_rounds"))
-        if w["stop_reason"] is None and budget > 0 and len(w["rounds"]) > budget:
-            w["stop_reason"] = f"step budget reached ({budget} tool rounds)"
         if w["stop_reason"]:
             w["stop_noted"] = True
             return _block(_stop_message(w))
@@ -154,11 +150,6 @@ def transform_tool_result(w: dict, tool_name: str, result: Any) -> Optional[str]
             w["stop_noted"] = True
             return util.append_note(result, _stop_message(w))
         note, w["pending_note"] = w["pending_note"], None
-        budget = int(config.get("worker_max_tool_rounds"))
-        if not note and budget > 0 and not w["budget_warned"] and len(w["rounds"]) >= max(1, int(budget * 0.8)):
-            w["budget_warned"] = True
-            note = (f"[proactive-agent] {len(w['rounds'])}/{budget} tool rounds used. Wrap up: verify the end state "
-                    "and write your report soon, or report a blocker.")
     return util.append_note(result, note) if note else None
 
 
@@ -200,17 +191,6 @@ def on_subagent_stop(**kw: Any) -> None:
 def pop_notes(parent_session: str) -> str:
     with _lock:
         return "\n\n".join(_notes.pop(parent_session, []))
-
-
-def running_summary(parent_session: str) -> str:
-    """One line per still-running worker, for the main agent."""
-    active = active_for_parent(parent_session)
-    if not active:
-        return ""
-    now = time.monotonic()
-    rows = [f"- {w['id']}: \"{util.short(w['goal'], 60)}\" running {(now - w['spawn']) / 60:.0f} min, "
-            f"{len(w['rounds'])} rounds, last: {util.short(w['last_call'], 60) or 'starting'}" for w in active]
-    return "[proactive-agent] Subagents still running:\n" + "\n".join(rows)
 
 
 # ---------------------------------------------------------------- progress lines

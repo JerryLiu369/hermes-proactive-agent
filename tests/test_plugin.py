@@ -57,7 +57,7 @@ def w_note(plugin, result='{"output": "x"}'):
 def test_manifest_matches_code(plugin):
     with open(os.path.join(REPO_ROOT, "plugin.yaml"), encoding="utf-8") as f:
         manifest = yaml.safe_load(f)
-    assert manifest["version"] == plugin.__version__ == "0.1.10"
+    assert manifest["version"] == plugin.__version__ == "0.1.11"
     registered = {}
     plugin.register(SimpleNamespace(register_hook=lambda n, fn: registered.setdefault(n, fn),
                                     register_system_prompt_section=lambda *a, **k: None, get_config=lambda k, d=None: d))
@@ -72,17 +72,18 @@ def test_prompt_only_for_governed_main(plugin, make_ctx):
     ctx = make_ctx()
     render = ctx.prompt_sections["proactive-agent.discipline"]["renderer"]
     text = render({"platform": "weixin"})
-    assert "~60s" in text and "At 120s" in text and "30s" in text
+    assert "~60s" in text and "At 120s" in text and "30s" in text and "action='list'" in text
     for info in ({"platform": "cli"}, {"platform": "subagent"}, {"platform": "cron"},
                  {"platform": "weixin", "session_id": "cron_1"}, None, {}):
         assert render(info) == ""
 
 
 def test_config_from_env(plugin, make_ctx):
-    make_ctx(config={"worker_max_tool_rounds": 9})
-    assert plugin.config.get("worker_max_tool_rounds") == 9
-    with patch.dict(os.environ, {"PROACTIVE_WORKER_MAX_TOOL_ROUNDS": "7", "PROACTIVE_GOVERNED_PLATFORMS": "a, b"}):
-        assert plugin.config.get("worker_max_tool_rounds") == 7
+    make_ctx(config={"worker_repeat_limit": 9})
+    assert plugin.config.get("worker_repeat_limit") == 9
+    assert plugin.config.get("progress_interval_seconds") == 600
+    with patch.dict(os.environ, {"PROACTIVE_WORKER_REPEAT_LIMIT": "7", "PROACTIVE_GOVERNED_PLATFORMS": "a, b"}):
+        assert plugin.config.get("worker_repeat_limit") == 7
         assert plugin.config.governed_platforms() == ["a", "b"]
 
 
@@ -175,7 +176,7 @@ def test_thin_handoff_returned_once_then_briefed(plugin, make_ctx):
     assert plugin.handoff.BRIEFING_MARKER in task["context"]
     assert "别自己改 edgetunnel" in task["context"] and "帮我修一下" in task["context"]
     assert "DNS 是代理状态" not in task["context"], "only the user's own words are attached"
-    assert "Write the final report in Chinese." in task["context"]
+    assert "final report in" not in task["context"]
     assert task["output_schema"]["required"] == ["status", "summary"]
 
 
@@ -192,7 +193,9 @@ def test_steer_joins_user_words_but_injected_context_does_not(plugin, make_ctx):
 
 def test_handoff_keeps_brief_and_attaches_memory(plugin, make_ctx, tmp_path):
     (tmp_path / "memories").mkdir()
-    (tmp_path / "memories" / "MEMORY.md").write_text("Never deploy with --env production", encoding="utf-8")
+    long_memory = "Never deploy with --env production. " + "x" * 9000 + " END-OF-MEMORY"
+    (tmp_path / "memories" / "MEMORY.md").write_text(long_memory, encoding="utf-8")
+    (tmp_path / "memories" / "USER.md").write_text("Prefers short answers", encoding="utf-8")
     make_ctx()
     with patch.dict(sys.modules, {"hermes_constants": SimpleNamespace(get_hermes_home=lambda: tmp_path)}):
         start_turn(plugin)
@@ -200,7 +203,8 @@ def test_handoff_keeps_brief_and_attaches_memory(plugin, make_ctx, tmp_path):
                                                              "output_schema": {"type": "object"}}]})
     task = res["args"]["tasks"][0]
     assert task["context"].startswith(GOOD_CONTEXT)
-    assert "Never deploy with --env production" in task["context"]
+    assert "Never deploy with --env production" in task["context"] and "END-OF-MEMORY" in task["context"]
+    assert "Prefers short answers" in task["context"]
     assert task["output_schema"] == {"type": "object"}
 
 
@@ -259,17 +263,13 @@ def test_different_steps_failing_alike_are_not_repeats(plugin, make_ctx):
     assert worker["stop_reason"] is None
 
 
-def test_worker_step_budget(plugin, make_ctx):
-    make_ctx(config={"worker_max_tool_rounds": 5})
+def test_step_budget_is_left_to_hermes(plugin, make_ctx):
+    make_ctx()
     start_turn(plugin)
     spawn_worker(plugin)
-    for i in range(5):
+    for i in range(200):
         assert w_tool(plugin, "read_file", {"path": f"/tmp/f{i}"}, api=f"r{i}") is None
-        note = w_note(plugin)
-        if i == 3:
-            assert "4/5 tool rounds" in note
-    blocked = w_tool(plugin, "read_file", {"path": "/tmp/f9"}, api="r5")
-    assert blocked["action"] == "block" and "step budget" in blocked["message"]
+        assert w_note(plugin) is None
 
 
 def test_worker_commands_are_left_to_hermes(plugin, make_ctx):
@@ -337,13 +337,14 @@ def test_session_reset_clears_everything(plugin, make_ctx):
     assert start_turn(plugin, turn="t2") is None
 
 
-def test_running_workers_listed_until_stopped(plugin, make_ctx):
+def test_running_workers_are_not_injected_each_turn(plugin, make_ctx):
     make_ctx()
     start_turn(plugin)
     spawn_worker(plugin)
-    assert "Subagents still running" in start_turn(plugin, turn="t2")["context"]
+    assert start_turn(plugin, turn="t2") is None
+    assert plugin.workers.active_for_parent("s1")
     assert main_tool(plugin, "delegate_task", {"action": "stop", "subagent_id": "sa-0-abc"}, turn="t2") is None
-    assert start_turn(plugin, turn="t3") is None
+    assert not plugin.workers.active_for_parent("s1"), "stopped workers drop out of progress lines"
 
 
 def test_progress_tick_posts_to_chat(plugin, make_ctx):

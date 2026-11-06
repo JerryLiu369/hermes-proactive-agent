@@ -44,9 +44,7 @@ def forget(session_id: str = "") -> None:
 
 
 def _memory_text() -> str:
-    limit = int(config.get("handoff_memory_max_chars"))
-    if limit <= 0:
-        return ""
+    # Hermes already caps both files (memory_char_limit / user_char_limit), so they go in whole.
     try:
         from hermes_constants import get_hermes_home
         base = Path(get_hermes_home()) / "memories"
@@ -60,11 +58,10 @@ def _memory_text() -> str:
             continue
         if text:
             parts.append(f"### {label}\n{text}")
-    joined = "\n\n".join(parts)
-    return joined if len(joined) <= limit else joined[:limit] + "\n…(truncated)"
+    return "\n\n".join(parts)
 
 
-def _briefing(user_words: List[str], lang: str) -> str:
+def _briefing(user_words: List[str]) -> str:
     parts = [BRIEFING_MARKER]
     if user_words:
         parts.append("## The user's recent messages (latest last)\n"
@@ -72,8 +69,7 @@ def _briefing(user_words: List[str], lang: str) -> str:
     memory = _memory_text()
     if memory:
         parts.append("## User and environment memory\n" + memory)
-    report = "- Write the final report in Chinese." if lang == "zh" else "- Write the final report in English."
-    parts.append("## Working rules\n" + _RULES + "\n" + report)
+    parts.append("## Working rules\n" + _RULES)
     return "\n\n".join(parts)
 
 
@@ -91,7 +87,7 @@ def _block(message: str) -> dict:
     return {"action": "block", "message": message, "reason": message}
 
 
-def gate(session_id: str, turn_id: str, args: Optional[dict], user_words: List[str], lang: str) -> Optional[dict]:
+def gate(session_id: str, turn_id: str, args: Optional[dict], user_words: List[str]) -> Optional[dict]:
     args = args or {}
     action = str(args.get("action") or "spawn").lower()
     if action == "stop":
@@ -118,7 +114,7 @@ def gate(session_id: str, turn_id: str, args: Optional[dict], user_words: List[s
         if first:
             return _block(_return_message(str(thin[0].get("goal") or "")))
 
-    briefing = _briefing(user_words, lang)
+    briefing = _briefing(user_words)
     for t in tasks:
         own = str(t.get("context") or "").strip()
         t["context"] = f"{own}\n\n{briefing}" if own else briefing

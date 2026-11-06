@@ -83,8 +83,8 @@ def on_turn_start(session_id: str, turn_id: str, platform: str, messages: Any, u
     with _lock:
         _turns[session_id] = _new_turn(turn_id, len(_steers(messages)))
         _user_words[session_id] = words[-_KEEP_USER_MESSAGES:]
-    parts = [p for p in (workers.pop_notes(session_id), workers.running_summary(session_id)) if p]
-    return {"context": "\n\n".join(parts)} if parts else None
+    notes = workers.pop_notes(session_id)
+    return {"context": notes} if notes else None
 
 
 def on_api_request(session_id: str, turn_id: str, messages: Any) -> None:
@@ -116,7 +116,7 @@ def pre_tool_call(session_id: str, turn_id: str, tool_name: str, args: Optional[
         return _block(f"[proactive-agent] This turn has run for more than {hard}s, so editing and execution tools "
                       "are paused. Answer the user now with what you know, or hand the rest to delegate_task.")
     if tool_name == "delegate_task":
-        return handoff.gate(session_id, turn_id, args, user_words(session_id), language(session_id))
+        return handoff.gate(session_id, turn_id, args, user_words(session_id))
     return None
 
 

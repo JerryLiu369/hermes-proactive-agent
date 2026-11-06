@@ -1,6 +1,6 @@
 # Hermes Proactive Agent (`proactive-agent`)
 
-> Hermes Agent plugin that runs the chat agent like a secretary that manages subagents: a turn time budget and background detach for the main agent, a handoff check for delegate_task (the user's recent messages and memory attached), a step budget and fail-fast for subagents, result notes and progress lines.
+> Hermes Agent plugin that runs the chat agent like a secretary that manages subagents: a turn time budget and background detach for the main agent, a handoff check for delegate_task (the user's recent messages and memory attached), a repeat stop for subagents, result notes and progress lines.
 
 ## Overview
 
@@ -8,7 +8,7 @@
 - Target: Hermes Agent (tested with v0.22.7)
 - Language: Python 3.10+
 - License: MIT
-- Version: 0.1.10
+- Version: 0.1.11
 
 Roles:
 - Main agent ("secretary"): keeps the chat responsive, investigates and decides, writes the handoffs.
@@ -29,16 +29,17 @@ One simple step per stage of a task: turn budget (secretary) -> handoff (delegat
 
 ### Handoff (delegate_task)
 - context under 120 characters is returned once per turn with a checklist.
-- Accepted tasks get the user's recent messages verbatim, USER.md and MEMORY.md, working rules, and a default output_schema (status, summary, evidence, blockers).
+- Accepted tasks get the user's recent messages verbatim, USER.md and MEMORY.md in full, working rules, and a default output_schema (status, summary, evidence, blockers).
 
 ### Worker limits
-- Same call with the same result: a note after 3 repeats, a stop after 5 (the worker must report "blocked"; the user gets an alert).
-- Step budget: 60 tool rounds (note at 80%).
+- Same tool, same arguments, same result: a note after 3 repeats, a stop after 5 (the worker must report "blocked"; the user gets an alert).
+- The step budget is Hermes' delegation.max_iterations (recommended: 60).
+- Workers keep the skills index and skill_view.
 
 ### Results and progress
 - When a worker returns, the secretary's next turn notes the reported evidence, missing evidence, an unfinished task or a plugin stop.
-- Running workers are listed each turn.
-- Progress lines every 5 minutes via ctx.post_message.
+- The secretary checks running workers on demand with delegate_task(action='list'); nothing is injected every turn.
+- Progress lines every 10 minutes via ctx.post_message.
 
 Only platforms in governed_platforms (default ["weixin"]) are affected. Cron runs and subagents of ungoverned sessions are untouched.
 
@@ -53,10 +54,8 @@ Keys under plugins.entries.proactive-agent.settings (environment override: PROAC
 | turn_soft_seconds | 60 |
 | turn_hard_seconds | 120 |
 | handoff_min_context_chars | 120 |
-| handoff_memory_max_chars | 4000 |
-| worker_max_tool_rounds | 60 |
 | worker_repeat_limit | 5 |
-| progress_interval_seconds | 300 |
+| progress_interval_seconds | 600 |
 
 ## Install
 

@@ -20,14 +20,10 @@ DEFAULTS: dict[str, Any] = {
     "turn_hard_seconds": 120.0,
     # delegate_task context shorter than this is returned once per turn.
     "handoff_min_context_chars": 120,
-    # USER.md + MEMORY.md attached to each handoff (0 disables).
-    "handoff_memory_max_chars": 4000,
-    # Worker step budget (0 disables).
-    "worker_max_tool_rounds": 60,
     # Stop a worker after the same step gives the same result this many times.
     "worker_repeat_limit": 5,
     # Seconds between progress lines in the chat while workers run (0 disables).
-    "progress_interval_seconds": 300,
+    "progress_interval_seconds": 600,
 }
 
 _ctx: Optional[Any] = None

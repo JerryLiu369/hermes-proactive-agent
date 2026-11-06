@@ -1,7 +1,7 @@
 # Hermes Proactive Agent (`proactive-agent`)
 
 [![Hermes Plugin](https://img.shields.io/badge/Hermes-Plugin-blue.svg)](https://hermes-agent.nousresearch.com)
-[![Version](https://img.shields.io/badge/version-0.1.10-green.svg)](https://github.com/JerryLiu369/hermes-proactive-agent)
+[![Version](https://img.shields.io/badge/version-0.1.11-green.svg)](https://github.com/JerryLiu369/hermes-proactive-agent)
 [![CI](https://github.com/JerryLiu369/hermes-proactive-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/JerryLiu369/hermes-proactive-agent/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python: 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
@@ -32,7 +32,8 @@ The plugin follows one task through its life and does one simple thing at each s
 2. **The secretary writes the brief.** It already knows the conversation, so it writes the handoff itself. The plugin
    only returns a brief that is clearly too short, and attaches what the worker cannot know: your recent messages, your
    memory and a few working rules.
-3. **Workers do not spin.** A worker has a step budget and is stopped when it keeps repeating the same step.
+3. **Workers do not spin.** A worker is stopped when it keeps repeating the same step. Its step budget is Hermes'
+   own `delegation.max_iterations`.
 4. **The loop closes.** The secretary hears how each worker ended and what to check, and you get progress lines while
    workers run.
 
@@ -62,9 +63,9 @@ Safety checks that Hermes already does are left to Hermes: subagents' dangerous 
   through.
 - Every accepted task gets, after the secretary's own context:
   - your last few messages, verbatim, so constraints like "don't touch X" reach the worker;
-  - your `USER.md` and `MEMORY.md` (capped);
+  - your `USER.md` and `MEMORY.md`, in full (Hermes does not load memory into subagents; it already caps both files);
   - working rules: stay in scope, stop after the same failure twice, risky changes only with a rollback path, check
-    the real end state, report in your language;
+    the real end state;
   - a default `output_schema` (`status`, `summary`, `evidence`, `blockers`) if the task had none.
 
 No extra model call is made: the brief comes from the secretary, which already has the whole conversation cached.
@@ -73,17 +74,20 @@ No extra model call is made: the brief comes from the secretary, which already h
 
 Only for subagents spawned by a governed session.
 
-- **Same step, same result.** After 3 repeats the worker gets a note to change approach; after 5 it is stopped: its
-  next tool calls are refused and it must report status `blocked`. You get a short alert in the chat.
-- **Step budget.** 60 tool rounds by default, with a wrap-up note at 80%.
+- **Same step, same result.** The same tool with the same arguments returning the same result: after 3 repeats the
+  worker gets a note to change approach; after 5 it is stopped. Its next tool calls are refused and it must report
+  status `blocked`. You get a short alert in the chat.
+- **Step budget.** Left to Hermes' `delegation.max_iterations`: when it runs out, Hermes gives the worker one last call
+  without tools to write its report and tells the secretary the task was cut short.
+- Workers keep their skills: the skills index and `skill_view` are available, like in the main agent.
 
 ### 4. Results and progress
 
 - When a worker returns, the secretary's next turn gets a note: the evidence the worker reported, a warning that it
   claimed success without evidence, that it did not finish, or that the plugin stopped it.
-- Each turn the secretary sees which workers are still running, and the system prompt asks it to stop superseded ones
-  (`delegate_task(action='stop')`).
-- While workers run, a progress line is posted to the chat every 5 minutes (gateway platforms, via
+- The secretary checks running workers on demand with `delegate_task(action='list')`, and the system prompt asks it to
+  stop superseded ones (`action='stop'`). Nothing is injected into every turn.
+- While workers run, a progress line is posted to the chat every 10 minutes (gateway platforms, via
   `ctx.post_message`, in your language).
 
 ### Scope
@@ -104,10 +108,8 @@ All keys live under `plugins.entries.proactive-agent.settings` in `~/.hermes/con
 | `turn_soft_seconds` | `60` | When the secretary is reminded to answer or delegate |
 | `turn_hard_seconds` | `120` | When editing and execution tools pause for the rest of the turn |
 | `handoff_min_context_chars` | `120` | Shorter `context` is returned once per turn |
-| `handoff_memory_max_chars` | `4000` | Memory attached per handoff (0 disables) |
-| `worker_max_tool_rounds` | `60` | Worker step budget (0 disables) |
 | `worker_repeat_limit` | `5` | Same step with the same result this many times stops a worker (note two repeats earlier) |
-| `progress_interval_seconds` | `300` | Seconds between progress lines (0 disables progress lines and alerts) |
+| `progress_interval_seconds` | `600` | Seconds between progress lines (0 disables progress lines and alerts) |
 
 ```yaml
 plugins:
@@ -119,14 +121,19 @@ plugins:
         turn_hard_seconds: 120
 ```
 
-Keep `delegation.max_iterations` above `worker_max_tool_rounds`, so the plugin's budget (which asks the worker for a
-report) fires before Hermes' hard cap.
-
 ## Install
 
 ```bash
 hermes plugins install github:JerryLiu369/hermes-proactive-agent
 hermes plugins enable proactive-agent
+```
+
+Recommended Hermes setting: lower the worker step budget. A worker that needs more than about 60 model calls is
+usually stuck, and a lower cap makes it report sooner.
+
+```yaml
+delegation:
+  max_iterations: 60
 ```
 
 Manual install: clone into `~/.hermes/plugins/proactive-agent` and run `hermes plugins enable proactive-agent`.
