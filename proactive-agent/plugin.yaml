@@ -1,5 +1,5 @@
 name: proactive-agent
-version: "0.1.14"
+version: "0.1.15"
 description: "Runs the Hermes chat agent like a secretary with a team of workers: keeps the chat responsive, briefs subagents, stops ones that spin, and checks and records every result in a persistent task ledger."
 author: Jerry Liu
 license: MIT
