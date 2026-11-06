@@ -1,6 +1,6 @@
 # Hermes Proactive Agent (`proactive-agent`)
 
-> Hermes Agent plugin that makes the chat agent a responsive assistant that manages subagents: a soft/hard turn budget for the main agent, background detach for long commands, a handoff contract for delegate_task (user memory and a chat summary attached automatically), fail-fast and safety guards for subagents, result checks and progress updates.
+> Hermes Agent plugin that runs the chat agent like a secretary that manages subagents: a turn time budget and background detach for the main agent, a handoff check for delegate_task (the user's recent messages and memory attached), a step budget and fail-fast for subagents, result notes and progress lines.
 
 ## Overview
 
@@ -8,44 +8,37 @@
 - Target: Hermes Agent (tested with v0.22.7)
 - Language: Python 3.10+
 - License: MIT
-- Version: 0.1.9
+- Version: 0.1.10
 
 Roles:
-- Main agent ("secretary"): keeps the chat responsive, investigates and decides, owns the conversation.
-- Subagents ("workers"): do slow execution with a complete brief, under supervision.
+- Main agent ("secretary"): keeps the chat responsive, investigates and decides, writes the handoffs.
+- Subagents ("workers"): do the slow execution.
 
 ## Design
 
-The plugin follows one task through four stages: turn budget (secretary) -> handoff contract (delegate_task) -> worker guards (subagent) -> result check and progress (back to the secretary).
-
-Principles:
-- The secretary thinks, workers execute: the chat is never held for minutes; slow work goes to the background or to a worker.
-- A handoff carries everything the worker needs: workers start with no memory and no view of the chat, so briefs are checked and context is attached.
-- Workers are supervised, results are verified: stuck workers stop early, risky or conflicting changes are refused, evidence is checked before reporting.
+One simple step per stage of a task: turn budget (secretary) -> handoff (delegate_task) -> worker limits (subagent) -> results and progress (back to the secretary). Safety checks Hermes already does (denying subagents' dangerous commands, refusing stale file overwrites) are left to Hermes. No extra model calls are made.
 
 ## Capabilities
 
-### Secretary turn budget
-- Yellow zone (default 60 s or 30,000 chars of tool output in one turn): a one-time reminder to answer or delegate within 1-2 steps.
-- Red zone (default 120 s or 80,000 chars): editing and execution tools are refused; read-only tools and delegate_task remain.
+### Turn budget
+- From 60 s in one turn: a one-time reminder to answer or delegate within 1-2 steps.
+- From 120 s: editing and execution tools pause; read-only tools and delegate_task remain.
 - A mid-turn user message (steer) resets the budget.
 - Foreground terminal commands longer than 30 s move to the background via Hermes' yield path and notify on completion.
-- process_manage(action='wait'), unbounded recursive searches over home, / or ~/.hermes, and port scans are refused.
+- process_manage(action='wait') is refused.
 
-### Handoff contract (delegate_task)
-- A brief with context under 120 characters, or a risky task without a rollback path, is returned once per turn with a checklist.
-- Accepted tasks get: a conversation summary (auxiliary model via ctx.llm, 12 s timeout, plain-extract fallback), USER.md and MEMORY.md, working rules, and a default output_schema (status, summary, evidence, blockers, files_changed).
+### Handoff (delegate_task)
+- context under 120 characters is returned once per turn with a checklist.
+- Accepted tasks get the user's recent messages verbatim, USER.md and MEMORY.md, working rules, and a default output_schema (status, summary, evidence, blockers).
 
-### Worker guards
-- Same call with the same result, or the same failure, 3 times: the worker is stopped and must report "blocked".
-- Step budget: 40 tool rounds (warning at 80%).
-- Risky commands (SSH/firewall, HTTP DELETE, rm -rf on system/home paths, cloud delete/terminate, reboot) refused without a rollback path in the handoff.
-- write_file/patch refused on files changed by someone else after the worker started, until re-read.
+### Worker limits
+- Same call with the same result: a note after 3 repeats, a stop after 5 (the worker must report "blocked"; the user gets an alert).
+- Step budget: 60 tool rounds (note at 80%).
 
-### Results, pivots, progress
-- When a worker returns, the secretary's next turn lists the reported evidence or warns about missing evidence / a plugin stop.
-- Running workers are listed each turn; a new task on the same targets as a running worker asks once to stop the old one.
-- Progress lines every 5 minutes and stuck alerts are posted to the chat via ctx.post_message.
+### Results and progress
+- When a worker returns, the secretary's next turn notes the reported evidence, missing evidence, an unfinished task or a plugin stop.
+- Running workers are listed each turn.
+- Progress lines every 5 minutes via ctx.post_message.
 
 Only platforms in governed_platforms (default ["weixin"]) are affected. Cron runs and subagents of ungoverned sessions are untouched.
 
@@ -59,18 +52,10 @@ Keys under plugins.entries.proactive-agent.settings (environment override: PROAC
 | terminal_auto_detach_seconds | 30 |
 | turn_soft_seconds | 60 |
 | turn_hard_seconds | 120 |
-| turn_soft_output_chars | 30000 |
-| turn_hard_output_chars | 80000 |
 | handoff_min_context_chars | 120 |
-| handoff_summary_enabled | true |
-| handoff_summary_timeout_seconds | 12 |
 | handoff_memory_max_chars | 4000 |
-| worker_max_tool_rounds | 40 |
-| worker_repeat_limit | 3 |
-| worker_guard_risky_commands | true |
-| worker_write_guard | true |
-| verify_child_results | true |
-| progress_push_enabled | true |
+| worker_max_tool_rounds | 60 |
+| worker_repeat_limit | 5 |
 | progress_interval_seconds | 300 |
 
 ## Install

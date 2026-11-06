@@ -1,17 +1,16 @@
 """
-proactive-agent: turns the Hermes chat agent into a responsive assistant that manages workers.
+proactive-agent: runs the Hermes chat agent like a secretary that manages workers.
 
 The main agent (the "secretary") keeps the chat responsive and does the thinking; delegated
-subagents (the "workers") do slow execution under supervision:
+subagents (the "workers") do the slow execution:
 
-1. Turn budget: a reminder at the soft limit, then only read-only tools and delegate_task at
-   the hard limit. Long foreground commands move to the background.
-2. Handoff contract: thin or unsafe delegate_task briefs are returned once; accepted ones get
-   user memory, a conversation summary, working rules and a result schema attached.
-3. Worker guards: fail-fast on repeated steps, a step budget, no unbounded scans, risky changes
-   only with a rollback path, no blind overwrite of files changed by others.
-4. Result checks and progress: the secretary is told what to verify when a worker returns, is
-   asked to stop superseded workers, and the user gets periodic progress lines.
+1. Turn budget: a reminder at the soft limit; at the hard limit only read-only tools and
+   delegate_task stay available. Long foreground commands move to the background.
+2. Handoff: a too-short delegate_task brief is returned once; accepted ones get the user's
+   recent messages, memory, working rules and a result schema attached.
+3. Workers: a step budget, and a stop after the same step gives the same result again and again.
+4. Results and progress: the secretary is told what to check when a worker returns, sees which
+   workers still run, and the user gets periodic progress lines.
 
 Only platforms listed in ``governed_platforms`` (default: weixin) are affected; cron runs and
 workers spawned by ungoverned sessions are never touched.
@@ -27,7 +26,7 @@ from typing import Any, Optional
 if __package__:
     from . import config, context, handoff, prompt, secretary, workers
 
-__version__ = "0.1.9"
+__version__ = "0.1.10"
 
 logger = logging.getLogger("hermes.plugins.proactive_agent")
 
@@ -90,10 +89,6 @@ def _post_tool_call(tool_name: str = "", args: Optional[dict] = None, result: An
     worker = _worker_for(**kw)
     if worker is not None:
         workers.post_tool_call(worker, tool_name, args, result, **kw)
-        return
-    session_id = _main_session(**kw)
-    if session_id:
-        secretary.post_tool_call(session_id, str(kw.get("turn_id") or ""), tool_name, args, result)
 
 
 @_guarded
@@ -114,7 +109,7 @@ def _parent_governed(parent_session: str) -> bool:
 
 @_guarded
 def _subagent_start(**kw: Any) -> None:
-    workers.on_subagent_start(_parent_governed, **kw)
+    workers.on_subagent_start(_parent_governed, secretary.language, **kw)
 
 
 @_guarded
@@ -127,7 +122,6 @@ def _on_turn_end(session_id: str = "", **kw: Any) -> None:
     # Hermes fires on_session_end after every run_conversation, so only per-turn state goes here;
     # workers, pending result notes and progress timers must outlive the turn.
     secretary.forget(session_id)
-    handoff.end_turn(session_id)
 
 
 @_guarded
@@ -155,17 +149,6 @@ def register(ctx: Any) -> None:
     }
     for name, fn in hooks.items():
         ctx.register_hook(name, fn)
-
-    register_task = getattr(ctx, "register_auxiliary_task", None)
-    if callable(register_task):
-        try:
-            register_task(handoff.AUX_TASK, display_name="Handoff summary",
-                          description="Summarizes the chat into a brief for delegated subagents.",
-                          inherit_from="compression")
-            handoff.mark_aux_task_ready()
-        except Exception as e:
-            logger.debug("proactive-agent: auxiliary task not registered: %s", e)
-
     try:
         ctx.register_system_prompt_section("proactive-agent.discipline", prompt.render,
                                            position="after_memory", max_chars=2000)

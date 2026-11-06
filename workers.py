@@ -1,7 +1,6 @@
-"""Delegated workers: registry, runtime guards, result checks and progress updates.
+"""Delegated workers: step budget, fail-fast on repeated steps, result notes and progress lines.
 
-A worker is governed only when the main agent that spawned it is governed. Its handoff
-(recorded by the delegate_task gate) decides what it may do; the hooks here enforce it.
+A worker is governed only when the main agent that spawned it is governed.
 """
 
 from __future__ import annotations
@@ -9,49 +8,25 @@ from __future__ import annotations
 import collections
 import contextvars
 import logging
-import os
 import threading
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
-from . import config, guards
+from . import config, util
 
 logger = logging.getLogger("hermes.plugins.proactive_agent")
 
 _lock = threading.RLock()
-_pending_handoffs: Dict[str, List[dict]] = collections.defaultdict(list)
 _workers: Dict[str, dict] = {}
 _by_session: Dict[str, str] = {}
 _notes: Dict[str, List[str]] = collections.defaultdict(list)
 _timers: Dict[str, threading.Timer] = {}
 
-_WRITE_TOOLS = {"write_file", "patch"}
 _STALE_AFTER_S = 6 * 3600.0
-_PENDING_TTL_S = 900.0
+_DONE_KEEP_S = 600.0
 
 
 # ---------------------------------------------------------------- registry
-
-def expect_children(parent_session: str, handoffs: List[dict]) -> None:
-    """Record handoffs the gate just approved; subagent_start claims them by goal."""
-    now = time.monotonic()
-    with _lock:
-        pending = [h for h in _pending_handoffs.get(parent_session, []) if now - h["at"] < _PENDING_TTL_S]
-        for h in handoffs:
-            pending.append({**h, "at": now})
-        _pending_handoffs[parent_session] = pending
-
-
-def _claim_handoff(parent_session: str, goal: str) -> Optional[dict]:
-    with _lock:
-        pending = _pending_handoffs.get(parent_session) or []
-        for matcher in (lambda h: h["goal"] == goal,
-                        lambda h: h["goal"].strip()[:60] == (goal or "").strip()[:60]):
-            for i, h in enumerate(pending):
-                if matcher(h):
-                    return pending.pop(i)
-        return None
-
 
 def lookup(task_id: str = "", session_id: str = "") -> Optional[dict]:
     with _lock:
@@ -76,237 +51,155 @@ def mark_stopped_by_parent(subagent_id: str) -> None:
 
 def _prune(now: float) -> None:
     for wid in [wid for wid, w in _workers.items()
-                if (w["done"] and now - w["last_activity"] > 600) or now - w["spawn_mono"] > _STALE_AFTER_S]:
-        w = _workers.pop(wid)
-        _by_session.pop(w.get("session_id") or "", None)
+                if (w["done"] and now - w["last_activity"] > _DONE_KEEP_S) or now - w["spawn"] > _STALE_AFTER_S]:
+        _by_session.pop(_workers.pop(wid).get("session_id") or "", None)
 
 
-def on_subagent_start(is_parent_governed, **kw: Any) -> None:
+def on_subagent_start(is_parent_governed: Callable[[str], bool], language_of: Callable[[str], str], **kw: Any) -> None:
     parent_session = kw.get("parent_session_id") or ""
-    parent_sub = kw.get("parent_subagent_id") or ""
     child_id = kw.get("child_subagent_id") or ""
     if not child_id:
         return
     with _lock:
-        parent_worker = _workers.get(parent_sub) if parent_sub else None
+        parent_worker = _workers.get(kw.get("parent_subagent_id") or "")
     if parent_worker is None and not is_parent_governed(parent_session):
         return
-    goal = str(kw.get("child_goal") or "")
-    owner_session = parent_worker["parent_session"] if parent_worker else parent_session
-    handoff = _claim_handoff(owner_session, goal) or {}
-    if parent_worker is not None and not handoff:
-        handoff = {"risky_ok": parent_worker["risky_ok"], "targets": set(), "lang": parent_worker["lang"]}
-    now_mono = time.monotonic()
+    owner = parent_worker["parent_session"] if parent_worker else parent_session
+    now = time.monotonic()
     worker = {
         "id": child_id,
         "session_id": kw.get("child_session_id") or "",
-        "parent_session": owner_session,
-        "goal": goal,
-        "risky_ok": bool(handoff.get("risky_ok")),
-        "targets": set(handoff.get("targets") or ()),
-        "lang": handoff.get("lang") or "en",
-        "spawn_wall": time.time(),
-        "spawn_mono": now_mono,
-        "last_activity": now_mono,
-        "rounds": set(),
-        "outcomes": collections.Counter(),
-        "failures": collections.Counter(),
-        "observed": {},
+        "parent_session": owner,
+        "goal": str(kw.get("child_goal") or ""),
+        "lang": parent_worker["lang"] if parent_worker else language_of(owner),
+        "spawn": now,
+        "last_activity": now,
         "last_call": "",
+        "rounds": set(),
+        "repeats": collections.Counter(),
+        "pending_note": None,
         "stop_reason": None,
         "stop_noted": False,
         "budget_warned": False,
         "done": False,
         "stopped_by_parent": False,
-        # Captured on the parent's thread so progress posts reach the user's chat later.
+        # Captured on the parent's thread so progress lines reach the user's chat later.
         "post_context": contextvars.copy_context(),
     }
     with _lock:
-        _prune(now_mono)
+        _prune(now)
         _workers[child_id] = worker
         if worker["session_id"]:
             _by_session[worker["session_id"]] = child_id
-    _ensure_progress_timer(owner_session)
+    _ensure_progress_timer(owner)
 
 
-# ---------------------------------------------------------------- runtime guards
-
-def _stop_message(w: dict) -> str:
-    return (
-        f"[proactive-agent] STOP: {w['stop_reason']}. Do not call more tools. Write your final report now: "
-        "status \"blocked\", what you tried, the exact blocker (quote the error), and what you need from the "
-        "main agent or the user. A clear blocker report is a good result."
-    )
-
-
-def _abs_path(path: Any) -> Optional[str]:
-    if not isinstance(path, str) or not path.strip():
-        return None
-    p = os.path.expanduser(path.strip())
-    return os.path.normpath(p) if os.path.isabs(p) else None
-
-
-def _mtime(path: str) -> Optional[float]:
-    try:
-        return os.stat(path).st_mtime
-    except OSError:
-        return None
-
-
-def pre_tool_call(w: dict, tool_name: str, args: Optional[dict], **kw: Any) -> Optional[dict]:
-    with _lock:
-        w["last_activity"] = time.monotonic()
-        w["last_call"] = guards.describe_call(tool_name, args)
-        api_request_id = kw.get("api_request_id") or kw.get("tool_call_id") or ""
-        if api_request_id:
-            w["rounds"].add(api_request_id)
-        rounds = len(w["rounds"])
-        if w["stop_reason"] is None and rounds > int(config.get("worker_max_tool_rounds")):
-            w["stop_reason"] = f"step budget reached ({config.get('worker_max_tool_rounds')} tool rounds)"
-        if w["stop_reason"]:
-            w["stop_noted"] = True
-            return _block(_stop_message(w))
-
-    command = guards.command_of(tool_name, args)
-    scan = guards.scan_reason(command)
-    if scan:
-        return _block(
-            f"[proactive-agent] Blocked: {scan} can run for minutes and flood your context. Target the exact "
-            "file or directory you need (for config, read the known file path directly), or report what you need."
-        )
-    if config.get("worker_guard_risky_commands") and not w["risky_ok"]:
-        risky = guards.risky_reason(command)
-        if risky:
-            return _block(
-                f"[proactive-agent] Blocked: {risky} was not authorized by your handoff with a rollback path. "
-                "Do not try to work around this. Report exactly what change you need and how it could be rolled back."
-            )
-
-    if config.get("worker_write_guard") and tool_name in _WRITE_TOOLS:
-        path = _abs_path((args or {}).get("path"))
-        if path:
-            current = _mtime(path)
-            with _lock:
-                seen = w["observed"].get(path)
-            if current is not None and current > w["spawn_wall"] and seen != current:
-                return _block(
-                    f"[proactive-agent] Blocked write: {path} was changed by someone else after you started "
-                    "(another subagent or the main agent). Re-read it first. If your change conflicts with what is "
-                    "there now, do not overwrite it; report the conflict instead."
-                )
-    return None
-
+# ---------------------------------------------------------------- runtime checks
 
 def _block(message: str) -> dict:
     return {"action": "block", "message": message, "reason": message}
 
 
+def _stop_message(w: dict) -> str:
+    return (f"[proactive-agent] STOP: {w['stop_reason']}. Do not call more tools. Write your final report now: "
+            "status \"blocked\", what you tried, the exact blocker, and what you need from the main agent or the user.")
+
+
+def pre_tool_call(w: dict, tool_name: str, args: Optional[dict], **kw: Any) -> Optional[dict]:
+    with _lock:
+        w["last_activity"] = time.monotonic()
+        w["last_call"] = util.describe_call(tool_name, args)
+        round_id = kw.get("api_request_id") or kw.get("tool_call_id") or ""
+        if round_id:
+            w["rounds"].add(round_id)
+        budget = int(config.get("worker_max_tool_rounds"))
+        if w["stop_reason"] is None and budget > 0 and len(w["rounds"]) > budget:
+            w["stop_reason"] = f"step budget reached ({budget} tool rounds)"
+        if w["stop_reason"]:
+            w["stop_noted"] = True
+            return _block(_stop_message(w))
+    return None
+
+
 def post_tool_call(w: dict, tool_name: str, args: Optional[dict], result: Any, **kw: Any) -> None:
     if kw.get("error_type") == "plugin_block":
         return
-    failed, outcome = guards.outcome_of(result)
-    tripped = None
     limit = max(2, int(config.get("worker_repeat_limit")))
+    warn_at = limit - 2 if limit >= 4 else 0
+    outcome = util.result_signature(result)
+    step = f"{util.describe_call(tool_name, args)} -> \"{util.short(outcome, 120)}\""
+    stopped = None
     with _lock:
         w["last_activity"] = time.monotonic()
-        if tool_name in _WRITE_TOOLS or tool_name == "read_file":
-            path = _abs_path((args or {}).get("path"))
-            if path and not failed:
-                w["observed"][path] = _mtime(path)
-        same_call = (guards.call_signature(tool_name, args), outcome)
-        w["outcomes"][same_call] += 1
-        if w["outcomes"][same_call] >= limit:
-            tripped = f"repeated the same step {limit} times with the same result: " \
-                      f"{guards.describe_call(tool_name, args)} -> \"{guards.short(outcome, 120)}\""
-        if failed:
-            w["failures"][(tool_name, outcome)] += 1
-            if w["failures"][(tool_name, outcome)] >= limit and tripped is None:
-                tripped = f"hit the same failure {limit} times: \"{guards.short(outcome, 120)}\""
-        if tripped and w["stop_reason"] is None:
-            w["stop_reason"] = tripped
-        else:
-            tripped = None
-    if tripped:
-        logger.warning("proactive-agent: stopping worker %s: %s", w["id"], tripped)
+        key = (util.call_signature(tool_name, args), outcome)
+        w["repeats"][key] += 1
+        count = w["repeats"][key]
+        if count >= limit and w["stop_reason"] is None:
+            w["stop_reason"] = stopped = f"ran the same step {count} times with the same result: {step}"
+        elif count == warn_at:
+            w["pending_note"] = (f"[proactive-agent] You ran the same step {count} times with the same result: {step}. "
+                                 f"Change approach or report the blocker; at {limit} repeats you will be stopped.")
+    if stopped:
+        logger.warning("proactive-agent: stopping worker %s: %s", w["id"], stopped)
         if w["lang"] == "zh":
-            _post(w, f"后台子任务卡住了，已叫停：{guards.short(w['goal'], 40)}（{guards.short(tripped, 80)}）。主助手会接着处理。")
+            _post(w, f"后台子任务卡住了，已叫停：{util.short(w['goal'], 40)}。主助手会接着处理。")
         else:
-            _post(w, f"A background task got stuck and was stopped: {guards.short(w['goal'], 40)} "
-                     f"({guards.short(tripped, 80)}). The assistant will follow up.")
+            _post(w, f"A background task got stuck and was stopped: {util.short(w['goal'], 40)}. "
+                     "The assistant will follow up.")
 
 
 def transform_tool_result(w: dict, tool_name: str, result: Any) -> Optional[str]:
     with _lock:
         if w["stop_reason"] and not w["stop_noted"]:
             w["stop_noted"] = True
-            return guards.append_note(result, _stop_message(w))
+            return util.append_note(result, _stop_message(w))
+        note, w["pending_note"] = w["pending_note"], None
         budget = int(config.get("worker_max_tool_rounds"))
-        if not w["budget_warned"] and len(w["rounds"]) >= max(1, int(budget * 0.8)):
+        if not note and budget > 0 and not w["budget_warned"] and len(w["rounds"]) >= max(1, int(budget * 0.8)):
             w["budget_warned"] = True
-            return guards.append_note(
-                result,
-                f"[proactive-agent] {len(w['rounds'])}/{budget} tool rounds used. Wrap up: verify the end state "
-                "and write your report soon, or report a blocker.",
-            )
-    return None
+            note = (f"[proactive-agent] {len(w['rounds'])}/{budget} tool rounds used. Wrap up: verify the end state "
+                    "and write your report soon, or report a blocker.")
+    return util.append_note(result, note) if note else None
 
 
 # ---------------------------------------------------------------- results
 
-def _evidence_from(summary: Any) -> tuple[Optional[dict], List[str]]:
-    parsed = guards.parse_json(summary)
-    if isinstance(parsed, dict):
-        evidence = parsed.get("evidence")
-        if isinstance(evidence, list):
-            return parsed, [str(e) for e in evidence if str(e).strip()]
-        return parsed, []
-    return None, []
-
-
 def on_subagent_stop(**kw: Any) -> None:
-    child_session = kw.get("child_session_id") or ""
     with _lock:
-        wid = _by_session.get(child_session)
+        wid = _by_session.get(kw.get("child_session_id") or "")
         w = _workers.get(wid) if wid else None
         if w is None:
             return
         w["done"] = True
         w["last_activity"] = time.monotonic()
-    if not config.get("verify_child_results"):
-        return
 
-    status = str(kw.get("child_status") or "unknown")
-    summary = kw.get("child_summary")
-    parsed, evidence = _evidence_from(summary)
-    reported = str((parsed or {}).get("status") or status).lower()
-    history = kw.get("tool_call_history") or []
-    failures = [h for h in history if isinstance(h, dict) and str(h.get("status") or "").lower() in ("error", "failed")]
+    parsed = util.parse_json(kw.get("child_summary"))
+    parsed = parsed if isinstance(parsed, dict) else {}
+    status = str(parsed.get("status") or kw.get("child_status") or "unknown").lower()
+    evidence = [str(e) for e in parsed.get("evidence") or [] if str(e).strip()] \
+        if isinstance(parsed.get("evidence"), list) else []
     minutes = (kw.get("duration_ms") or 0) / 60000.0
 
-    lines = [f"[proactive-agent] Check this subagent result before telling the user: \"{guards.short(w['goal'], 80)}\" "
-             f"(status: {reported}, {len(w['rounds'])} tool rounds, {minutes:.1f} min)."]
+    lines = [f"[proactive-agent] Subagent finished: \"{util.short(w['goal'], 80)}\" "
+             f"(status: {status}, {len(w['rounds'])} tool rounds, {minutes:.1f} min)."]
     if w["stop_reason"]:
-        lines.append(f"- The plugin stopped it: {w['stop_reason']}. Treat it as blocked. Decide the next step yourself "
-                     "(different approach, ask the user, or report the blocker); do not re-dispatch the same plan.")
-    if reported in ("completed", "complete", "success", "done") and not w["stop_reason"]:
+        lines.append(f"- The plugin stopped it: {w['stop_reason']}. Treat it as blocked and decide the next step "
+                     "yourself; do not re-dispatch the same plan.")
+    elif status in ("completed", "complete", "success", "done"):
         if evidence:
-            lines.append("- Evidence it reported: " + "; ".join(guards.short(e, 120) for e in evidence[:5])
-                         + ". Spot-check the real end state (status code, service, file) yourself.")
+            lines.append("- Evidence it reported: " + "; ".join(util.short(e, 120) for e in evidence[:5])
+                         + ". Spot-check the real end state before telling the user.")
         else:
-            lines.append("- It claims success but gave no verifiable evidence (URL status, exit code, file path, "
-                         "service state). Verify the real end state yourself before saying it is done.")
-    if failures and reported in ("completed", "complete", "success", "done"):
-        lines.append(f"- {len(failures)} of its tool calls failed along the way; make sure the final state is not one of them.")
-    if reported in ("blocked", "failed", "partial", "error", "interrupted") and not w["stop_reason"]:
-        lines.append("- It did not finish. Read its blockers and decide; tell the user plainly what is left.")
+            lines.append("- It claims success without evidence. Verify the real end state before telling the user.")
+    else:
+        lines.append("- It did not finish. Read its blockers and tell the user plainly what is left.")
     with _lock:
         _notes[w["parent_session"]].append("\n".join(lines))
 
 
 def pop_notes(parent_session: str) -> str:
     with _lock:
-        notes = _notes.pop(parent_session, [])
-    return "\n\n".join(notes)
+        return "\n\n".join(_notes.pop(parent_session, []))
 
 
 def running_summary(parent_session: str) -> str:
@@ -315,18 +208,18 @@ def running_summary(parent_session: str) -> str:
     if not active:
         return ""
     now = time.monotonic()
-    rows = [f"- {w['id']}: \"{guards.short(w['goal'], 60)}\" running {(now - w['spawn_mono']) / 60:.0f} min, "
-            f"{len(w['rounds'])} rounds, last: {guards.short(w['last_call'], 60) or 'starting'}" for w in active]
+    rows = [f"- {w['id']}: \"{util.short(w['goal'], 60)}\" running {(now - w['spawn']) / 60:.0f} min, "
+            f"{len(w['rounds'])} rounds, last: {util.short(w['last_call'], 60) or 'starting'}" for w in active]
     return "[proactive-agent] Subagents still running:\n" + "\n".join(rows)
 
 
-# ---------------------------------------------------------------- progress updates
+# ---------------------------------------------------------------- progress lines
 
 def _post(w: dict, text: str) -> None:
     ctx = config.ctx()
     poster = getattr(ctx, "post_message", None) if ctx is not None else None
     captured = w.get("post_context")
-    if not config.get("progress_push_enabled") or poster is None or captured is None:
+    if poster is None or captured is None or int(config.get("progress_interval_seconds")) <= 0:
         return
 
     def _send() -> None:
@@ -341,8 +234,8 @@ def _post(w: dict, text: str) -> None:
 
 
 def _ensure_progress_timer(parent_session: str) -> None:
-    interval = float(config.get("progress_interval_seconds"))
-    if not config.get("progress_push_enabled") or interval <= 0:
+    interval = int(config.get("progress_interval_seconds"))
+    if interval <= 0:
         return
     with _lock:
         if parent_session in _timers:
@@ -363,12 +256,12 @@ def _progress_tick(parent_session: str) -> None:
     zh = active[0]["lang"] == "zh"
     rows = []
     for i, w in enumerate(active, 1):
-        mins = (now - w["spawn_mono"]) / 60
-        last = guards.short(w["last_call"], 50) or ("准备中" if zh else "starting")
+        mins = (now - w["spawn"]) / 60
+        last = util.short(w["last_call"], 50) or ("准备中" if zh else "starting")
         if zh:
-            rows.append(f"{i}. {guards.short(w['goal'], 40)}：已运行 {mins:.0f} 分钟，第 {len(w['rounds'])} 步，最近在做 {last}")
+            rows.append(f"{i}. {util.short(w['goal'], 40)}：已运行 {mins:.0f} 分钟，第 {len(w['rounds'])} 步，最近在做 {last}")
         else:
-            rows.append(f"{i}. {guards.short(w['goal'], 40)}: {mins:.0f} min, step {len(w['rounds'])}, last: {last}")
+            rows.append(f"{i}. {util.short(w['goal'], 40)}: {mins:.0f} min, step {len(w['rounds'])}, last: {last}")
     header = f"后台进展：{len(active)} 个子任务在跑" if zh else f"Background progress: {len(active)} task(s) running"
     _post(active[0], header + "\n" + "\n".join(rows))
     _ensure_progress_timer(parent_session)
@@ -382,7 +275,6 @@ def forget_parent(parent_session: str = "") -> None:
             for t in _timers.values():
                 t.cancel()
             _timers.clear()
-            _pending_handoffs.clear()
             _notes.clear()
             _workers.clear()
             _by_session.clear()
@@ -390,7 +282,6 @@ def forget_parent(parent_session: str = "") -> None:
         timer = _timers.pop(parent_session, None)
         if timer is not None:
             timer.cancel()
-        _pending_handoffs.pop(parent_session, None)
         _notes.pop(parent_session, None)
         for wid in [wid for wid, w in _workers.items() if w["parent_session"] == parent_session]:
             _by_session.pop(_workers.pop(wid).get("session_id") or "", None)

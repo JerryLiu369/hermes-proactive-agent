@@ -1,4 +1,4 @@
-"""Behaviour tests for proactive-agent (secretary governance, handoff contract, worker guards)."""
+"""Behaviour tests for proactive-agent: turn budget, handoff check, worker limits, results and progress."""
 
 import json
 import os
@@ -28,10 +28,6 @@ def main_tool(plugin, name, args=None, session="s1", turn="t1"):
     return plugin._pre_tool_call(name, args or {}, session_id=session, turn_id=turn, task_id="main")
 
 
-def main_post(plugin, name, args, result, session="s1", turn="t1"):
-    plugin._post_tool_call(name, args, result, session_id=session, turn_id=turn, task_id="main")
-
-
 def spawn_worker(plugin, goal="Fix the 522 on app.example.com", context=GOOD_CONTEXT, sub_id="sa-0-abc",
                  child_session="child-1"):
     res = main_tool(plugin, "delegate_task", {"tasks": [{"goal": goal, "context": context}]})
@@ -51,28 +47,25 @@ def w_post(plugin, name, args, result, api="r1"):
     plugin._post_tool_call(name, args, result, api_request_id=api, **CHILD)
 
 
+def w_note(plugin, result='{"output": "x"}'):
+    out = plugin._transform_tool_result("terminal", {}, result, **CHILD)
+    return json.loads(out)["proactive_agent_note"] if out else None
+
+
 # ---------------------------------------------------------------- manifest & registration
 
 def test_manifest_matches_code(plugin):
     with open(os.path.join(REPO_ROOT, "plugin.yaml"), encoding="utf-8") as f:
         manifest = yaml.safe_load(f)
-    assert manifest["version"] == plugin.__version__ == "0.1.9"
-    for hook in ("pre_tool_call", "post_tool_call", "transform_tool_result", "pre_llm_call", "pre_api_request",
-                 "subagent_start", "subagent_stop", "on_session_end", "on_session_reset", "on_session_finalize"):
-        assert hook in manifest["hooks"]
+    assert manifest["version"] == plugin.__version__ == "0.1.10"
+    registered = {}
+    plugin.register(SimpleNamespace(register_hook=lambda n, fn: registered.setdefault(n, fn),
+                                    register_system_prompt_section=lambda *a, **k: None, get_config=lambda k, d=None: d))
+    assert set(manifest["hooks"]) == set(registered)
     schema = manifest["config_schema"]
+    assert set(schema) == set(plugin.config.DEFAULTS)
     for key, default in plugin.config.DEFAULTS.items():
-        assert key in schema, key
         assert schema[key]["default"] == default, key
-    assert schema["turn_soft_seconds"]["default"] == 60.0
-    assert schema["turn_hard_seconds"]["default"] == 120.0
-
-
-def test_register_wires_hooks_prompt_and_aux_task(plugin, make_ctx):
-    ctx = make_ctx()
-    assert set(ctx.hooks) >= {"pre_tool_call", "subagent_start", "subagent_stop", "pre_llm_call"}
-    assert "proactive-agent.discipline" in ctx.prompt_sections
-    assert plugin.handoff.AUX_TASK in ctx.aux_tasks
 
 
 def test_prompt_only_for_governed_main(plugin, make_ctx):
@@ -85,35 +78,41 @@ def test_prompt_only_for_governed_main(plugin, make_ctx):
         assert render(info) == ""
 
 
+def test_config_from_env(plugin, make_ctx):
+    make_ctx(config={"worker_max_tool_rounds": 9})
+    assert plugin.config.get("worker_max_tool_rounds") == 9
+    with patch.dict(os.environ, {"PROACTIVE_WORKER_MAX_TOOL_ROUNDS": "7", "PROACTIVE_GOVERNED_PLATFORMS": "a, b"}):
+        assert plugin.config.get("worker_max_tool_rounds") == 7
+        assert plugin.config.governed_platforms() == ["a", "b"]
+
+
 # ---------------------------------------------------------------- secretary turn budget
 
-def test_turn_budget_yellow_then_red(plugin, make_ctx):
+def test_turn_budget_reminds_then_pauses_edits(plugin, make_ctx):
     make_ctx()
     start_turn(plugin)
     assert main_tool(plugin, "terminal", {"command": "ls"}) is None
 
     plugin.secretary._turns["s1"]["start"] -= 65
-    assert main_tool(plugin, "terminal", {"command": "ls"}) is None, "yellow must not block"
+    assert main_tool(plugin, "terminal", {"command": "ls"}) is None, "the reminder zone never blocks"
     note = plugin._transform_tool_result("terminal", {}, '{"output": "ok"}', session_id="s1", task_id="main")
     assert "Within the next 1-2 steps" in json.loads(note)["proactive_agent_note"]
     assert plugin._transform_tool_result("terminal", {}, '{"output": "ok"}', session_id="s1", task_id="main") is None
 
     plugin.secretary._turns["s1"]["start"] -= 60
-    blocked = main_tool(plugin, "terminal", {"command": "ls"})
-    assert blocked["action"] == "block" and ">120s" in blocked["message"]
-    for allowed in ("read_file", "delegate_task", "memory", "process_manage"):
-        args = {"tasks": [{"goal": "g", "context": GOOD_CONTEXT}]} if allowed == "delegate_task" else {}
-        res = main_tool(plugin, allowed, args)
-        assert res is None or res.get("action") != "block", allowed
+    blocked = main_tool(plugin, "patch", {"path": "/x"})
+    assert blocked["action"] == "block" and "more than 120s" in blocked["message"]
+    for allowed in ("read_file", "memory", "process_manage"):
+        assert main_tool(plugin, allowed, {}) is None, allowed
+    res = main_tool(plugin, "delegate_task", {"tasks": [{"goal": "g", "context": GOOD_CONTEXT}]})
+    assert res["action"] == "modify"
 
 
-def test_turn_budget_counts_tool_output(plugin, make_ctx):
-    make_ctx(config={"turn_soft_output_chars": 100, "turn_hard_output_chars": 200})
+def test_large_tool_output_does_not_pause_edits(plugin, make_ctx):
+    make_ctx()
     start_turn(plugin)
-    main_post(plugin, "read_file", {"path": "/x"}, "a" * 150)
-    assert plugin.secretary.zone("s1") == "yellow"
-    main_post(plugin, "read_file", {"path": "/x"}, "a" * 100)
-    assert main_tool(plugin, "patch", {"path": "/x"})["action"] == "block"
+    plugin._post_tool_call("read_file", {"path": "/x"}, "a" * 500000, session_id="s1", turn_id="t1", task_id="main")
+    assert main_tool(plugin, "patch", {"path": "/x"}) is None
 
 
 def test_new_turn_and_steer_reset_budget(plugin, make_ctx):
@@ -129,46 +128,20 @@ def test_new_turn_and_steer_reset_budget(plugin, make_ctx):
     assert main_tool(plugin, "terminal", {"command": "ls"}, turn="t2") is None
 
 
-def test_ungoverned_platforms_are_untouched(plugin, make_ctx):
+def test_ungoverned_platforms_and_cron_are_untouched(plugin, make_ctx):
     make_ctx()
-    for platform in ("cli", "desktop", "telegram"):
-        session = f"s-{platform}"
+    for session, platform in (("s-cli", "cli"), ("s-tg", "telegram"), ("cron_abc_1", "weixin")):
         start_turn(plugin, session=session, platform=platform)
         assert main_tool(plugin, "process_manage", {"action": "wait"}, session=session) is None
-        assert main_tool(plugin, "terminal", {"command": "grep -rn x ~/.hermes"}, session=session) is None
         assert main_tool(plugin, "delegate_task", {"tasks": [{"goal": "g"}]}, session=session) is None
 
 
-def test_cron_sessions_are_untouched(plugin, make_ctx):
-    make_ctx()
-    start_turn(plugin, session="cron_abc_1")
-    assert main_tool(plugin, "process_manage", {"action": "wait"}, session="cron_abc_1") is None
-
-
-def test_governed_platforms_from_env(plugin, make_ctx):
-    make_ctx()
-    with patch.dict(os.environ, {"PROACTIVE_GOVERNED_PLATFORMS": "telegram,slack"}):
-        start_turn(plugin, session="tg", platform="telegram")
-        assert main_tool(plugin, "process_manage", {"action": "wait"}, session="tg")["action"] == "block"
-        start_turn(plugin, session="wx", platform="weixin")
-        assert main_tool(plugin, "process_manage", {"action": "wait"}, session="wx") is None
-
-
-def test_bool_settings_parse_from_env(plugin, make_ctx):
-    make_ctx()
-    with patch.dict(os.environ, {"PROACTIVE_WORKER_WRITE_GUARD": "false"}):
-        assert plugin.config.get("worker_write_guard") is False
-
-
-def test_main_blocks_wait_and_unbounded_scans(plugin, make_ctx):
+def test_main_agent_cannot_wait_on_background_jobs(plugin, make_ctx):
     make_ctx()
     start_turn(plugin)
     assert main_tool(plugin, "process_manage", {"action": "wait"})["action"] == "block"
     assert main_tool(plugin, "process_manage", {"action": "list"}) is None
-    assert main_tool(plugin, "terminal", {"command": "grep -rnw '/home/ubuntu/.hermes' -e 'proactive'"})["action"] == "block"
-    assert main_tool(plugin, "terminal", {"command": "nmap -p 1-10000 1.2.3.4"})["action"] == "block"
-    assert main_tool(plugin, "terminal", {"command": "grep -rn TODO ./src"}) is None
-    assert main_tool(plugin, "terminal", {"command": "rg proactive /home/ubuntu/project/plugins"}) is None
+    assert main_tool(plugin, "terminal", {"command": "grep -rn x ~/.hermes"}) is None
 
 
 def test_yielded_terminal_result_explains_background(plugin, make_ctx):
@@ -186,84 +159,49 @@ def test_plugin_errors_never_block_tools(plugin, make_ctx):
         assert main_tool(plugin, "terminal", {"command": "ls"}) is None
 
 
-# ---------------------------------------------------------------- handoff contract
+# ---------------------------------------------------------------- handoff
 
-def test_thin_handoff_returned_once_then_enriched(plugin, make_ctx):
+def test_thin_handoff_returned_once_then_briefed(plugin, make_ctx):
     make_ctx()
     history = [{"role": "user", "content": "autosub 又 522 了，别自己改 edgetunnel 的代码"},
                {"role": "assistant", "content": "我看了，DNS 是代理状态"}]
     start_turn(plugin, history=history, user="帮我修一下")
     first = main_tool(plugin, "delegate_task", {"tasks": [{"goal": "修复 522", "context": None}]})
-    assert first["action"] == "block" and "Exact targets" in first["message"]
+    assert first["action"] == "block" and "exact targets" in first["message"]
 
     second = main_tool(plugin, "delegate_task", {"tasks": [{"goal": "修复 522", "context": None}]})
     assert second["action"] == "modify"
     task = second["args"]["tasks"][0]
     assert plugin.handoff.BRIEFING_MARKER in task["context"]
-    assert "别自己改 edgetunnel" in task["context"], "fallback summary keeps the user's words"
+    assert "别自己改 edgetunnel" in task["context"] and "帮我修一下" in task["context"]
+    assert "DNS 是代理状态" not in task["context"], "only the user's own words are attached"
     assert "Write the final report in Chinese." in task["context"]
     assert task["output_schema"]["required"] == ["status", "summary"]
 
 
-def test_handoff_uses_llm_summary_and_memory(plugin, make_ctx, tmp_path):
-    calls = []
+def test_steer_joins_user_words_but_injected_context_does_not(plugin, make_ctx):
+    make_ctx()
+    start_turn(plugin, user="deploy the site")
+    request = [{"role": "user", "content": "deploy the site\n\n[proactive-agent] Subagents still running: ..."},
+               {"role": "user", "content": "[OUT-OF-BAND USER MESSAGE] use the staging config"}]
+    plugin._pre_api_request(session_id="s1", turn_id="t1", request_messages=request)
+    res = main_tool(plugin, "delegate_task", {"tasks": [{"goal": "Deploy", "context": GOOD_CONTEXT}]})
+    briefing = res["args"]["tasks"][0]["context"]
+    assert "use the staging config" in briefing and "Subagents still running" not in briefing
 
-    class FakeLLM:
-        def complete(self, **kw):
-            calls.append(kw)
-            return SimpleNamespace(text="- User wants the 522 fixed without editing upstream code")
 
+def test_handoff_keeps_brief_and_attaches_memory(plugin, make_ctx, tmp_path):
     (tmp_path / "memories").mkdir()
     (tmp_path / "memories" / "MEMORY.md").write_text("Never deploy with --env production", encoding="utf-8")
-    fake_constants = SimpleNamespace(get_hermes_home=lambda: tmp_path)
-    make_ctx(llm=FakeLLM())
-    with patch.dict(sys.modules, {"hermes_constants": fake_constants}):
-        start_turn(plugin, history=[{"role": "user", "content": "fix it"}])
-        res = main_tool(plugin, "delegate_task", {"tasks": [{"goal": "Fix 522", "context": GOOD_CONTEXT}]})
-    ctx_text = res["args"]["tasks"][0]["context"]
-    assert ctx_text.startswith(GOOD_CONTEXT)
-    assert "without editing upstream code" in ctx_text
-    assert "Never deploy with --env production" in ctx_text
-    assert calls and calls[0]["timeout"] == 12.0 and calls[0]["task"] == plugin.handoff.AUX_TASK
-
-
-def test_llm_failure_falls_back_to_extract(plugin, make_ctx):
-    class BrokenLLM:
-        def complete(self, **kw):
-            raise TimeoutError("slow")
-
-    make_ctx(llm=BrokenLLM())
-    start_turn(plugin, history=[{"role": "user", "content": "the deploy script must stay bash"}])
-    res = main_tool(plugin, "delegate_task", {"tasks": [{"goal": "Fix", "context": GOOD_CONTEXT}]})
-    assert "the deploy script must stay bash" in res["args"]["tasks"][0]["context"]
-
-
-def test_risky_handoff_needs_rollback(plugin, make_ctx):
     make_ctx()
-    start_turn(plugin)
-    risky = GOOD_CONTEXT + " Change sshd port to 36422 via ssh.socket override and update iptables."
-    first = main_tool(plugin, "delegate_task", {"tasks": [{"goal": "Move SSH port", "context": risky}]})
-    assert first["action"] == "block" and "Rollback path" in first["message"]
-
-    start_turn(plugin, turn="t2")
-    safe = risky + " Rollback: keep port 22 open until 36422 is verified from outside."
-    res = plugin._pre_tool_call("delegate_task", {"tasks": [{"goal": "Move SSH port", "context": safe}]},
-                                session_id="s1", turn_id="t2", task_id="main")
-    assert res["action"] == "modify"
-    assert "Risky changes are allowed only as described" in res["args"]["tasks"][0]["context"]
-
-
-def test_turn_end_drops_per_turn_return_markers(plugin, make_ctx):
-    make_ctx()
-    start_turn(plugin)
-    assert main_tool(plugin, "delegate_task", {"tasks": [{"goal": "g", "context": "x"}]})["action"] == "block"
-    plugin._on_turn_end(session_id="s1")
-    assert not any(k.startswith("thin:") for k in plugin.handoff._returned.get("s1", set()))
-
-
-def test_home_relative_paths_are_targets(plugin):
-    targets = plugin.guards.targets_in("edit ~/.hermes/scripts/a.sh and /srv/app/x.toml")
-    assert targets == {"~/.hermes/scripts/a.sh", "/srv/app/x.toml"}
+    with patch.dict(sys.modules, {"hermes_constants": SimpleNamespace(get_hermes_home=lambda: tmp_path)}):
+        start_turn(plugin)
+        res = main_tool(plugin, "delegate_task", {"tasks": [{"goal": "Fix 522", "context": GOOD_CONTEXT,
+                                                             "output_schema": {"type": "object"}}]})
+    task = res["args"]["tasks"][0]
+    assert task["context"].startswith(GOOD_CONTEXT)
+    assert "Never deploy with --env production" in task["context"]
+    assert task["output_schema"] == {"type": "object"}
 
 
 def test_single_goal_shape(plugin, make_ctx):
@@ -274,7 +212,7 @@ def test_single_goal_shape(plugin, make_ctx):
     assert plugin.handoff.BRIEFING_MARKER in res["args"]["context"]
 
 
-def test_list_and_steer_actions_pass_through(plugin, make_ctx):
+def test_other_delegate_actions_pass_through(plugin, make_ctx):
     make_ctx()
     start_turn(plugin)
     assert main_tool(plugin, "delegate_task", {"action": "list"}) is None
@@ -288,98 +226,74 @@ def test_worker_only_governed_under_governed_parent(plugin, make_ctx):
     start_turn(plugin, session="cli-s", platform="cli")
     plugin._subagent_start(parent_session_id="cli-s", child_session_id="c9", child_subagent_id="sa-9", child_goal="g")
     assert plugin.workers.lookup(task_id="sa-9") is None
-    assert plugin._pre_tool_call("terminal", {"command": "nmap 1.2.3.4"}, task_id="sa-9", session_id="c9") is None
 
 
-def test_worker_fast_fail_on_repeated_identical_step(plugin, make_ctx):
+def test_worker_reminded_then_stopped_on_repeated_step(plugin, make_ctx):
     posted = []
     make_ctx(post_message=lambda text: posted.append(text) or SimpleNamespace(ok=True))
     start_turn(plugin, user="又 522 了")
     worker = spawn_worker(plugin)
-    curl = {"command": 'curl -sI "https://app.example.com/ping?_t=$RANDOM"'}
-    for i in range(3):
+    curl = {"command": "curl -sI https://app.example.com/ping"}
+    for i in range(5):
         assert w_tool(plugin, "terminal", curl, api=f"r{i}") is None
-        result = json.dumps({"output": f"HTTP/2 522 \ndate: Wed, 04 Nov 2026 12:24:3{i} GMT\ncf-ray: a55398{i}",
-                             "exit_code": 0})
+        result = json.dumps({"output": f"HTTP/2 522 \ndate: Wed, 04 Nov 2026 12:24:3{i} GMT", "exit_code": 0})
         w_post(plugin, "terminal", curl, result, api=f"r{i}")
+        note = w_note(plugin)
+        if i == 2:
+            assert "same step 3 times" in note and "at 5 repeats" in note
+        elif i < 4:
+            assert note is None
     assert worker["stop_reason"] and "HTTP/2 522" in worker["stop_reason"]
-    note = plugin._transform_tool_result("terminal", curl, '{"output": "x"}', **CHILD)
-    assert "STOP" in json.loads(note)["proactive_agent_note"]
+    assert "STOP" in note
     blocked = w_tool(plugin, "terminal", {"command": "ls"}, api="r9")
     assert blocked["action"] == "block" and "final report" in blocked["message"]
 
 
-def test_worker_fast_fail_on_same_failure_with_different_args(plugin, make_ctx):
+def test_different_steps_failing_alike_are_not_repeats(plugin, make_ctx):
     make_ctx()
     start_turn(plugin)
     worker = spawn_worker(plugin)
-    for i, port in enumerate((22, 2222, 36422)):
-        args = {"command": f"ssh -p {port} ubuntu@10.0.0.1 true"}
-        w_post(plugin, "terminal", args, json.dumps({"output": "", "error": "Connection refused", "exit_code": 255}),
-               api=f"r{i}")
-    assert worker["stop_reason"] and "same failure" in worker["stop_reason"]
+    for i in range(8):
+        w_post(plugin, "terminal", {"command": f"grep -q pattern{i} /srv/app/x.toml"},
+               json.dumps({"output": "", "exit_code": 1}), api=f"r{i}")
+    assert worker["stop_reason"] is None
 
 
 def test_worker_step_budget(plugin, make_ctx):
-    make_ctx(config={"worker_max_tool_rounds": 3})
+    make_ctx(config={"worker_max_tool_rounds": 5})
     start_turn(plugin)
     spawn_worker(plugin)
-    for i in range(3):
+    for i in range(5):
         assert w_tool(plugin, "read_file", {"path": f"/tmp/f{i}"}, api=f"r{i}") is None
-    blocked = w_tool(plugin, "read_file", {"path": "/tmp/f9"}, api="r3")
+        note = w_note(plugin)
+        if i == 3:
+            assert "4/5 tool rounds" in note
+    blocked = w_tool(plugin, "read_file", {"path": "/tmp/f9"}, api="r5")
     assert blocked["action"] == "block" and "step budget" in blocked["message"]
 
 
-def test_worker_risky_and_scan_commands(plugin, make_ctx):
+def test_worker_commands_are_left_to_hermes(plugin, make_ctx):
     make_ctx()
     start_turn(plugin)
     spawn_worker(plugin)
-    assert w_tool(plugin, "terminal", {"command": "sudo iptables -I INPUT 1 -p tcp --dport 36422 -j ACCEPT"})["action"] == "block"
-    assert w_tool(plugin, "terminal", {"command": "curl -X DELETE https://api.cloudflare.com/client/v4/zones/z/dns_records/r"})["action"] == "block"
-    assert w_tool(plugin, "execute_code", {"code": "for p in range(1, 10000): s.connect_ex((ip, p))"})["action"] == "block"
-    assert w_tool(plugin, "terminal", {"command": "npx wrangler deploy --config wrangler.toml"}) is None
+    for command in ("sudo iptables -L", "cat /etc/ssh/sshd_config", "grep reboot /var/log/syslog"):
+        assert w_tool(plugin, "terminal", {"command": command}) is None
 
 
-def test_worker_risky_allowed_with_rollback_handoff(plugin, make_ctx):
-    make_ctx()
-    start_turn(plugin)
-    context = GOOD_CONTEXT + " Update iptables for 36422. Rollback: keep port 22 open until 36422 is verified."
-    spawn_worker(plugin, goal="Move SSH port", context=context)
-    assert w_tool(plugin, "terminal", {"command": "sudo iptables -I INPUT 1 -p tcp --dport 36422 -j ACCEPT"}) is None
+# ---------------------------------------------------------------- results and progress
+
+def _stop(plugin, summary, status="completed"):
+    plugin._subagent_stop(parent_session_id="s1", child_session_id="child-1", child_status=status,
+                          child_summary=summary, tool_call_history=[], duration_ms=120000)
 
 
-def test_worker_write_guard_blocks_blind_overwrite(plugin, make_ctx, tmp_path):
-    make_ctx()
-    start_turn(plugin)
-    worker = spawn_worker(plugin)
-    target = tmp_path / "memory_autocommit.sh"
-    target.write_text("#!/bin/bash\necho tested by another worker\n", encoding="utf-8")
-    os.utime(target, (worker["spawn_wall"] + 5, worker["spawn_wall"] + 5))
-    args = {"path": str(target), "content": "python version"}
-    blocked = w_tool(plugin, "write_file", args)
-    assert blocked["action"] == "block" and "changed by someone else" in blocked["message"]
-
-    w_post(plugin, "read_file", {"path": str(target)}, '{"content": "..."}')
-    assert w_tool(plugin, "write_file", args) is None
-
-
-def test_worker_can_create_new_files(plugin, make_ctx, tmp_path):
+def test_result_without_evidence_asks_for_verification(plugin, make_ctx):
     make_ctx()
     start_turn(plugin)
     spawn_worker(plugin)
-    assert w_tool(plugin, "write_file", {"path": str(tmp_path / "new.txt"), "content": "x"}) is None
-
-
-# ---------------------------------------------------------------- results, pivots, progress
-
-def test_result_without_evidence_flags_verification(plugin, make_ctx):
-    make_ctx()
-    start_turn(plugin)
-    spawn_worker(plugin)
-    plugin._subagent_stop(parent_session_id="s1", child_session_id="child-1", child_status="completed",
-                          child_summary="All fixed, 143 nodes OK", tool_call_history=[], duration_ms=120000)
+    _stop(plugin, "All fixed, 143 nodes OK")
     injected = start_turn(plugin, turn="t2")
-    assert "no verifiable evidence" in injected["context"]
+    assert "without evidence" in injected["context"]
     assert start_turn(plugin, turn="t3") is None, "notes are delivered once"
 
 
@@ -387,32 +301,32 @@ def test_result_with_evidence_lists_it(plugin, make_ctx):
     make_ctx()
     start_turn(plugin)
     spawn_worker(plugin)
-    summary = json.dumps({"status": "completed", "summary": "ok",
-                          "evidence": ["curl -sI https://app.example.com/ping -> HTTP/2 200"]})
-    plugin._subagent_stop(parent_session_id="s1", child_session_id="child-1", child_status="completed",
-                          child_summary=summary, tool_call_history=[], duration_ms=60000)
+    _stop(plugin, json.dumps({"status": "completed", "summary": "ok",
+                              "evidence": ["curl -sI https://app.example.com/ping -> HTTP/2 200"]}))
     injected = start_turn(plugin, turn="t2")
     assert "HTTP/2 200" in injected["context"] and "Spot-check" in injected["context"]
 
 
-def test_stopped_worker_result_is_reported_as_blocked(plugin, make_ctx):
+def test_stopped_or_unfinished_results(plugin, make_ctx):
     make_ctx()
     start_turn(plugin)
     worker = spawn_worker(plugin)
-    worker["stop_reason"] = "hit the same failure 3 times"
-    plugin._subagent_stop(parent_session_id="s1", child_session_id="child-1", child_status="completed",
-                          child_summary="done", tool_call_history=[], duration_ms=1000)
+    worker["stop_reason"] = "ran the same step 5 times"
+    _stop(plugin, "done")
     assert "The plugin stopped it" in start_turn(plugin, turn="t2")["context"]
+    spawn_worker(plugin, sub_id="sa-1-def", child_session="child-2")
+    plugin._subagent_stop(parent_session_id="s1", child_session_id="child-2", child_status="failed",
+                          child_summary="no access", duration_ms=1000)
+    assert "did not finish" in start_turn(plugin, turn="t3")["context"]
 
 
 def test_turn_end_keeps_workers_and_notes(plugin, make_ctx):
     make_ctx()
     start_turn(plugin)
     spawn_worker(plugin)
-    plugin._subagent_stop(parent_session_id="s1", child_session_id="child-1", child_status="completed",
-                          child_summary="done", tool_call_history=[], duration_ms=1000)
+    _stop(plugin, "done")
     plugin._on_turn_end(session_id="s1", completed=True)
-    assert "Check this subagent result" in start_turn(plugin, turn="t2")["context"]
+    assert "Subagent finished" in start_turn(plugin, turn="t2")["context"]
 
 
 def test_session_reset_clears_everything(plugin, make_ctx):
@@ -423,32 +337,13 @@ def test_session_reset_clears_everything(plugin, make_ctx):
     assert start_turn(plugin, turn="t2") is None
 
 
-def test_running_workers_are_listed_each_turn(plugin, make_ctx):
+def test_running_workers_listed_until_stopped(plugin, make_ctx):
     make_ctx()
     start_turn(plugin)
     spawn_worker(plugin)
     assert "Subagents still running" in start_turn(plugin, turn="t2")["context"]
-
-
-def test_pivot_on_same_targets_asks_to_stop_old_worker(plugin, make_ctx):
-    make_ctx()
-    start_turn(plugin)
-    ctx_a = GOOD_CONTEXT + " Write /home/ubuntu/.hermes/scripts/memory_autocommit.sh in Python."
-    spawn_worker(plugin, goal="Python autocommit", context=ctx_a)
-    ctx_b = GOOD_CONTEXT + " Write /home/ubuntu/.hermes/scripts/memory_autocommit.sh in pure Bash."
-    first = main_tool(plugin, "delegate_task", {"tasks": [{"goal": "Bash autocommit", "context": ctx_b}]})
-    assert first["action"] == "block" and "action='stop'" in first["message"] and "sa-0-abc" in first["message"]
-    assert main_tool(plugin, "delegate_task", {"tasks": [{"goal": "Bash autocommit", "context": ctx_b}]})["action"] == "modify"
-
-
-def test_stopping_old_worker_clears_pivot(plugin, make_ctx):
-    make_ctx()
-    start_turn(plugin)
-    ctx_a = GOOD_CONTEXT + " Write /home/ubuntu/.hermes/scripts/memory_autocommit.sh in Python."
-    spawn_worker(plugin, goal="Python autocommit", context=ctx_a)
-    assert main_tool(plugin, "delegate_task", {"action": "stop", "subagent_id": "sa-0-abc"}) is None
-    ctx_b = GOOD_CONTEXT + " Write /home/ubuntu/.hermes/scripts/memory_autocommit.sh in pure Bash."
-    assert main_tool(plugin, "delegate_task", {"tasks": [{"goal": "Bash", "context": ctx_b}]})["action"] == "modify"
+    assert main_tool(plugin, "delegate_task", {"action": "stop", "subagent_id": "sa-0-abc"}, turn="t2") is None
+    assert start_turn(plugin, turn="t3") is None
 
 
 def test_progress_tick_posts_to_chat(plugin, make_ctx):
@@ -487,6 +382,10 @@ def _install_patch(plugin):
     return original
 
 
+def _wait(**kw):
+    return _FakeEnv()._wait_for_process(MagicMock(), timeout=120, watch_interrupt_tid=1, yield_handler=MagicMock())
+
+
 def test_detach_timer_only_for_governed_main(plugin, make_ctx):
     make_ctx()
     original = _install_patch(plugin)
@@ -495,9 +394,7 @@ def test_detach_timer_only_for_governed_main(plugin, make_ctx):
         start_turn(plugin, session="cli-1", platform="cli")
         for session, expected in (("wx-1", True), ("cli-1", False)):
             with patch.dict(os.environ, {"HERMES_SESSION_ID": session}), patch("threading.Timer") as timer:
-                res = _FakeEnv()._wait_for_process(MagicMock(), timeout=120, watch_interrupt_tid=1,
-                                                   yield_handler=MagicMock())
-                assert res["output"] == "done"
+                assert _wait()["output"] == "done"
                 assert timer.called is expected, session
                 if expected:
                     assert timer.call_args[0][0] == 30.0
@@ -515,7 +412,7 @@ def test_detach_leaves_a_foreign_yield_alone(plugin, make_ctx):
         with patch.dict(os.environ, {"HERMES_SESSION_ID": "wx-1"}), \
                 patch.dict(sys.modules, {"tools": MagicMock(), "tools.interrupt": interrupt}), \
                 patch("threading.Timer"):
-            _FakeEnv()._wait_for_process(MagicMock(), timeout=120, watch_interrupt_tid=1, yield_handler=MagicMock())
+            _wait()
         interrupt.consume_yield.assert_not_called()
     finally:
         _FakeEnv._wait_for_process = original
@@ -531,7 +428,7 @@ def test_detach_skipped_for_children(plugin, make_ctx):
         with patch.dict(os.environ, {"HERMES_SESSION_ID": "wx-1"}), \
                 patch.dict(sys.modules, {"agent": MagicMock(), "agent.delegation_context": child_ctx}), \
                 patch("threading.Timer") as timer:
-            _FakeEnv()._wait_for_process(MagicMock(), timeout=120, watch_interrupt_tid=1, yield_handler=MagicMock())
+            _wait()
             timer.assert_not_called()
     finally:
         _FakeEnv._wait_for_process = original

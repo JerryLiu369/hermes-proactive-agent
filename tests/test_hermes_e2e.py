@@ -40,7 +40,7 @@ def hermes(tmp_path, monkeypatch):
             "entries": {"proactive-agent": {"settings": {
                 "handoff_min_context_chars": 40,
                 "terminal_auto_detach_seconds": 1,
-                "progress_push_enabled": False,
+                "progress_interval_seconds": 0,
             }}},
         },
     }), encoding="utf-8")
@@ -64,12 +64,10 @@ def _start_turn(turn="t1"):
         is_first_turn=True, model="m")
 
 
-def test_main_agent_guards_through_hermes_dispatch(hermes):
+def test_main_agent_through_hermes_dispatch(hermes):
     _start_turn()
     block, _ = _pre_tool("process_manage", {"action": "wait"})
-    assert block and "not allowed" in block
-    block, _ = _pre_tool("terminal", {"command": "grep -rn x ~/.hermes"})
-    assert block and "Blocked" in block
+    assert block and "blocks the chat" in block
     block, modified = _pre_tool("terminal", {"command": "ls"})
     assert block is None and modified is None
 
@@ -87,20 +85,15 @@ def test_handoff_gate_rewrites_args_through_hermes(hermes):
     assert task["output_schema"]["required"] == ["status", "summary"]
 
 
-def test_worker_guards_through_hermes(hermes):
+def test_worker_limits_through_hermes(hermes):
     _start_turn()
     _, modified = _pre_tool("delegate_task", {"tasks": [{"goal": "修复 522", "context": CONTEXT}]})
     plugins_mod.invoke_hook("subagent_start", parent_session_id=SESSION, parent_turn_id="t1",
                             parent_subagent_id=None, child_session_id="child-e2e",
                             child_subagent_id="sa-0-e2e", child_role="leaf", child_goal="修复 522")
     child = {"task_id": "sa-0-e2e", "session_id": "child-e2e", "turn_id": "ct"}
-    block, _ = _pre_tool("terminal", {"command": "nmap -p 1-10000 10.0.0.1"}, **child)
-    assert block and "port scanning" in block
-    block, _ = _pre_tool("terminal", {"command": "sudo iptables -F"}, **child)
-    assert block and "rollback" in block
-
     curl = {"command": "curl -sI https://app.example.com/ping"}
-    for i in range(3):
+    for i in range(5):
         plugins_mod.invoke_hook("post_tool_call", tool_name="terminal", args=curl,
                                 result='{"output": "HTTP/2 522", "exit_code": 0}', duration_ms=200,
                                 status="success", error_type=None, error_message=None,

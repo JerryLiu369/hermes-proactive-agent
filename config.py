@@ -14,25 +14,19 @@ DEFAULTS: dict[str, Any] = {
     "governed_platforms": ["weixin"],
     # Foreground terminal commands longer than this move to the background (0 disables).
     "terminal_auto_detach_seconds": 30,
-    # Main-agent turn budget. Yellow = reminder appended to tool results; red = only
-    # read-only tools and delegate_task stay available.
+    # Main-agent turn budget: a reminder at the soft limit; at the hard limit only read-only
+    # tools and delegate_task stay available.
     "turn_soft_seconds": 60.0,
     "turn_hard_seconds": 120.0,
-    "turn_soft_output_chars": 30000,
-    "turn_hard_output_chars": 80000,
-    # Handoff contract for delegate_task.
+    # delegate_task context shorter than this is returned once per turn.
     "handoff_min_context_chars": 120,
-    "handoff_summary_enabled": True,
-    "handoff_summary_timeout_seconds": 12.0,
+    # USER.md + MEMORY.md attached to each handoff (0 disables).
     "handoff_memory_max_chars": 4000,
-    # Worker (subagent) guards.
-    "worker_max_tool_rounds": 40,
-    "worker_repeat_limit": 3,
-    "worker_guard_risky_commands": True,
-    "worker_write_guard": True,
-    # Result verification and progress updates.
-    "verify_child_results": True,
-    "progress_push_enabled": True,
+    # Worker step budget (0 disables).
+    "worker_max_tool_rounds": 60,
+    # Stop a worker after the same step gives the same result this many times.
+    "worker_repeat_limit": 5,
+    # Seconds between progress lines in the chat while workers run (0 disables).
     "progress_interval_seconds": 300,
 }
 
@@ -49,10 +43,6 @@ def ctx() -> Optional[Any]:
 
 
 def _coerce(value: Any, default: Any) -> Any:
-    if isinstance(default, bool):
-        if isinstance(value, bool):
-            return value
-        return str(value).strip().lower() in ("1", "true", "yes", "on")
     if isinstance(default, list):
         if isinstance(value, list):
             return [str(x).strip() for x in value if str(x).strip()]
@@ -62,6 +52,8 @@ def _coerce(value: Any, default: Any) -> Any:
             if isinstance(parsed, list):
                 return [str(x).strip() for x in parsed if str(x).strip()]
         return [x.strip() for x in s.split(",") if x.strip()]
+    if isinstance(default, int):
+        return int(float(value))
     return type(default)(value)
 
 
