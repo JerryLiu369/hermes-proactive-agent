@@ -1,7 +1,7 @@
 [project]
 name = "hermes-proactive-agent"
 version = "0.1.14"
-description = "Hermes Agent plugin that runs the chat agent like a secretary managing subagents"
+description = "Hermes Agent plugin that runs the chat agent like a secretary with a team of workers"
 readme = "README.md"
 license = { text = "MIT" }
 authors = [{ name = "Jerry Liu" }]

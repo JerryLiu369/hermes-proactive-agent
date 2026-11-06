@@ -11,12 +11,10 @@ English | [简体中文](README_zh.md)
 A [Hermes Agent](https://hermes-agent.nousresearch.com) plugin that runs your chat agent like a secretary with a team
 of workers.
 
-You are the boss. The **main agent** is the secretary: always reachable, it understands what you want, decides, and
-reports back. **Subagents** are the workers: they take the slow, long or noisy jobs. The plugin keeps that division
-honest, so the chat never freezes, workers start with what they need, and nothing they do is forgotten.
-
-It also does one small, separate thing: a [long terminal command](#long-commands) moves to the background instead of
-holding the chat.
+In a chat app, an agent that works for ten minutes is an agent you cannot talk to for ten minutes. Hermes already lets
+the main agent hand work to subagents that run in the background. This plugin makes that hand-off work the way a good
+secretary would: the **main agent** stays reachable, decides and reports back; **subagents** do the slow work; and
+every job ends with a result that is checked and remembered.
 
 ## Install
 
@@ -25,47 +23,31 @@ hermes plugins install JerryLiu369/hermes-proactive-agent/proactive-agent
 hermes plugins enable proactive-agent
 ```
 
-Hermes installs only the `proactive-agent/` directory. Restart the gateway afterwards. To upgrade, run
-`hermes plugins update proactive-agent`.
-
-Recommended: a worker that needs more than about 60 model calls is usually stuck, so lower Hermes' step budget and it
-reports sooner.
+Restart the gateway afterwards; upgrade with `hermes plugins update proactive-agent`. Also recommended: a subagent
+that needs more than about 60 model calls is usually stuck, so lower Hermes' step budget and it reports sooner.
 
 ```yaml
 delegation:
   max_iterations: 60
 ```
 
-## How it works
+## Why
 
-The plugin follows a task through its life and does one small thing at each stage.
+Five things go wrong when a chat agent delegates on its own. The plugin answers each one.
 
-```
- You ──► Secretary ─────── delegate_task ───────► Worker
-         1. Turn budget      2. Handoff           3. Worker limits
-            ▲                                          │
-            └────────── 4. Results and ledger ◄────────┘
-```
+| Without the plugin | With it |
+|---|---|
+| The main agent runs builds and long debugging itself, and the chat goes silent | Each turn has a time budget, and long commands move to the background |
+| A subagent starts blind: no conversation, no constraints, no idea what was tried | A thin brief is sent back, and every brief carries your words, memory and earlier work |
+| A stuck subagent repeats the same step until its budget runs out | It is stopped after five identical attempts |
+| "Done" is a self-report | The main agent is told what evidence came back and to check it |
+| Once a subagent ends, or Hermes restarts, what it did is gone | A task ledger keeps every task and briefs the next subagent |
 
-1. **Turn budget.** The secretary may think and investigate, but every turn has a time limit. You always get an answer
-   quickly.
-2. **Handoff.** The secretary knows the conversation, so it writes the brief. The plugin sends back a brief that is too
-   thin, and attaches what a worker cannot know on its own.
-3. **Worker limits.** A worker that keeps repeating the same step is stopped instead of burning its budget.
-4. **Results and ledger.** The secretary learns how each worker ended and what to verify. A persistent ledger records
-   every task, so the next worker picks up where the last one stopped, even after a restart.
+## What it does
 
-Four rules hold throughout:
+### 1. The chat stays responsive
 
-- **No extra model calls.** Every check is plain code.
-- **Hermes keeps its own job.** Command approval, stale-file protection, step budgets, stall detection and completion
-  delivery stay with Hermes.
-- **Quiet by default.** The plugin talks only to the secretary, never to your chat, and only when something happened.
-- **Never in the way.** A plugin error is logged; it never blocks a tool.
-
-## Features
-
-### 1. Turn budget
+The main agent may think and investigate, but every turn has a budget.
 
 | Time in one turn | Effect |
 |---|---|
@@ -73,67 +55,64 @@ Four rules hold throughout:
 | from 60 s | one note: answer the user or delegate within 1-2 steps |
 | from 120 s | editing and execution pause; reading, `delegate_task` and wrap-up tools remain |
 
-- A message from you mid-turn resets the clock.
+- A message from you mid-turn restarts the clock.
 - Wrap-up tools are `memory`, `todo`, `clarify`, `send_message`, and `process_manage` to list, poll, read logs or kill.
-- `process_manage(action='wait')` is refused at any time: waiting on a background job would freeze the chat again.
+- A terminal command still running after 30 s moves to the background through Hermes' own yield path. It keeps
+  running, Hermes reports when it ends, and the main agent is told it has not failed.
+- Waiting on a background job (`process_manage(action='wait')`) is refused, since it would freeze the chat again.
 
-### 2. Handoff
+### 2. Subagents start informed
 
-`delegate_task` is returned to the secretary once per turn when:
+The main agent knows the conversation, so it writes the brief. A `delegate_task` comes back once per turn when:
 
-- the `context` is under 120 characters. The note asks for what is known, the exact targets, what must not change,
+- its `context` is under 120 characters. The note asks for what is known, the exact targets, what must not change,
   when to stop and what proves success;
-- it names a file another running worker is changing. The secretary can wait, steer that worker, or stop it.
+- it names a file another running subagent is changing. The main agent can wait, steer that subagent, or stop it.
 
-A second attempt always goes through. Every accepted task then gets a briefing after the secretary's own context:
+A second attempt always goes through. Every accepted task then gets a briefing after the main agent's own context:
 
 | Section | Why |
 |---|---|
-| Your last few messages, verbatim | Constraints like "don't touch X" reach the worker |
+| Your last few messages, verbatim | Constraints like "don't touch X" reach the subagent |
 | `USER.md` and `MEMORY.md` | Hermes does not load memory into subagents |
-| Workers running now and their files | So it leaves their files alone |
+| Subagents running now and their files | So it leaves those files alone |
 | This chat's recent unfinished tasks | Summary, blockers, corrections, changed files and log path, so it builds on them |
-| Working rules | Stay in scope, stop after the same failure twice, roll back risky changes, verify the end state |
+| Working rules | Stay in scope, stop after the same failure twice, keep risky changes reversible, verify the end state |
 | A default `output_schema` | `status`, `summary`, `evidence`, `blockers`, unless the task brought its own |
 
-### 3. Worker limits
+### 3. Subagents do not spin
 
-When a worker runs the same tool with the same arguments and gets the same result, it is warned at the third time and
-stopped at the fifth. A stopped worker's tool calls are refused and it must report `blocked`. The secretary then
-hears why it was stopped and tells you in one line what got stuck and what it will do instead.
+A subagent that runs the same tool with the same arguments and gets the same result is warned at the third time and
+stopped at the fifth. From then on its tool calls are refused and it must report `blocked`. Its overall step budget
+stays with Hermes (`delegation.max_iterations`).
 
-### 4. Results and task ledger
+### 4. Results are checked and remembered
 
-**Results.** When a worker returns, the secretary's next turn opens with a note: the evidence the worker reported, or
-a warning that it claimed success without evidence, did not finish, or was stopped. A task the secretary stopped
-itself is marked as such, so it is not reported as a failure.
+**Every result is reviewed.** When a subagent returns, the main agent's next turn opens with a note: the evidence it
+reported, or a warning that it claimed success without evidence, did not finish, or was stopped for repeating itself.
+In that last case the main agent tells you in one line what got stuck and what it will do instead. A task the main
+agent stopped itself is noted as such, not as a failure.
 
-**Ledger.** One record per task, written by the plugin's hooks:
+**Every task is recorded.** The task ledger keeps one record per task: goal, status, the files it changed, corrections
+sent with `action='steer'`, its live transcript path, and how it ended (summary, evidence, blockers).
 
-- goal and status;
-- the files it changed;
-- corrections sent with `action='steer'`;
-- the path of its live transcript;
-- how it ended: summary, evidence, blockers.
+**Work carries over.** Hermes cannot resume a subagent once it ends, so the next subagent in the chat is briefed with
+the unfinished task's record instead. If Hermes restarts mid-task, the main agent is told which tasks were lost, that
+their side effects are unknown, and which files they had touched. Notes wait in the ledger until the chat's next turn,
+so a restart never drops them.
 
-The ledger is how work carries over. Hermes cannot resume a subagent once it ends, so the next worker in the chat is
-briefed with the unfinished task's record instead. If Hermes restarts mid-task, the secretary is told which tasks were
-lost, that their side effects are unknown, and which files they had touched. Notes wait in the ledger until the chat's
-next turn, so a restart never drops them.
+The ledger lives in `<hermes home>/plugin-data/proactive-agent/ledger.db` and keeps each chat's last 20 finished tasks
+for up to 7 days.
 
-It lives in `<hermes home>/plugin-data/proactive-agent/ledger.db` and keeps each chat's last 20 finished tasks for up to
-7 days.
+## Design rules
 
-### Long commands
-
-Independent of the four stages: a foreground terminal command that runs past 30 s moves to the background through
-Hermes' own yield path. It keeps running, Hermes reports when it ends, and the secretary is told it has not failed.
-Set `terminal_auto_detach_seconds: 0` to turn this off.
-
-### Scope
-
-Only platforms in `governed_platforms` are governed (default `["weixin"]`), together with the workers they spawn.
-Other platforms, cron runs, and workers spawned elsewhere are left alone.
+- **It talks only to the main agent.** It adds notes to the main agent's context and never posts to your chat.
+- **No model calls.** Every check is plain code.
+- **Hermes keeps its own job.** Command approval, stale-file protection, step budgets, stall detection and delivery
+  of finished results stay with Hermes.
+- **Never in the way.** A plugin error is logged; it never blocks a tool.
+- **Only where you ask.** Only platforms in `governed_platforms` (default `["weixin"]`) and the subagents they spawn
+  are governed. Other platforms and cron runs are left alone.
 
 ## Configuration
 
@@ -152,12 +131,12 @@ plugins:
 
 | Key | Default | Meaning |
 |---|---|---|
-| `governed_platforms` | `["weixin"]` | Platforms whose secretary and workers are governed |
-| `turn_soft_seconds` | `60` | When the secretary is reminded to answer or delegate |
+| `governed_platforms` | `["weixin"]` | Platforms whose main agent and subagents are governed |
+| `turn_soft_seconds` | `60` | When the main agent is reminded to answer or delegate |
 | `turn_hard_seconds` | `120` | When editing and execution pause for the rest of the turn |
-| `terminal_auto_detach_seconds` | `30` | Foreground commands longer than this move to the background (`0` disables) |
+| `terminal_auto_detach_seconds` | `30` | Terminal commands running longer than this move to the background (`0` disables) |
 | `handoff_min_context_chars` | `120` | A shorter `context` is returned once per turn |
-| `worker_repeat_limit` | `5` | Repeats of the same step that stop a worker (warned two earlier) |
+| `worker_repeat_limit` | `5` | Identical attempts that stop a subagent (warned two earlier) |
 
 ## Compatibility
 
@@ -176,15 +155,15 @@ skipped otherwise.
 
 ```
 proactive-agent/      the plugin, and all that Hermes installs
-├── __init__.py       registers the hooks
-├── secretary.py      turn budget, background detach
-├── handoff.py        delegate_task checks and briefing
-├── workers.py        repeat stop, result notes
-├── ledger.py         persistent task ledger
-├── context.py        who is calling: secretary, worker or cron
-├── prompt.py         system prompt section
+├── secretary.py      1. turn budget, background detach
+├── handoff.py        2. brief checks and briefing
+├── workers.py        3. repeat stop, 4. result notes
+├── ledger.py         4. task ledger
+├── prompt.py         system prompt section for the main agent
+├── context.py        who is calling: main agent, subagent or cron
 ├── config.py         settings
 ├── util.py           helpers
+├── __init__.py       registers the hooks
 └── plugin.yaml       manifest
 tests/                one file per module, plus end-to-end tests against Hermes
 ```

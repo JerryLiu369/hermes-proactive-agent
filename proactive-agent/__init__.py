@@ -1,21 +1,20 @@
 """
-proactive-agent: runs the Hermes chat agent like a secretary that manages workers.
+proactive-agent: runs the Hermes chat agent like a secretary with a team of workers.
 
-The main agent (the "secretary") keeps the chat responsive and does the thinking; delegated
-subagents (the "workers") do the slow execution:
+The main agent stays reachable and decides; delegated subagents do the slow work. The plugin
+answers the five ways that goes wrong:
 
-1. Turn budget: a reminder at the soft limit; at the hard limit only read-only tools and
-   delegate_task stay available. Long foreground commands move to the background.
-2. Handoff: a too-short delegate_task brief is returned once; accepted ones get the user's
-   recent messages, memory, working rules and a result schema attached.
-3. Workers: a stop after the same step gives the same result again and again (the step budget
-   is Hermes' own delegation.max_iterations).
-4. Results and the task ledger: the secretary is told what to check when a worker returns; a
-   persistent ledger records every task, what it changed and how it ended, survives restarts and
-   briefs the next worker.
+1. The chat stays responsive: a turn time budget (a note at the soft limit, editing and
+   execution paused at the hard limit) and long terminal commands moved to the background.
+2. Subagents start informed: a thin or clashing delegate_task brief is returned once; accepted
+   ones get the user's words, memory, the ledger's running and unfinished tasks, working rules
+   and a result schema.
+3. Subagents do not spin: a stop after the same step gives the same result again and again.
+4. Results are checked and remembered: the main agent is told what to verify when a subagent
+   returns, and a persistent ledger records every task, survives restarts and briefs the next one.
 
 Only platforms listed in ``governed_platforms`` (default: weixin) are affected; cron runs and
-workers spawned by ungoverned sessions are never touched.
+subagents spawned by ungoverned sessions are never touched.
 """
 
 from __future__ import annotations

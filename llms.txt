@@ -1,6 +1,6 @@
 # Hermes Proactive Agent
 
-> Hermes Agent plugin (`proactive-agent`) that runs the chat agent like a secretary managing subagents: a turn time budget and background detach for the main agent, a handoff check for delegate_task that attaches the user's recent messages and memory, a repeat stop for subagents, result notes and a persistent task ledger.
+> Hermes Agent plugin (`proactive-agent`) that runs the chat agent like a secretary with a team of workers: the main agent stays responsive and decides, subagents do the slow work, and every result is checked and recorded in a persistent task ledger.
 
 - Repository: https://github.com/JerryLiu369/hermes-proactive-agent
 - Releases: https://github.com/JerryLiu369/hermes-proactive-agent/releases
@@ -14,45 +14,45 @@ hermes plugins install JerryLiu369/hermes-proactive-agent/proactive-agent
 hermes plugins enable proactive-agent
 ```
 
-The plugin lives in the repository's proactive-agent/ directory. Recommended Hermes setting: `delegation.max_iterations: 60`.
+Restart the gateway afterwards. Recommended Hermes setting: `delegation.max_iterations: 60`.
 
-## How it works
+## Why
 
-Roles: the main agent ("secretary") keeps the chat responsive, investigates, decides and writes the handoffs; subagents ("workers") do the slow execution.
+Five problems when a chat agent delegates on its own, and the plugin's answer to each:
+- The main agent does long work itself and the chat goes silent -> a turn time budget and background detach for long commands.
+- A subagent starts blind -> thin briefs are returned; every brief carries the user's words, memory and earlier work.
+- A stuck subagent repeats the same step -> stopped after five identical attempts.
+- "Done" is a self-report -> the main agent is told what evidence came back and to check it.
+- What a subagent did is lost when it ends or Hermes restarts -> a task ledger records every task and briefs the next subagent.
 
-One small step per stage of a task: turn budget (secretary) -> handoff (delegate_task) -> worker limits (subagent) -> results and task ledger (back to the secretary).
+## What it does
 
-Rules throughout: no extra model calls; what Hermes already does (command approval, stale-file protection, step budgets, stall detection, completion delivery) stays with Hermes; the plugin talks only to the secretary, never to the user's chat; a plugin error never blocks a tool.
-
-## Features
-
-### Turn budget
-- From 60 s in one turn: a one-time reminder to answer or delegate within 1-2 steps.
-- From 120 s: editing and execution tools pause; reading, delegate_task and wrap-up tools remain (memory, todo, clarify, send_message, process_manage list/poll/log/kill).
-- A mid-turn user message (steer) resets the budget.
+### 1. The chat stays responsive
+- From 60 s in one turn: one note to answer or delegate within 1-2 steps.
+- From 120 s: editing and execution pause; reading, delegate_task and wrap-up tools remain (memory, todo, clarify, send_message, process_manage list/poll/log/kill).
+- A mid-turn user message restarts the clock.
+- Terminal commands still running after 30 s move to the background via Hermes' yield path; Hermes reports when they end.
 - process_manage(action='wait') is refused.
 
-### Long commands (independent of the four stages)
-- Foreground terminal commands longer than 30 s move to the background via Hermes' yield path and notify on completion (terminal_auto_detach_seconds, 0 disables).
+### 2. Subagents start informed
+- delegate_task is returned once per turn when context is under 120 characters, or when it names a file another running subagent is changing. A second attempt goes through.
+- Accepted tasks get a briefing: the user's recent messages verbatim, USER.md and MEMORY.md, running subagents and their files, this chat's recent unfinished tasks (summary, blockers, steers, changed files, log path), working rules, and a default output_schema (status, summary, evidence, blockers).
 
-### Handoff (delegate_task)
-- context under 120 characters is returned once per turn with a checklist.
-- A brief naming a file another running subagent is changing is returned once per turn.
-- Accepted tasks get the user's recent messages verbatim, USER.md and MEMORY.md in full, the running subagents and the files they change, this chat's recent unfinished tasks from the ledger, working rules, and a default output_schema (status, summary, evidence, blockers).
+### 3. Subagents do not spin
+- Same tool, same arguments, same result: a note at 3, a stop at 5; the subagent must then report "blocked". The overall step budget is Hermes' delegation.max_iterations.
 
-### Worker limits
-- Same tool, same arguments, same result: a note after 3 repeats, a stop after 5 (the worker must report "blocked"; the secretary is told why and tells the user in one line).
-- The step budget is Hermes' delegation.max_iterations.
+### 4. Results are checked and remembered
+- The main agent's next turn notes the reported evidence, missing evidence, an unfinished task, or a repeat stop (then it tells the user in one line). Tasks the main agent stopped with action='stop' are noted as such.
+- Task ledger (SQLite in <hermes home>/plugin-data/proactive-agent/ledger.db): goal, status, changed files, steers, live transcript path, summary, evidence, blockers. Last 20 finished tasks per chat, up to 7 days.
+- Hermes cannot resume a subagent; the next subagent is briefed with the unfinished task's record. After a restart the main agent is told which tasks were lost. Notes wait in the ledger until the chat's next turn.
 
-### Results and task ledger
-- When a worker returns, the secretary's next turn notes the reported evidence, missing evidence, an unfinished task or a plugin stop.
-- The secretary checks running workers on demand with delegate_task(action='list'); nothing is injected every turn and nothing is posted on a timer.
-- Task ledger (SQLite in <hermes home>/plugin-data/proactive-agent/ledger.db, written by hooks only): goal, status, changed files, steers, live transcript path, summary, evidence, blockers. Last 20 finished tasks per chat, up to 7 days.
-- Hermes does not resume a finished or restarted subagent; the next worker is briefed with the unfinished task's record, and after a restart the secretary is told which tasks were lost.
-- action='stop' marks the task stopped at once; running records with no end expire after 6 hours; result and restart notes are stored in the ledger until the chat's next turn.
-- The plugin never posts to the user's chat; it only adds notes for the secretary.
+## Design rules
 
-Only platforms in governed_platforms (default ["weixin"]) are affected. Cron runs and subagents of ungoverned sessions are untouched.
+- Talks only to the main agent, never to the user's chat.
+- No model calls.
+- Command approval, stale-file protection, step budgets, stall detection and result delivery stay with Hermes.
+- A plugin error never blocks a tool.
+- Only platforms in governed_platforms (default ["weixin"]) and the subagents they spawn are governed; cron runs are untouched.
 
 ## Configuration
 
@@ -61,8 +61,8 @@ Keys under plugins.entries.proactive-agent.settings (environment override: PROAC
 | Key | Default |
 |---|---|
 | governed_platforms | ["weixin"] |
-| terminal_auto_detach_seconds | 30 |
 | turn_soft_seconds | 60 |
 | turn_hard_seconds | 120 |
+| terminal_auto_detach_seconds | 30 |
 | handoff_min_context_chars | 120 |
 | worker_repeat_limit | 5 |
