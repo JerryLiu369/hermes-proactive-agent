@@ -202,9 +202,11 @@ uv run --group dev ruff check
 - `README.md`, `README_zh.md`, `llms.txt` and `llms-full.txt` say the same things and are updated together. Facts
   live in the READMEs and `llms-full.txt`; `llms.txt` is the compact index an answer engine reads first, so it carries
   the same numbers in short answers and then links out.
-- `README.md` and `README_zh.md` follow llmstxt.org-style answer-first order: an answer block under 100 words, then the
-  six problems, the four promises, the design rules, the settings, then the FAQ. Keep that order and keep the two
-  files mirrored section by section.
+- `README.md` and `README_zh.md` are written for people, as plain explanation in this order: what the plugin is,
+  install, why (the six problems), what it does (one section per promise), principles (the design rules), settings, a
+  short FAQ, then compatibility and development. Keep the two files mirrored section by section; write the Chinese one
+  as natural Chinese, not a line-by-line translation. Phrasing aimed at search and answer engines (answer blocks,
+  comparison matrices, question-shaped headings) belongs in `llms.txt` and `llms-full.txt`, not in the READMEs.
 - `llms.txt` follows the llmstxt.org v2 shape: H1, one blockquote summary, plain details (citable facts and direct
   answers, no headings), then `##` sections that are markdown link lists, with `## Optional` last. `llms-full.txt` is
   the self-contained reference (question index, comparison matrix, mechanism detail, settings, limits, FAQ, citation).

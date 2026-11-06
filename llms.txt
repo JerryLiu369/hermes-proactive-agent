@@ -25,7 +25,7 @@ Direct answers to the questions this project exists to solve:
 
 ## Documentation
 
-- [README (English)](https://raw.githubusercontent.com/JerryLiu369/hermes-proactive-agent/main/README.md): answer-first overview, status-quo vs governed comparison matrix, mechanism detail, configuration reference and FAQ.
+- [README (English)](https://raw.githubusercontent.com/JerryLiu369/hermes-proactive-agent/main/README.md): plain-language overview for people - install, the problems it solves, how each mechanism works, principles, settings and a short FAQ.
 - [README_zh (简体中文)](https://raw.githubusercontent.com/JerryLiu369/hermes-proactive-agent/main/README_zh.md): the same document in Chinese.
 - [llms-full.txt](https://raw.githubusercontent.com/JerryLiu369/hermes-proactive-agent/main/llms-full.txt): this project in one self-contained file - architecture, thresholds, configuration, failure modes and a full question index.
 
