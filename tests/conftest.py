@@ -22,13 +22,10 @@ def _load():
 
 
 class FakeContext:
-    def __init__(self, config=None, llm=None, post_message=None):
+    def __init__(self, config=None, post_message=None):
         self.config = config or {}
         self.hooks = {}
         self.prompt_sections = {}
-        self.aux_tasks = {}
-        if llm is not None:
-            self.llm = llm
         if post_message is not None:
             self.post_message = post_message
 
@@ -40,9 +37,6 @@ class FakeContext:
 
     def register_system_prompt_section(self, name, renderer, position="after_memory", max_chars=2000):
         self.prompt_sections[name] = {"renderer": renderer, "position": position, "max_chars": max_chars}
-
-    def register_auxiliary_task(self, name, **kwargs):
-        self.aux_tasks[name] = kwargs
 
 
 @pytest.fixture

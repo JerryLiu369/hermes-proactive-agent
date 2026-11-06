@@ -1,6 +1,6 @@
 name: proactive-agent
-version: "0.1.9"
-description: "Secretary-style governance for Hermes chat agents: soft/hard turn budget, background detach, a handoff contract for delegate_task (memory + chat summary attached), fail-fast and safety guards for subagents, result checks and progress updates."
+version: "0.1.10"
+description: "Runs the Hermes chat agent like a secretary that manages workers: a turn time budget and background detach for the main agent, a handoff check for delegate_task, a step budget and fail-fast for subagents, result notes and progress lines."
 author: Jerry Liu
 license: MIT
 hooks:
@@ -37,60 +37,28 @@ config_schema:
   turn_soft_seconds:
     type: number
     default: 60.0
-    description: "Yellow zone: after this many seconds in one turn, tool results carry a reminder to answer or delegate."
+    description: "After this many seconds in one turn, the main agent is reminded to answer or delegate."
   turn_hard_seconds:
     type: number
     default: 120.0
-    description: "Red zone: after this many seconds in one turn, only read-only tools and delegate_task stay available."
-  turn_soft_output_chars:
-    type: int
-    default: 30000
-    description: "Yellow zone also starts once this many characters of tool output entered the turn."
-  turn_hard_output_chars:
-    type: int
-    default: 80000
-    description: "Red zone also starts once this many characters of tool output entered the turn."
+    description: "After this many seconds in one turn, only read-only tools and delegate_task stay available."
   handoff_min_context_chars:
     type: int
     default: 120
-    description: "delegate_task context shorter than this is returned once for completion."
-  handoff_summary_enabled:
-    type: bool
-    default: true
-    description: "Summarize the chat with an auxiliary model for each handoff (falls back to a plain extract)."
-  handoff_summary_timeout_seconds:
-    type: number
-    default: 12.0
-    description: "Timeout for the handoff summary call. Keep it well under plugins.hook_callback_timeout (30s)."
+    description: "delegate_task context shorter than this is returned once per turn."
   handoff_memory_max_chars:
     type: int
     default: 4000
     description: "Max characters of USER.md + MEMORY.md attached to each handoff (0 disables)."
   worker_max_tool_rounds:
     type: int
-    default: 40
-    description: "Subagent step budget. Past it, every tool call is refused and the subagent must report."
+    default: 60
+    description: "Subagent step budget (0 disables). Past it, tool calls are refused and the subagent must report."
   worker_repeat_limit:
     type: int
-    default: 3
-    description: "Stop a subagent after the same step gives the same result, or the same failure, this many times."
-  worker_guard_risky_commands:
-    type: bool
-    default: true
-    description: "Refuse risky subagent commands (SSH/firewall, deletes, VM lifecycle) unless the handoff gave a rollback path."
-  worker_write_guard:
-    type: bool
-    default: true
-    description: "Refuse subagent writes to files changed by someone else after the subagent started, until it re-reads them."
-  verify_child_results:
-    type: bool
-    default: true
-    description: "Tell the main agent what to verify when a subagent returns."
-  progress_push_enabled:
-    type: bool
-    default: true
-    description: "Post progress lines and stuck-task alerts into the chat while subagents run."
+    default: 5
+    description: "Stop a subagent after the same step gives the same result this many times (reminder two repeats earlier)."
   progress_interval_seconds:
     type: int
     default: 300
-    description: "Seconds between progress lines while subagents run."
+    description: "Seconds between progress lines in the chat while subagents run (0 disables progress lines and alerts)."

@@ -1,40 +1,31 @@
-"""Main chat agent ("secretary") governance: turn budget, background detach, scans, and the
-conversation snapshot the handoff gate summarizes."""
+"""Main chat agent ("secretary"): turn time budget and background detach for long commands."""
 
 from __future__ import annotations
 
-import collections
 import json
 import logging
 import threading
 import time
 from typing import Any, Callable, Dict, List, Optional
 
-from . import config, context, guards, handoff, workers
+from . import config, context, handoff, util, workers
 
 logger = logging.getLogger("hermes.plugins.proactive_agent")
 
-# Tools that stay available once the turn budget is spent: reading, delegating and wrapping up.
+# Still available once the turn budget is spent: reading, delegating and wrapping up.
 RED_ALLOWED_TOOLS = {
     "delegate_task", "process_manage", "read_file", "search_files", "session_search", "memory",
     "skill_view", "skills_list", "skill_manage", "todo", "clarify", "send_message",
 }
+_KEEP_USER_MESSAGES = 6
 
 _lock = threading.Lock()
 _turns: Dict[str, dict] = {}
-_history: Dict[str, List[dict]] = {}
+_user_words: Dict[str, List[str]] = {}
 
 
 def _new_turn(turn_id: str, steers: int = 0) -> dict:
-    return {
-        "turn_id": turn_id,
-        "start": time.monotonic(),
-        "output_chars": 0,
-        "steers": steers,
-        "yellow_noted": False,
-        "red_noted": False,
-        "trace": collections.deque(maxlen=16),
-    }
+    return {"turn_id": turn_id, "start": time.monotonic(), "steers": steers, "noted": "green"}
 
 
 def _turn(session_id: str, turn_id: str = "") -> dict:
@@ -45,37 +36,28 @@ def _turn(session_id: str, turn_id: str = "") -> dict:
     return st
 
 
-def count_steers(messages: Any) -> int:
-    if not isinstance(messages, list):
-        return 0
-    count = 0
-    for m in messages:
-        if not isinstance(m, dict):
-            continue
-        if m.get("display_kind") == "steer" or "[OUT-OF-BAND USER MESSAGE" in guards.message_text(m):
-            count += 1
-    return count
-
-
-def _snapshot(messages: Any) -> List[dict]:
+def _steers(messages: Any) -> List[str]:
     if not isinstance(messages, list):
         return []
-    out = []
-    for m in messages[-40:]:
-        if isinstance(m, dict) and m.get("role") in ("user", "assistant"):
-            text = guards.message_text(m)
-            if text.strip():
-                out.append({"role": m["role"], "text": text[:4000]})
-    return out
+    return [util.message_text(m) for m in messages if isinstance(m, dict) and (
+        m.get("display_kind") == "steer" or "[OUT-OF-BAND USER MESSAGE" in util.message_text(m))]
+
+
+def _user_messages(messages: Any) -> List[str]:
+    if not isinstance(messages, list):
+        return []
+    texts = (util.message_text(m) for m in messages if isinstance(m, dict) and m.get("role") == "user")
+    return [t for t in texts if t.strip()]
+
+
+def user_words(session_id: str) -> List[str]:
+    with _lock:
+        return list(_user_words.get(session_id) or [])
 
 
 def language(session_id: str) -> str:
-    with _lock:
-        history = list(_history.get(session_id) or [])
-    for m in reversed(history):
-        if m["role"] == "user":
-            return "zh" if guards.is_cjk(m["text"]) else "en"
-    return "en"
+    words = user_words(session_id)
+    return "zh" if words and util.is_cjk(words[-1]) else "en"
 
 
 def zone(session_id: str) -> str:
@@ -83,10 +65,10 @@ def zone(session_id: str) -> str:
         st = _turns.get(session_id)
         if st is None:
             return "green"
-        elapsed, chars = time.monotonic() - st["start"], st["output_chars"]
-    if elapsed >= float(config.get("turn_hard_seconds")) or chars >= int(config.get("turn_hard_output_chars")):
+        elapsed = time.monotonic() - st["start"]
+    if elapsed >= float(config.get("turn_hard_seconds")):
         return "red"
-    if elapsed >= float(config.get("turn_soft_seconds")) or chars >= int(config.get("turn_soft_output_chars")):
+    if elapsed >= float(config.get("turn_soft_seconds")):
         return "yellow"
     return "green"
 
@@ -95,28 +77,27 @@ def zone(session_id: str) -> str:
 
 def on_turn_start(session_id: str, turn_id: str, platform: str, messages: Any, user_message: Any) -> Optional[dict]:
     context.remember_platform(session_id, platform)
-    snapshot = _snapshot(messages)
-    if isinstance(user_message, str) and user_message.strip() and not (
-            snapshot and snapshot[-1]["role"] == "user" and snapshot[-1]["text"] == user_message[:4000]):
-        snapshot.append({"role": "user", "text": user_message[:4000]})
+    words = _user_messages(messages)
+    if isinstance(user_message, str) and user_message.strip() and (not words or words[-1] != user_message):
+        words.append(user_message)
     with _lock:
-        _turns[session_id] = _new_turn(turn_id, count_steers(messages))
-        _history[session_id] = snapshot
+        _turns[session_id] = _new_turn(turn_id, len(_steers(messages)))
+        _user_words[session_id] = words[-_KEEP_USER_MESSAGES:]
     parts = [p for p in (workers.pop_notes(session_id), workers.running_summary(session_id)) if p]
     return {"context": "\n\n".join(parts)} if parts else None
 
 
 def on_api_request(session_id: str, turn_id: str, messages: Any) -> None:
-    steers = count_steers(messages)
+    # Request messages carry Hermes' ephemeral turn context (memory, plugin notes) inside user
+    # messages, so only new steer messages are taken from them as the user's own words.
+    steers = _steers(messages)
     with _lock:
         st = _turn(session_id, turn_id)
-        if steers > st["steers"]:
+        if len(steers) > st["steers"]:
             logger.info("proactive-agent: user steered mid-turn in %s; turn budget reset", session_id)
-            fresh = _new_turn(turn_id or st["turn_id"], steers)
-            fresh["trace"] = st["trace"]
-            _turns[session_id] = fresh
-        if isinstance(messages, list) and messages:
-            _history[session_id] = _snapshot(messages) or _history.get(session_id, [])
+            words = _user_words.get(session_id, []) + steers[st["steers"]:]
+            _user_words[session_id] = words[-_KEEP_USER_MESSAGES:]
+            _turns[session_id] = _new_turn(turn_id or st["turn_id"], len(steers))
 
 
 def _block(message: str) -> dict:
@@ -126,42 +107,22 @@ def _block(message: str) -> dict:
 def pre_tool_call(session_id: str, turn_id: str, tool_name: str, args: Optional[dict]) -> Optional[dict]:
     args = args or {}
     if tool_name == "process_manage" and args.get("action") == "wait":
-        return _block("[proactive-agent] process_manage(action='wait') is not allowed in the chat agent: it blocks "
-                      "the conversation. Background jobs notify you when they finish; tell the user and end your turn.")
-    scan = guards.scan_reason(guards.command_of(tool_name, args))
-    if scan:
-        return _block(f"[proactive-agent] Blocked: {scan} can hang for minutes. Read the exact path you need instead.")
+        return _block("[proactive-agent] process_manage(action='wait') blocks the chat. Background jobs notify you "
+                      "when they finish; tell the user what is running and end your turn.")
     with _lock:
         _turn(session_id, turn_id)
-    current = zone(session_id)
-    if current == "red" and tool_name not in RED_ALLOWED_TOOLS:
+    if tool_name not in RED_ALLOWED_TOOLS and zone(session_id) == "red":
         hard = int(float(config.get("turn_hard_seconds")))
-        return _block(
-            f"[proactive-agent] Turn budget spent (>{hard}s or too much tool output). Editing and execution tools are "
-            "frozen for this turn. Either answer the user now with what you know, or hand the rest to delegate_task "
-            "with a complete handoff. Do not retry this tool."
-        )
+        return _block(f"[proactive-agent] This turn has run for more than {hard}s, so editing and execution tools "
+                      "are paused. Answer the user now with what you know, or hand the rest to delegate_task.")
     if tool_name == "delegate_task":
-        with _lock:
-            history = list(_history.get(session_id) or [])
-            st = _turns.get(session_id)
-            trace = list(st["trace"]) if st else []
-        return handoff.gate(session_id, turn_id, args, history, trace, language(session_id))
+        return handoff.gate(session_id, turn_id, args, user_words(session_id), language(session_id))
     return None
-
-
-def post_tool_call(session_id: str, turn_id: str, tool_name: str, args: Optional[dict], result: Any) -> None:
-    text = result if isinstance(result, str) else str(result or "")
-    with _lock:
-        st = _turn(session_id, turn_id)
-        st["output_chars"] += len(text)
-        if tool_name != "delegate_task":
-            st["trace"].append({"call": guards.describe_call(tool_name, args), "result": text[:600]})
 
 
 def transform_tool_result(session_id: str, tool_name: str, result: Any) -> Optional[str]:
     if tool_name == "terminal":
-        data = guards.parse_json(result)
+        data = util.parse_json(result)
         if isinstance(data, dict) and data.get("status") == "yielded_to_background":
             detach = config.get("terminal_auto_detach_seconds")
             data["note"] = (
@@ -176,32 +137,28 @@ def transform_tool_result(session_id: str, tool_name: str, result: Any) -> Optio
         return None
     with _lock:
         st = _turns.get(session_id)
-        if st is None:
+        if st is None or st["noted"] == current:
             return None
-        elapsed, chars = int(time.monotonic() - st["start"]), st["output_chars"]
-        if current == "red" and not st["red_noted"]:
-            st["red_noted"] = st["yellow_noted"] = True
-            note = (f"[proactive-agent] Turn budget spent ({elapsed}s, {chars} chars of tool output). Editing and "
-                    "execution tools are now frozen. Answer the user or delegate the rest with a complete handoff.")
-        elif current == "yellow" and not st["yellow_noted"]:
-            st["yellow_noted"] = True
-            hard = int(float(config.get("turn_hard_seconds")))
-            note = (f"[proactive-agent] This turn has used {elapsed}s and {chars} chars of tool output. Within the "
-                    "next 1-2 steps, either answer the user or hand the remaining work to delegate_task with a "
-                    f"complete handoff. Editing and execution tools freeze at {hard}s.")
-        else:
-            return None
-    return guards.append_note(result, note)
+        st["noted"] = current
+        elapsed = int(time.monotonic() - st["start"])
+    if current == "red":
+        note = (f"[proactive-agent] This turn has run for {elapsed}s. Editing and execution tools are now paused. "
+                "Answer the user, or delegate the rest.")
+    else:
+        hard = int(float(config.get("turn_hard_seconds")))
+        note = (f"[proactive-agent] This turn has run for {elapsed}s. Within the next 1-2 steps, answer the user "
+                f"or hand the remaining work to delegate_task. Editing and execution tools pause at {hard}s.")
+    return util.append_note(result, note)
 
 
 def forget(session_id: str = "") -> None:
     with _lock:
         if session_id:
             _turns.pop(session_id, None)
-            _history.pop(session_id, None)
+            _user_words.pop(session_id, None)
         else:
             _turns.clear()
-            _history.clear()
+            _user_words.clear()
 
 
 # ---------------------------------------------------------------- background detach
