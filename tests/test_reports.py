@@ -256,3 +256,17 @@ def test_result_that_ends_before_the_dispatch_returns_is_still_chased(plugin, ma
     _stop(plugin, json.dumps({"status": "completed", "summary": "quick", "evidence": ["ok"]}))
     _dispatched(plugin, ["sa-0-abc"])
     assert plugin.ledger.get("sa-0-abc")["unreported"]
+
+def test_a_wake_that_brings_other_news_is_not_told_to_stay_silent(plugin, make_ctx, monkeypatch):
+    monkeypatch.setenv("HERMES_SESSION_KEY", SESSION_KEY)
+    calls, inject = _injector()
+    make_ctx(inject_message=inject)
+    _two_results(plugin)
+    start_turn(plugin, turn="t2", user=WAKE_TURN)
+    _user_cuts_into_the_report(plugin, [])
+    end_turn(plugin, turn="t2")
+    start_turn(plugin, turn="t3", user="ok, and the README?")
+    end_turn(plugin, turn="t3")  # the user's own turn reported them before the queued wake ran
+    plugin.ledger.add_note("s1", "[proactive-agent] Subagent finished: \"Rotate the logs\" (status: failed).")
+    woken = start_turn(plugin, turn="t4", user=calls[0]["content"])["context"]
+    assert "Rotate the logs" in woken and "[SILENT]" not in woken

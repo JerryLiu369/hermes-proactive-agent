@@ -195,7 +195,7 @@ def pending_notes(parent_session: str, turn: str, user_message: Any = None) -> s
     again = [t for t in shown if t["seen_before"]]
     if again:
         notes.append(_unreported_note(again))
-    elif is_wake(user_message) and not shown:
+    elif is_wake(user_message) and not shown and not notes:
         notes.append(_NOTHING_LEFT)
     return "\n\n".join(notes)
 
