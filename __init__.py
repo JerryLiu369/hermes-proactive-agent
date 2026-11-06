@@ -27,7 +27,7 @@ from typing import Any, Optional
 if __package__:
     from . import config, context, handoff, prompt, secretary, workers
 
-__version__ = "0.1.11"
+__version__ = "0.1.12"
 
 logger = logging.getLogger("hermes.plugins.proactive_agent")
 

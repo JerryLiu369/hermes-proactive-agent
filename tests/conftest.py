@@ -6,7 +6,8 @@ import sys
 
 import pytest
 
-REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+from helpers import REPO_ROOT
+
 PACKAGE = "proactive_agent_under_test"
 
 

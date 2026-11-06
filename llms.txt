@@ -1,24 +1,28 @@
-# Hermes Proactive Agent (`proactive-agent`)
+# Hermes Proactive Agent
 
-> Hermes Agent plugin that runs the chat agent like a secretary that manages subagents: a turn time budget and background detach for the main agent, a handoff check for delegate_task (the user's recent messages and memory attached), a repeat stop for subagents, result notes and progress lines.
-
-## Overview
+> Hermes Agent plugin (`proactive-agent`) that runs the chat agent like a secretary managing subagents: a turn time budget and background detach for the main agent, a handoff check for delegate_task that attaches the user's recent messages and memory, a repeat stop for subagents, result notes and progress lines.
 
 - Repository: https://github.com/JerryLiu369/hermes-proactive-agent
-- Target: Hermes Agent (tested with v0.22.7)
-- Language: Python 3.10+
+- Releases: https://github.com/JerryLiu369/hermes-proactive-agent/releases
+- Requires: Hermes Agent >= 0.22 (tested on v0.22.7), Python 3.10+
 - License: MIT
-- Version: 0.1.11
 
-Roles:
-- Main agent ("secretary"): keeps the chat responsive, investigates and decides, writes the handoffs.
-- Subagents ("workers"): do the slow execution.
+## Install
 
-## Design
+```bash
+hermes plugins install github:JerryLiu369/hermes-proactive-agent
+hermes plugins enable proactive-agent
+```
+
+Recommended Hermes setting: `delegation.max_iterations: 60`.
+
+## How it works
+
+Roles: the main agent ("secretary") keeps the chat responsive, investigates, decides and writes the handoffs; subagents ("workers") do the slow execution.
 
 One simple step per stage of a task: turn budget (secretary) -> handoff (delegate_task) -> worker limits (subagent) -> results and progress (back to the secretary). Safety checks Hermes already does (denying subagents' dangerous commands, refusing stale file overwrites) are left to Hermes. No extra model calls are made.
 
-## Capabilities
+## Features
 
 ### Turn budget
 - From 60 s in one turn: a one-time reminder to answer or delegate within 1-2 steps.
@@ -33,7 +37,7 @@ One simple step per stage of a task: turn budget (secretary) -> handoff (delegat
 
 ### Worker limits
 - Same tool, same arguments, same result: a note after 3 repeats, a stop after 5 (the worker must report "blocked"; the user gets an alert).
-- The step budget is Hermes' delegation.max_iterations (recommended: 60).
+- The step budget is Hermes' delegation.max_iterations.
 - Workers keep the skills index and skill_view.
 
 ### Results and progress
@@ -56,10 +60,3 @@ Keys under plugins.entries.proactive-agent.settings (environment override: PROAC
 | handoff_min_context_chars | 120 |
 | worker_repeat_limit | 5 |
 | progress_interval_seconds | 600 |
-
-## Install
-
-```bash
-hermes plugins install github:JerryLiu369/hermes-proactive-agent
-hermes plugins enable proactive-agent
-```

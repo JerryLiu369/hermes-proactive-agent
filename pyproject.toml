@@ -1,7 +1,28 @@
 [project]
 name = "hermes-proactive-agent"
-version = "0.1.11"
-description = "Proactive agent governor plugin for Hermes Agent"
+version = "0.1.12"
+description = "Hermes Agent plugin that runs the chat agent like a secretary managing subagents"
 readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Jerry Liu" }]
 requires-python = ">=3.10"
 dependencies = []
+keywords = ["hermes", "hermes-agent", "plugin", "agent", "subagent", "delegation"]
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Operating System :: OS Independent",
+]
+
+[project.urls]
+Homepage = "https://github.com/JerryLiu369/hermes-proactive-agent"
+Issues = "https://github.com/JerryLiu369/hermes-proactive-agent/issues"
+Releases = "https://github.com/JerryLiu369/hermes-proactive-agent/releases"
+
+[dependency-groups]
+dev = ["pytest", "pyyaml", "flake8"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
