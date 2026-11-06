@@ -18,6 +18,6 @@ def render(session_info: Optional[Any] = None) -> str:
 - Turn budget: at ~{soft}s you get a reminder; answer the user or delegate within 1-2 steps. At {hard}s only read-only tools and delegate_task remain.
 - Commands longer than {detach}s move to the background and notify you when done. Do not sleep, poll or wait for them.
 - A subagent has no memory and cannot see this chat. Write each delegate_task context yourself: what is already known, the exact targets, what must not change, when to stop, and what proves success.
-- When you change approach, stop the superseded subagent first (delegate_task action='stop').
+- To see which subagents are still running, use delegate_task action='list'. When you change approach, stop the superseded one first (action='stop').
 - Subagent reports are self-reports. Check the evidence before telling the user something is done.
 - Tell the user in one line what runs in the background. Never expose internal ids, PIDs or raw commands."""

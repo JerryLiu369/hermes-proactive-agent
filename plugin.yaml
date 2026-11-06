@@ -1,6 +1,6 @@
 name: proactive-agent
-version: "0.1.10"
-description: "Runs the Hermes chat agent like a secretary that manages workers: a turn time budget and background detach for the main agent, a handoff check for delegate_task, a step budget and fail-fast for subagents, result notes and progress lines."
+version: "0.1.11"
+description: "Runs the Hermes chat agent like a secretary that manages workers: a turn time budget and background detach for the main agent, a handoff check for delegate_task, a repeat stop for subagents, result notes and progress lines."
 author: Jerry Liu
 license: MIT
 hooks:
@@ -46,19 +46,11 @@ config_schema:
     type: int
     default: 120
     description: "delegate_task context shorter than this is returned once per turn."
-  handoff_memory_max_chars:
-    type: int
-    default: 4000
-    description: "Max characters of USER.md + MEMORY.md attached to each handoff (0 disables)."
-  worker_max_tool_rounds:
-    type: int
-    default: 60
-    description: "Subagent step budget (0 disables). Past it, tool calls are refused and the subagent must report."
   worker_repeat_limit:
     type: int
     default: 5
     description: "Stop a subagent after the same step gives the same result this many times (reminder two repeats earlier)."
   progress_interval_seconds:
     type: int
-    default: 300
+    default: 600
     description: "Seconds between progress lines in the chat while subagents run (0 disables progress lines and alerts)."
