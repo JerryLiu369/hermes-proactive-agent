@@ -1,4 +1,0 @@
-[flake8]
-# Syntax errors and pyflakes checks only; long prompt strings are intentional.
-select = E9,F
-exclude = .git,__pycache__,.venv,venv,build,dist

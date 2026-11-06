@@ -10,11 +10,11 @@
 ## Install
 
 ```bash
-hermes plugins install github:JerryLiu369/hermes-proactive-agent
+hermes plugins install JerryLiu369/hermes-proactive-agent/proactive-agent
 hermes plugins enable proactive-agent
 ```
 
-Recommended Hermes setting: `delegation.max_iterations: 60`.
+The plugin lives in the repository's proactive-agent/ directory. Recommended Hermes setting: `delegation.max_iterations: 60`.
 
 ## How it works
 

@@ -5,7 +5,6 @@ through Hermes' hook dispatch, so hook kwargs, the worker-thread/contextvar mode
 and config lookup are the real ones.
 """
 
-import os
 import shutil
 import subprocess
 import sys
@@ -15,7 +14,7 @@ import time
 import pytest
 import yaml
 
-from helpers import REPO_ROOT
+from helpers import PLUGIN_DIR
 
 plugins_mod = pytest.importorskip("hermes_cli.plugins")
 
@@ -29,11 +28,8 @@ CONTEXT = (
 @pytest.fixture
 def hermes(tmp_path, monkeypatch):
     home = tmp_path / "hermes_home"
-    plugin_dir = home / "plugins" / "proactive-agent"
-    plugin_dir.mkdir(parents=True)
-    for name in os.listdir(REPO_ROOT):
-        if name.endswith(".py") or name == "plugin.yaml":
-            shutil.copy(os.path.join(REPO_ROOT, name), plugin_dir / name)
+    (home / "plugins").mkdir(parents=True)
+    shutil.copytree(PLUGIN_DIR, home / "plugins" / "proactive-agent", ignore=shutil.ignore_patterns("__pycache__"))
     (home / "config.yaml").write_text(yaml.safe_dump({
         "plugins": {
             "enabled": ["proactive-agent"],

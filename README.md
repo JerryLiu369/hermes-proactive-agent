@@ -23,11 +23,13 @@ decisions and reports back. **Subagents** are the workers: they take the slow, l
 ## Install
 
 ```bash
-hermes plugins install github:JerryLiu369/hermes-proactive-agent
+hermes plugins install JerryLiu369/hermes-proactive-agent/proactive-agent
 hermes plugins enable proactive-agent
 ```
 
-Manual install: clone into `~/.hermes/plugins/proactive-agent` and run `hermes plugins enable proactive-agent`.
+The plugin lives in the `proactive-agent/` directory of this repository; Hermes installs only that directory.
+Manual install: copy `proactive-agent/` to `~/.hermes/plugins/proactive-agent` and run
+`hermes plugins enable proactive-agent`.
 
 Recommended Hermes setting: lower the worker step budget. A worker that needs more than about 60 model calls is
 usually stuck, and a lower cap makes it report sooner.
@@ -145,26 +147,27 @@ plugins:
 
 ```bash
 uv run --group dev pytest          # or: pip install --group dev && pytest
-uv run --group dev flake8
+uv run --group dev ruff check
 ```
 
 `tests/test_hermes_e2e.py` loads the plugin through a real Hermes checkout when `hermes_cli` is importable, and is
 skipped otherwise.
 
-Hermes installs the repository itself as the plugin directory, so the modules live at the repository root:
-
 ```
 .
-├── plugin.yaml        Hermes manifest: hooks and settings schema
-├── __init__.py        entry point: register() wires the hooks
-├── config.py          settings lookup
-├── context.py         who is calling: governed main agent, worker or cron
-├── secretary.py       turn budget, background detach
-├── handoff.py         delegate_task check and briefing
-├── workers.py         repeat stop, result notes, progress lines
-├── prompt.py          system prompt section
-├── util.py            text and tool-result helpers
-└── tests/             one test file per module, plus end-to-end tests against Hermes
+├── proactive-agent/       the plugin (what Hermes installs)
+│   ├── plugin.yaml        manifest: hooks and settings schema
+│   ├── __init__.py        entry point: register() wires the hooks
+│   ├── config.py          settings lookup
+│   ├── context.py         who is calling: governed main agent, worker or cron
+│   ├── secretary.py       turn budget, background detach
+│   ├── handoff.py         delegate_task check and briefing
+│   ├── workers.py         repeat stop, result notes, progress lines
+│   ├── prompt.py          system prompt section
+│   └── util.py            text and tool-result helpers
+├── tests/                 one test file per module, plus end-to-end tests against Hermes
+├── pyproject.toml         project metadata, dev dependencies, ruff and pytest settings
+└── llms.txt               summary for language models
 ```
 
 ## Compatibility

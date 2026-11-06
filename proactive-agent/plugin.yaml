@@ -1,5 +1,5 @@
 name: proactive-agent
-version: "0.1.12"
+version: "0.1.13"
 description: "Runs the Hermes chat agent like a secretary that manages workers: a turn time budget and background detach for the main agent, a handoff check for delegate_task, a repeat stop for subagents, result notes and progress lines."
 author: Jerry Liu
 license: MIT

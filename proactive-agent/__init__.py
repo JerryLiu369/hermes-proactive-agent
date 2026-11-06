@@ -22,12 +22,9 @@ from __future__ import annotations
 import logging
 from typing import Any, Optional
 
-# pytest imports the repo root __init__.py as a bare module while collecting tests; only the
-# package import (how Hermes loads plugins) needs the submodules.
-if __package__:
-    from . import config, context, handoff, prompt, secretary, workers
+from . import config, context, handoff, prompt, secretary, workers
 
-__version__ = "0.1.12"
+__version__ = "0.1.13"
 
 logger = logging.getLogger("hermes.plugins.proactive_agent")
 

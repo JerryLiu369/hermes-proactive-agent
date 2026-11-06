@@ -1,4 +1,4 @@
-"""Load the plugin the way Hermes does: the repo root as a package with submodules."""
+"""Load the plugin the way Hermes does: the plugin directory as a package with submodules."""
 
 import importlib.util
 import os
@@ -6,7 +6,7 @@ import sys
 
 import pytest
 
-from helpers import REPO_ROOT
+from helpers import PLUGIN_DIR
 
 PACKAGE = "proactive_agent_under_test"
 
@@ -15,7 +15,7 @@ def _load():
     if PACKAGE in sys.modules:
         return sys.modules[PACKAGE]
     spec = importlib.util.spec_from_file_location(
-        PACKAGE, os.path.join(REPO_ROOT, "__init__.py"), submodule_search_locations=[REPO_ROOT])
+        PACKAGE, os.path.join(PLUGIN_DIR, "__init__.py"), submodule_search_locations=[PLUGIN_DIR])
     module = importlib.util.module_from_spec(spec)
     sys.modules[PACKAGE] = module
     spec.loader.exec_module(module)
