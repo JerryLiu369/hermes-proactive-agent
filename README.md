@@ -117,9 +117,14 @@ These apply to subagents spawned by a governed session.
   `action='steer'`, its live transcript path, and how it ended (summary, evidence, blockers). The plugin's hooks write
   it, with no model calls. It lives in `<hermes home>/plugin-data/proactive-agent/ledger.db` and keeps each chat's
   last 20 finished tasks for up to 7 days.
+- A task the secretary stops with `action='stop'` is recorded as stopped at once, so it leaves the running list but
+  its partial work still reaches the next worker; its result note says it was stopped on purpose.
+- A running record whose end never arrives stops counting as running after 6 hours, like the in-memory worker list.
 - Hermes does not resume a subagent after it ends or after a restart. Instead, the next worker in the same chat is
   briefed with the unfinished task's record. After a restart, the secretary is told which tasks were running, that
   their side effects are unknown, and which files they had changed.
+- Result and restart notes wait in the ledger until that chat's next turn, so a restart, or a CLI process loading the
+  plugin first, does not lose them.
 - The only chat message the plugin sends itself is the alert when a worker is stopped for repeating itself (gateway
   platforms, via `ctx.post_message`).
 

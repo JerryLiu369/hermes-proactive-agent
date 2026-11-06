@@ -124,6 +124,7 @@ def _on_turn_end(session_id: str = "", **kw: Any) -> None:
     # workers and pending result notes must outlive the turn.
     if session_id:
         secretary.forget(session_id)
+        handoff.forget(session_id)
 
 
 @_guarded

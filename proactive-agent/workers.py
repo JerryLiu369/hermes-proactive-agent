@@ -20,11 +20,11 @@ logger = logging.getLogger("hermes.plugins.proactive_agent")
 _lock = threading.RLock()
 _workers: Dict[str, dict] = {}
 _by_session: Dict[str, str] = {}
-_notes: Dict[str, List[str]] = collections.defaultdict(list)
 
 _STALE_AFTER_S = 6 * 3600.0
 _DONE_KEEP_S = 600.0
 _DONE_STATUSES = ("completed", "complete", "success", "done")
+_REPORT_STATUSES = ("completed", "partial", "blocked", "failed")
 _WRITE_HINTS = ("write", "edit", "patch")
 _READ_HINTS = ("read", "search", "list", "view")
 
@@ -40,17 +40,15 @@ def lookup(task_id: str = "", session_id: str = "") -> Optional[dict]:
 
 
 def running_tasks(parent_session: str) -> List[dict]:
-    """Ledger records of this chat's running tasks, minus the ones the main agent already stopped."""
-    with _lock:
-        stopped = {wid for wid, w in _workers.items() if w["stopped_by_parent"]}
-    return [t for t in ledger.running(parent_session) if t["id"] not in stopped]
+    return ledger.running(parent_session)
 
 
-def mark_stopped_by_parent(subagent_id: str) -> None:
+def mark_stopped_by_parent(subagent_id: str, parent_session: str) -> None:
     with _lock:
         w = _workers.get(subagent_id or "")
         if w is not None:
             w["stopped_by_parent"] = True
+    ledger.mark_stopped(subagent_id, parent_session)
 
 
 def _prune(now: float) -> None:
@@ -125,6 +123,14 @@ def _is_write(tool_name: str) -> bool:
     return any(h in name for h in _WRITE_HINTS) and not any(h in name for h in _READ_HINTS)
 
 
+def _succeeded(result: Any, status: Any) -> bool:
+    if status not in (None, "success", "ok"):
+        return False
+    data = util.parse_json(result) if isinstance(result, str) and result.strip().startswith("{") else result
+    return not (isinstance(data, dict) and (data.get("error") or data.get("ok") is False
+                                            or data.get("success") is False))
+
+
 def pre_tool_call(w: dict, tool_name: str, args: Optional[dict], **kw: Any) -> Optional[dict]:
     with _lock:
         w["last_activity"] = time.monotonic()
@@ -142,7 +148,7 @@ def post_tool_call(w: dict, tool_name: str, args: Optional[dict], result: Any, *
     if kw.get("error_type") == "plugin_block":
         return
     args = args or {}
-    if _is_write(tool_name) and isinstance(args.get("path"), str) and kw.get("status") in (None, "success", "ok"):
+    if _is_write(tool_name) and isinstance(args.get("path"), str) and _succeeded(result, kw.get("status")):
         ledger.add_files(w["id"], [args["path"]])
     limit = max(2, int(config.get("worker_repeat_limit")))
     warn_at = limit - 2 if limit >= 4 else 0
@@ -182,7 +188,8 @@ def transform_tool_result(w: dict, tool_name: str, result: Any) -> Optional[str]
 def _written_paths(history: Any) -> List[str]:
     paths: List[str] = []
     for item in history if isinstance(history, list) else []:
-        if not isinstance(item, dict) or not _is_write(str(item.get("tool_name") or "")):
+        if not isinstance(item, dict) or not _is_write(str(item.get("tool_name") or "")) \
+                or item.get("status") == "error":
             continue
         targets = (item.get("tool_input") or {}).get("targets") if isinstance(item.get("tool_input"), dict) else None
         value = targets.get("path") if isinstance(targets, dict) else None
@@ -194,6 +201,25 @@ def _strings(value: Any) -> List[str]:
     return [str(v) for v in value if str(v).strip()] if isinstance(value, list) else []
 
 
+def _report(summary: Any) -> dict:
+    """The worker's structured report, or {} when the summary is plain text (which may quote unrelated JSON)."""
+    parsed = util.parse_json(summary)
+    if not isinstance(parsed, dict):
+        return {}
+    own = str(parsed.get("status") or "").lower()
+    return parsed if own in _REPORT_STATUSES + _DONE_STATUSES or (not own and "summary" in parsed) else {}
+
+
+def _outcome(report: dict, child_status: Any) -> str:
+    """How the task ended. Hermes' failed/interrupted wins over a self-reported success."""
+    hermes = str(child_status or "").lower()
+    own = str(report.get("status") or "").lower()
+    own = "completed" if own in _DONE_STATUSES else own if own in _REPORT_STATUSES else ""
+    if hermes in ("failed", "interrupted") and own in ("", "completed"):
+        return hermes
+    return own or (hermes if hermes in ("completed", "failed", "interrupted") else "unknown")
+
+
 def on_subagent_stop(**kw: Any) -> None:
     child_session = kw.get("child_session_id") or ""
     with _lock:
@@ -203,34 +229,40 @@ def on_subagent_stop(**kw: Any) -> None:
             w["done"] = True
             w["last_activity"] = time.monotonic()
 
-    parsed = util.parse_json(kw.get("child_summary"))
-    parsed = parsed if isinstance(parsed, dict) else {}
-    status = str(parsed.get("status") or kw.get("child_status") or "unknown").lower()
-    evidence, blockers = _strings(parsed.get("evidence")), _strings(parsed.get("blockers"))
-    summary = str(parsed.get("summary") or kw.get("child_summary") or "")
+    report = _report(kw.get("child_summary"))
+    status = _outcome(report, kw.get("child_status"))
+    evidence, blockers = _strings(report.get("evidence")), _strings(report.get("blockers"))
+    summary = str(report.get("summary") or kw.get("child_summary") or "")
     files = _written_paths(kw.get("tool_call_history"))
 
     if w is None:
         # The chat was reset or the plugin reloaded mid-run: close the record, no note to deliver.
         known = ledger.by_child(child_session)
-        if known and known["status"] == ledger.RUNNING:
-            ledger.finish(known["id"], status, summary, evidence, blockers, files)
+        if known and known["status"] in (ledger.RUNNING, ledger.STOPPED, ledger.LOST):
+            final = ledger.STOPPED if known["status"] == ledger.STOPPED else status
+            ledger.finish(known["id"], final, summary, evidence, blockers, files)
         return
 
     if w["stop_reason"]:
         final = "blocked"
     elif w["stopped_by_parent"]:
-        final = "stopped"
+        final = ledger.STOPPED
     else:
-        final = "completed" if status in _DONE_STATUSES else status
+        final = status
     ledger.finish(w["id"], final, summary, evidence, blockers, files)
 
     minutes = (kw.get("duration_ms") or 0) / 60000.0
     lines = [f"[proactive-agent] Subagent finished: \"{util.short(w['goal'], 80)}\" "
-             f"(status: {status}, {len(w['rounds'])} tool rounds, {minutes:.1f} min)."]
+             f"(status: {final}, {len(w['rounds'])} tool rounds, {minutes:.1f} min)."]
     if w["stop_reason"]:
         lines.append(f"- The plugin stopped it: {w['stop_reason']}. Treat it as blocked and decide the next step "
                      "yourself; do not re-dispatch the same plan.")
+    elif final == ledger.STOPPED:
+        record = ledger.get(w["id"]) or {}
+        changed = record.get("files") or []
+        lines.append("- You stopped it (action='stop'). Nothing to report unless the user asks about it."
+                     + (f" It had changed: {', '.join(changed[:5])}." if changed else "")
+                     + " A follow-up subagent is briefed with its partial work automatically.")
     elif final == "completed":
         if evidence:
             lines.append("- Evidence it reported: " + "; ".join(util.short(e, 120) for e in evidence[:5])
@@ -252,14 +284,11 @@ def lost_note(task: dict) -> str:
 
 
 def queue_note(parent_session: str, note: str) -> None:
-    if parent_session and note:
-        with _lock:
-            _notes[parent_session].append(note)
+    ledger.add_note(parent_session, note)
 
 
 def pop_notes(parent_session: str) -> str:
-    with _lock:
-        return "\n\n".join(_notes.pop(parent_session, []))
+    return "\n\n".join(ledger.pop_notes(parent_session))
 
 
 # ---------------------------------------------------------------- chat alert
@@ -285,18 +314,16 @@ def _post(w: dict, text: str) -> None:
 # ---------------------------------------------------------------- cleanup
 
 def forget_parent(parent_session: str) -> None:
-    """Drop in-memory state for one chat. The ledger keeps its records."""
+    """Drop in-memory state for one chat. The ledger keeps its records and pending notes."""
     if not parent_session:
         return
     with _lock:
-        _notes.pop(parent_session, None)
         for wid in [wid for wid, w in _workers.items() if w["parent_session"] == parent_session]:
             _by_session.pop(_workers.pop(wid).get("session_id") or "", None)
 
 
 def reset_all() -> None:
     with _lock:
-        _notes.clear()
         _workers.clear()
         _by_session.clear()
 

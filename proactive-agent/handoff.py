@@ -118,17 +118,19 @@ def _briefing(user_words: List[str], parent: str, running: List[dict]) -> str:
 
 def _mentions(text: str, path: str) -> bool:
     """Whether *text* names *path*: the full path, or its last two components (``app/x.toml``),
-    not as part of a longer name."""
+    not as part of a longer name (``myapp/x.toml``, ``x.toml.bak``). A sentence-ending period is fine."""
     path = path.strip().replace("\\", "/").rstrip("/")
+    if path.startswith("./"):
+        path = path[2:]
     if not path:
         return False
     norm = text.replace("\\", "/")
     candidates = [(path, r"[\w.\-/]")]
     tail = "/".join(path.split("/")[-2:])
-    if "/" in tail and tail != path:
+    if "/" in tail:
         candidates.append((tail, r"[\w.\-]"))
     for needle, before in candidates:
-        if re.search(rf"(?<!{before}){re.escape(needle)}(?![\w\-/])", norm):
+        if re.search(rf"(?<!{before}){re.escape(needle)}(?![\w\-/]|\.\w)", norm):
             return True
     return False
 
@@ -177,7 +179,7 @@ def gate(session_id: str, turn_id: str, args: Optional[dict], user_words: List[s
     args = args or {}
     action = str(args.get("action") or "spawn").lower()
     if action == "stop":
-        workers.mark_stopped_by_parent(str(args.get("subagent_id") or ""))
+        workers.mark_stopped_by_parent(str(args.get("subagent_id") or ""), session_id)
         return None
     if action == "steer":
         if args.get("subagent_id") and args.get("message"):

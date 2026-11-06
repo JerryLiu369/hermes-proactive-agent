@@ -140,3 +140,129 @@ def test_new_session_cleans_the_old_one_and_keeps_the_ledger(plugin, make_ctx):
     _stop(plugin, json.dumps({"status": "failed", "summary": "interrupted"}), status="interrupted")
     assert plugin.ledger.get("sa-0-abc")["status"] == "failed", "the record is closed without a note"
     assert start_turn(plugin, session="s1", turn="t2") is None
+
+
+def test_restart_note_waits_in_the_ledger_for_the_chat(plugin, make_ctx, tmp_path, monkeypatch):
+    """A CLI process (or a second restart) that marks the task lost must not swallow the note."""
+    path = tmp_path / "shared.db"
+    plugin.ledger.load(path)
+    plugin.ledger.start("sa-old", "s1", "Rotate the TLS certificate", "child-old")
+    db = sqlite3.connect(str(path))
+    db.execute("UPDATE tasks SET pid = 0 WHERE id = 'sa-old'")
+    db.commit()
+    db.close()
+    monkeypatch.setattr(plugin.ledger, "_open_default", lambda: sqlite3.connect(str(path), check_same_thread=False))
+    make_ctx()  # the first process to load marks the task lost and queues the note
+    plugin._reset_all()
+    make_ctx()  # the gateway loads later: nothing left to mark, the note is still waiting
+    note = start_turn(plugin)["context"]
+    assert "Hermes restarted" in note and "Rotate the TLS certificate" in note
+    assert start_turn(plugin, turn="t2") is None, "the note is delivered once"
+
+
+def test_result_note_survives_a_reload_before_the_next_turn(plugin, make_ctx, tmp_path):
+    path = tmp_path / "notes.db"
+    plugin.ledger.load(path)
+    make_ctx()
+    plugin.ledger.load(path)
+    start_turn(plugin)
+    spawn_worker(plugin)
+    _stop(plugin, json.dumps({"status": "completed", "summary": "ok", "evidence": ["HTTP/2 200"]}))
+    plugin._reset_all()
+    plugin.ledger.load(path)
+    assert "HTTP/2 200" in start_turn(plugin, turn="t2")["context"]
+
+
+def test_stop_by_the_main_agent_is_recorded_at_once(plugin, make_ctx):
+    make_ctx()
+    start_turn(plugin)
+    spawn_worker(plugin)
+    w_post(plugin, "write_file", {"path": WRANGLER}, '{"ok": true}')
+    main_tool(plugin, "delegate_task", {"action": "stop", "subagent_id": "sa-0-abc"})
+    assert plugin.ledger.get("sa-0-abc")["status"] == "stopped"
+    assert plugin.workers.running_tasks("s1") == []
+    res = main_tool(plugin, "delegate_task", {"tasks": [{"goal": "New plan", "context": GOOD_CONTEXT}]})
+    briefing = res["args"]["tasks"][0]["context"]
+    assert "ended stopped" in briefing and WRANGLER in briefing, "the next worker still sees the partial work"
+
+    _stop(plugin, "Interrupted by the parent", status="interrupted")
+    note = start_turn(plugin, turn="t2")["context"]
+    assert "You stopped it" in note and "did not finish" not in note
+    assert plugin.ledger.get("sa-0-abc")["status"] == "stopped"
+
+
+def test_stop_of_another_chats_task_is_ignored(plugin, make_ctx):
+    make_ctx()
+    start_turn(plugin)
+    spawn_worker(plugin)
+    start_turn(plugin, session="s9")
+    main_tool(plugin, "delegate_task", {"action": "stop", "subagent_id": "sa-0-abc"}, session="s9")
+    assert plugin.ledger.get("sa-0-abc")["status"] == "running"
+
+
+def test_status_comes_from_the_report_not_from_quoted_json(plugin, make_ctx):
+    make_ctx()
+    start_turn(plugin)
+    spawn_worker(plugin)
+    _stop(plugin, 'Checked the service, it answered {"status": "running", "uptime": 5}. All good.')
+    assert plugin.ledger.get("sa-0-abc")["status"] == "completed"
+    assert plugin.workers.running_tasks("s1") == []
+
+    spawn_worker(plugin, sub_id="sa-1", child_session="child-2")
+    _stop(plugin, json.dumps({"status": "completed", "summary": "done"}), child="child-2", status="failed")
+    assert plugin.ledger.get("sa-1")["status"] == "failed", "Hermes' failure wins over a self-reported success"
+
+    spawn_worker(plugin, sub_id="sa-2", child_session="child-3")
+    _stop(plugin, json.dumps({"status": "running", "summary": "still going"}), child="child-3")
+    assert plugin.ledger.get("sa-2")["status"] == "completed", "a finished task is never recorded as running"
+
+
+def test_closing_after_reset_normalises_the_status(plugin, make_ctx):
+    make_ctx()
+    start_turn(plugin)
+    spawn_worker(plugin)
+    plugin._on_session_clean(session_id="s2", old_session_id="s1")
+    _stop(plugin, json.dumps({"status": "done", "summary": "ok"}))
+    assert plugin.ledger.get("sa-0-abc")["status"] == "completed"
+
+
+def test_failed_writes_are_not_recorded(plugin, make_ctx):
+    make_ctx()
+    start_turn(plugin)
+    spawn_worker(plugin)
+    w_post(plugin, "write_file", {"path": "/srv/a.txt"}, '{"error": "file changed since it was read"}')
+    w_post(plugin, "patch", {"path": "/srv/b.txt"}, '{"success": false, "error": "no match"}')
+    assert plugin.ledger.get("sa-0-abc")["files"] == []
+    history = [{"tool_name": "write_file", "tool_input": {"targets": {"path": "/srv/c.txt"}}, "status": "error"},
+               {"tool_name": "write_file", "tool_input": {"targets": {"path": "/srv/d.txt"}}, "status": "ok"}]
+    _stop(plugin, "done", history=history)
+    assert plugin.ledger.get("sa-0-abc")["files"] == ["/srv/d.txt"]
+
+
+def test_clash_path_edge_cases(plugin):
+    mentions = plugin.handoff._mentions
+    assert mentions("edit /srv/app/wrangler.toml", "app/wrangler.toml"), "a relative record matches a full path"
+    assert mentions("edit ./app/wrangler.toml", "./app/wrangler.toml")
+    assert mentions("then edit /srv/app/wrangler.toml.", WRANGLER), "a sentence-ending period still matches"
+    assert not mentions("restore /srv/app/wrangler.toml.bak", WRANGLER)
+    assert not mentions("copy /srv/app/.env.example", "/srv/app/.env")
+
+
+def test_running_records_expire_like_the_worker_registry(plugin, make_ctx, tmp_path):
+    path = tmp_path / "stale.db"
+    plugin.ledger.load(path)
+    plugin.ledger.start("sa-stale", "s1", "Never reported back", "c-stale")
+    plugin.ledger._conn().execute("UPDATE tasks SET started = started - 7 * 3600 WHERE id = 'sa-stale'")
+    plugin.ledger._conn().commit()
+    assert plugin.workers.running_tasks("s1") == []
+
+
+def test_thin_brief_is_returned_again_next_turn_without_turn_ids(plugin, make_ctx):
+    make_ctx()
+    start_turn(plugin, turn="")
+    thin = {"tasks": [{"goal": "Fix", "context": "short"}]}
+    assert main_tool(plugin, "delegate_task", thin, turn="")["action"] == "block"
+    assert main_tool(plugin, "delegate_task", thin, turn="")["action"] == "modify"
+    plugin._on_turn_end(session_id="s1")
+    start_turn(plugin, turn="")
+    assert main_tool(plugin, "delegate_task", thin, turn="")["action"] == "block"

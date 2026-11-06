@@ -2,8 +2,8 @@
 
 Only the plugin's hooks write it, and no model is called. It lives in Hermes' plugin-data
 directory, so a gateway restart keeps what was running, which files each task changed and how
-it ended. The main agent reads it through result and restart notes; workers read it through
-their handoff briefing.
+it ended. The main agent reads it through result and restart notes, which wait in the ledger
+until that chat's next turn; workers read it through their handoff briefing.
 """
 
 from __future__ import annotations
@@ -22,8 +22,12 @@ logger = logging.getLogger("hermes.plugins.proactive_agent")
 PLUGIN_NAME = "proactive-agent"
 RUNNING = "running"
 LOST = "lost"
+STOPPED = "stopped"
 
 _KEEP_SECONDS = 7 * 86400.0
+# Same horizon as the in-memory worker registry: a record older than this whose subagent_stop
+# never arrived is no longer treated as running.
+_RUNNING_HORIZON_S = 6 * 3600.0
 _KEEP_FINISHED_PER_PARENT = 20
 _MAX_FILES = 20
 _MAX_STEERS = 5
@@ -34,6 +38,9 @@ _SCHEMA = (
     "status TEXT NOT NULL, started REAL NOT NULL, ended REAL, pid INTEGER NOT NULL, data TEXT NOT NULL)",
     "CREATE INDEX IF NOT EXISTS tasks_parent ON tasks (parent, status)",
     "CREATE INDEX IF NOT EXISTS tasks_child ON tasks (child)",
+    "CREATE TABLE IF NOT EXISTS notes (id INTEGER PRIMARY KEY AUTOINCREMENT, parent TEXT NOT NULL, "
+    "created REAL NOT NULL, text TEXT NOT NULL)",
+    "CREATE INDEX IF NOT EXISTS notes_parent ON notes (parent)",
 )
 
 _lock = threading.RLock()
@@ -94,9 +101,12 @@ def load(path: Optional[Path] = None) -> List[dict]:
         for statement in _SCHEMA:
             _db.execute(statement)
         _db.commit()
+        now = time.time()
+        _db.execute("DELETE FROM tasks WHERE started < ?", (now - _KEEP_SECONDS,))
+        _db.execute("DELETE FROM notes WHERE created < ?", (now - _KEEP_SECONDS,))
+        _db.commit()
         lost = [t for t in _select("status = ?", (RUNNING,))
                 if t["pid"] != os.getpid() and not _alive(int(t["pid"] or 0))]
-        now = time.time()
         for t in lost:
             t["status"], t["ended"] = LOST, now
             _put(t)
@@ -181,6 +191,15 @@ def add_steer(task_id: str, message: str) -> None:
     _update(task_id, change)
 
 
+def mark_stopped(task_id: str, parent: str) -> None:
+    """The main agent stopped this task: it is no longer running, even before its subagent_stop arrives."""
+    def change(t: dict):
+        if t["parent"] != parent or t["status"] != RUNNING:
+            return False
+        t.update(status=STOPPED, ended=time.time())
+    _update(task_id, change)
+
+
 def finish(task_id: str, status: str, summary: str = "", evidence: Iterable[str] = (),
            blockers: Iterable[str] = (), files: Iterable[str] = ()) -> None:
     add_files(task_id, files)
@@ -190,10 +209,37 @@ def finish(task_id: str, status: str, summary: str = "", evidence: Iterable[str]
         if not found:
             return
         t = found[0]
-        t.update(status=status or "unknown", ended=now, summary=str(summary or "")[:600],
+        status = (status or "").strip().lower()
+        t.update(status=status if status and status != RUNNING else "unknown", ended=now, summary=str(summary or "")[:600],
                  evidence=[str(e)[:200] for e in evidence][:5], blockers=[str(b)[:200] for b in blockers][:5])
         _put(t)
         _prune(t["parent"], now)
+
+
+def add_note(parent: str, text: str) -> None:
+    """Queue a note for the main agent of *parent*; it survives restarts until that chat's next turn."""
+    if not parent or not text:
+        return
+    with _lock:
+        _conn().execute("INSERT INTO notes (parent, created, text) VALUES (?, ?, ?)", (parent, time.time(), text))
+        _conn().commit()
+
+
+def pop_notes(parent: str) -> List[str]:
+    if not parent:
+        return []
+    with _lock:
+        db = _conn()
+        db.execute("BEGIN IMMEDIATE")
+        try:
+            rows = db.execute("SELECT id, text FROM notes WHERE parent = ? ORDER BY id", (parent,)).fetchall()
+            if rows:
+                db.execute("DELETE FROM notes WHERE parent = ? AND id <= ?", (parent, rows[-1][0]))
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+    return [text for _, text in rows]
 
 
 # ---------------------------------------------------------------- reads
@@ -214,7 +260,8 @@ def by_child(child_session: str) -> Optional[dict]:
 
 def running(parent: str) -> List[dict]:
     with _lock:
-        return _select("parent = ? AND status = ?", (parent, RUNNING), order="started ASC")
+        return _select("parent = ? AND status = ? AND started >= ?",
+                       (parent, RUNNING, time.time() - _RUNNING_HORIZON_S), order="started ASC")
 
 
 def unfinished(parent: str, within_seconds: float = 86400.0, limit: int = 3) -> List[dict]:

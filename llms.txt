@@ -46,6 +46,7 @@ One simple step per stage of a task: turn budget (secretary) -> handoff (delegat
 - The secretary checks running workers on demand with delegate_task(action='list'); nothing is injected every turn and nothing is posted on a timer.
 - Task ledger (SQLite in <hermes home>/plugin-data/proactive-agent/ledger.db, written by hooks only): goal, status, changed files, steers, live transcript path, summary, evidence, blockers. Last 20 finished tasks per chat, up to 7 days.
 - Hermes does not resume a finished or restarted subagent; the next worker is briefed with the unfinished task's record, and after a restart the secretary is told which tasks were lost.
+- action='stop' marks the task stopped at once; running records with no end expire after 6 hours; result and restart notes are stored in the ledger until the chat's next turn.
 - The only plugin chat message is the alert when a worker is stopped for repeating itself (ctx.post_message).
 
 Only platforms in governed_platforms (default ["weixin"]) are affected. Cron runs and subagents of ungoverned sessions are untouched.
