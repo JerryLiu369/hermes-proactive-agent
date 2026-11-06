@@ -11,8 +11,9 @@ keeps four promises, one module each:
    an accepted one carries the user's words, memory, running and unfinished tasks, working rules
    and a result schema.
 3. Subagents do not spin or guess (workers, handoff, reports): a subagent that gets the same
-   result from the same step again and again is stopped; one that needs the user's decision, or
-   is refused by approval or a rule, ends with a question that the main agent takes to the user.
+   result from the same step again and again is stopped; one that needs a decision it should not make, or
+   is refused by approval or a rule, ends with a question that the main agent answers or takes
+   to the user.
 4. Results are checked, reported and remembered (reports, ledger): the main agent is told what
    to verify when a subagent returns, a result stays unreported until the user has heard it (a
    user message that cuts into the report gets it repeated), and a persistent ledger records

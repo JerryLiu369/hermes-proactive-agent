@@ -10,10 +10,10 @@ redirects or steers the turn, or interrupts it), the result stays unreported: th
 result of that turn says so, and if the turn ends without one, the main agent is woken through
 Hermes' own message injection to report it; the user's next message carries it otherwise.
 
-A worker that needs a decision only the user can make ends with status needs_decision, a question
-and options. The main agent is told to ask the user and dispatch again with the answer, and on
-the user's next message after hearing the question it is reminded once, unless it has dispatched
-again by then.
+A worker that needs a decision it should not make ends with status needs_decision, a question
+and options. The main agent is told to answer it itself when the chat already settles it, and
+to ask the user otherwise, then dispatch again with the answer. If it has not dispatched again by
+the user's next message after the user heard the question, it is reminded once.
 """
 
 from __future__ import annotations
@@ -139,10 +139,11 @@ def _finished_note(w: dict, final: str, evidence: List[str], duration_ms: Any, q
                      + (f" It had changed: {', '.join(changed[:5])}." if changed else "")
                      + " A follow-up subagent is briefed with its partial work automatically.")
     elif final == DECISION:
-        lines.append((f"- It needs the user's decision: {describe_question(question, options)}" if question else
-                      "- It needs the user's decision but asked no clear question; read its summary.")
-                     + " Ask the user in one short message, with the options. Do not choose for them unless their "
-                     "own words or memory already decide it. When they answer, dispatch a new subagent with the "
+        lines.append((f"- It needs a decision: {describe_question(question, options)}" if question else
+                      "- It needs a decision but asked no clear question; read its summary.")
+                     + " The subagent could not see this chat. If the chat, memory or facts you can check settle it, "
+                     "answer it yourself. If it is the user's call (a preference, a risk, money, a refused command), "
+                     "ask the user in one short message with the options. Then dispatch a new subagent with the "
                      "answer; it is briefed with this task's record automatically.")
     elif final == "completed":
         if evidence:
@@ -211,7 +212,7 @@ def _unreported_note(tasks: List[dict]) -> str:
     rows = []
     for t in tasks:
         summary = util.short(t.get("summary"), 200)
-        asks = (f" It asks the user: {describe_question(t['question'], t.get('options') or [])}"
+        asks = (f" Its question: {describe_question(t['question'], t.get('options') or [])}"
                 if t.get("question") else "")
         rows.append(f"- \"{util.short(t.get('goal'), 80)}\" ended {t.get('status')} "
                     f"{ledger.minutes_since(t.get('ended'))} min ago" + (f": {summary}" if summary else ".") + asks)
@@ -228,9 +229,10 @@ def is_wake(user_message: Any) -> bool:
 def _decision_note(tasks: List[dict]) -> str:
     rows = [f"- \"{util.short(t.get('goal'), 80)}\" asked: {describe_question(t['question'], t.get('options') or [])}"
             for t in tasks]
-    return ("[proactive-agent] A subagent is waiting for the user's decision:\n" + "\n".join(rows)
-            + "\nIf the user has answered it, in this message or earlier, dispatch a new subagent with the answer now; "
-            "it is briefed with that task's record automatically. If not, leave it until they do.")
+    return ("[proactive-agent] A subagent's question is still open:\n" + "\n".join(rows)
+            + "\nIf it is answered now (by the user, in this message or earlier, or by what you know), dispatch a new "
+            "subagent with the answer; it is briefed with that task's record automatically. If the user still has to "
+            "decide, leave it until they do.")
 
 
 def _decision_reminder(parent_session: str, turn: str, by_user: bool) -> Optional[str]:

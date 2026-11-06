@@ -2,7 +2,7 @@
 
 Only the plugin's hooks write it, and no model is called. It lives in Hermes' plugin-data
 directory, so a gateway restart keeps what was running, which files each task changed, how it
-ended, whether the user has heard the result yet and whether it waits for the user's decision.
+ended, whether the user has heard the result yet and whether its question is still open.
 The main agent reads it through result and restart notes, which wait in the ledger until that
 chat's next turn; workers read it through their handoff briefing.
 """
@@ -218,7 +218,7 @@ def finish(task_id: str, status: str, summary: str = "", evidence: Iterable[str]
            question: str = "", options: Iterable[str] = ()) -> None:
     """Close a task. *unreported* marks a result the user should hear about; it stays marked until
     a turn of the main agent that saw it ends with a reply nobody interrupted (see reports). A
-    *question* marks a task that waits for the user's decision until the chat dispatches again."""
+    *question* marks a task that waits for a decision until the chat dispatches again."""
     add_files(task_id, files)
     now = time.time()
     with _lock:
@@ -355,7 +355,7 @@ def _unreported(parent: str) -> List[dict]:
 
 
 def awaiting_decision(parent: str) -> List[dict]:
-    """Tasks of *parent* that ended with a question for the user and no dispatch since."""
+    """Tasks of *parent* that ended with a question and no dispatch since."""
     with _lock:
         return [t for t in _recent(parent) if t.get("awaiting")]
 

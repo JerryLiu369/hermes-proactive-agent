@@ -126,7 +126,7 @@ def reset_all() -> None:
 
 _REFUSED = ("[proactive-agent] {what} Do not retry it, rephrase it or reach the same result another way. If the goal "
             "needs it, stop now and report status \"needs_decision\": what was refused, why it is needed, and the "
-            "options. The main agent will ask the user. A refusal that says the user denied it may be automatic.")
+            "options. The main agent decides or asks the user. A refusal that says the user denied it may be automatic.")
 
 
 def _approval_refusal(result: Any) -> Optional[str]:

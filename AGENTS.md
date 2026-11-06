@@ -15,7 +15,7 @@ module each:
 |---|---|---|
 | The main agent does long work itself and the chat goes silent | 1. The chat stays responsive | `secretary.py` |
 | A subagent starts blind | 2. Subagents start informed | `handoff.py` |
-| A stuck subagent repeats the same step, or guesses at a choice only the user can make | 3. Subagents do not spin or guess | `workers.py` (rules and schema in `handoff.py`, the question in `reports.py`) |
+| A stuck subagent repeats the same step, or guesses at a choice that is not its to make | 3. Subagents do not spin or guess | `workers.py` (rules and schema in `handoff.py`, the question in `reports.py`) |
 | "Done" is a self-report; a result the user writes over never reaches them; what a subagent did is lost when it ends or Hermes restarts | 4. Results are checked, reported and remembered | `reports.py`, `ledger.py` |
 
 Supporting modules: `context.py` (who is calling: governed main agent, subagent or cron run), `prompt.py` (system

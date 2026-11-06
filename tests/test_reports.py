@@ -272,7 +272,7 @@ def test_a_wake_that_brings_other_news_is_not_told_to_stay_silent(plugin, make_c
     assert "Rotate the logs" in woken and "[SILENT]" not in woken
 
 
-# ---------------------------------------------------------------- a decision only the user can make (issue #7)
+# ---------------------------------------------------------------- a decision the subagent cannot make (issue #7)
 
 QUESTION = {"status": "needs_decision", "summary": "Two ways to fix the 522: the worker route or the DNS proxy.",
             "question": "Change the worker route or turn off the DNS proxy?",
@@ -300,15 +300,29 @@ def test_a_question_goes_to_the_user_and_the_answer_is_followed_up_once(plugin, 
     assert task["options"] == QUESTION["options"]
 
     note = start_turn(plugin, turn="t2", user=WAKE_TURN)["context"]
-    assert "needs the user's decision: Change the worker route or turn off the DNS proxy?" in note
-    assert "Options: Worker route: no downtime" in note and "Ask the user in one short message" in note
+    assert "needs a decision: Change the worker route or turn off the DNS proxy?" in note
+    assert "Options: Worker route: no downtime" in note and "answer it yourself" in note
+    assert "ask the user in one short message" in note
     assert "dispatch a new subagent with the answer" in note
     end_turn(plugin, turn="t2")
 
     reminder = start_turn(plugin, turn="t3", user="走 worker route 吧")["context"]
-    assert "waiting for the user's decision" in reminder and QUESTION["question"] in reminder
+    assert "question is still open" in reminder and QUESTION["question"] in reminder
     end_turn(plugin, turn="t3")
     assert start_turn(plugin, turn="t4", user="还有别的吗") is None, "the reminder is delivered once"
+
+
+def test_the_main_agent_can_answer_the_question_itself(plugin, make_ctx):
+    """The chat may already settle what the subagent could not see: answering and dispatching in the
+    turn that showed the question needs no reminder."""
+    make_ctx()
+    _background_question(plugin)
+    note = start_turn(plugin, turn="t2", user=WAKE_TURN)["context"]
+    assert "If the chat, memory or facts you can check settle it, answer it yourself" in note
+    main_tool(plugin, "delegate_task", {"tasks": [{"goal": "Fix the 522 via the worker route (you said no downtime)",
+                                                   "context": GOOD_CONTEXT}]}, turn="t2")
+    end_turn(plugin, turn="t2")
+    assert start_turn(plugin, turn="t3", user="好的") is None
 
 
 def test_dispatching_again_ends_the_wait(plugin, make_ctx):
@@ -321,7 +335,7 @@ def test_dispatching_again_ends_the_wait(plugin, make_ctx):
     assert plugin.ledger.awaiting_decision("s1")
     res = main_tool(plugin, "delegate_task", {"tasks": [{"goal": "Fix the 522 via the worker route",
                                                          "context": GOOD_CONTEXT}]}, turn="t2")
-    assert "It asked the user: Change the worker route" in res["args"]["tasks"][0]["context"]
+    assert "It asked: Change the worker route" in res["args"]["tasks"][0]["context"]
     assert plugin.ledger.awaiting_decision("s1") == []
     end_turn(plugin, turn="t2")
     assert start_turn(plugin, turn="t3", user="how is it going?") is None
@@ -336,9 +350,9 @@ def test_an_inline_question_is_followed_up_on_the_users_next_message(plugin, mak
     _asks(plugin)
     end_turn(plugin)
     note = start_turn(plugin, turn="t2", user="hmm, which is safer?")["context"]
-    assert "needs the user's decision" in note and "waiting for the user's decision" not in note
+    assert "needs a decision" in note and "question is still open" not in note
     end_turn(plugin, turn="t2")
-    assert "waiting for the user's decision" in start_turn(plugin, turn="t3", user="ok, DNS proxy")["context"]
+    assert "question is still open" in start_turn(plugin, turn="t3", user="ok, DNS proxy")["context"]
     end_turn(plugin, turn="t3")
     assert start_turn(plugin, turn="t4", user="thanks") is None
 
@@ -350,9 +364,9 @@ def test_the_follow_up_waits_for_the_users_own_message(plugin, make_ctx):
     end_turn(plugin, turn="t2")
     plugin.ledger.add_note("s1", "[proactive-agent] Subagent finished: \"Rotate the logs\" (status: completed).")
     other = start_turn(plugin, turn="t3", user=WAKE_TURN)["context"]
-    assert "Rotate the logs" in other and "waiting for the user's decision" not in other
+    assert "Rotate the logs" in other and "question is still open" not in other
     end_turn(plugin, turn="t3")
-    assert "waiting for the user's decision" in start_turn(plugin, turn="t4", user="DNS proxy")["context"]
+    assert "question is still open" in start_turn(plugin, turn="t4", user="DNS proxy")["context"]
 
 
 def test_a_question_the_user_has_not_heard_is_repeated_with_the_question(plugin, make_ctx):
@@ -361,10 +375,10 @@ def test_a_question_the_user_has_not_heard_is_repeated_with_the_question(plugin,
     start_turn(plugin, turn="t2", user=WAKE_TURN)
     end_turn(plugin, turn="t2", completed=False, interrupted=True)
     note = start_turn(plugin, turn="t3", user="what happened with the 522?")["context"]
-    assert "has not heard" in note and "It asks the user: Change the worker route" in note
-    assert "waiting for the user's decision" not in note, "the user hears the question first"
+    assert "has not heard" in note and "Its question: Change the worker route" in note
+    assert "question is still open" not in note, "the user hears the question first"
     end_turn(plugin, turn="t3")
-    assert "waiting for the user's decision" in start_turn(plugin, turn="t4", user="worker route")["context"]
+    assert "question is still open" in start_turn(plugin, turn="t4", user="worker route")["context"]
 
 
 def test_other_words_for_a_decision_and_a_missing_question(plugin, make_ctx):
