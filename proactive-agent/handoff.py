@@ -1,14 +1,16 @@
-"""delegate_task gate. A brief that is too short goes back to the main agent once per turn;
-every accepted brief gets the user's own words, memory, working rules and a result schema."""
+"""delegate_task gate. A brief that is too short goes back to the main agent once per turn, and so
+does one that names a file another running subagent is changing. Every accepted brief gets the
+user's own words, memory, the chat's task ledger, working rules and a result schema."""
 
 from __future__ import annotations
 
 import copy
+import re
 import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from . import config, util, workers
+from . import config, ledger, util, workers
 
 BRIEFING_MARKER = "=== Handoff briefing (attached by proactive-agent) ==="
 
@@ -28,19 +30,25 @@ _RULES = (
     "- Do only the goal above. Never delete, stub out or rewrite working code or config just to make a check pass.\n"
     "- If a step fails the same way twice, stop trying variations and report the blocker.\n"
     "- Risky changes (SSH, firewall, DNS, deletes) only with a rollback path; otherwise report what you need.\n"
+    "- Do not edit a file another running subagent is changing; report it as a blocker instead.\n"
     "- Before reporting completed, check the real end state and list it as evidence."
 )
 
 _lock = threading.Lock()
 _returned_turn: Dict[str, str] = {}
+_clash_turn: Dict[str, str] = {}
 
 
-def forget(session_id: str = "") -> None:
+def forget(session_id: str) -> None:
     with _lock:
-        if session_id:
-            _returned_turn.pop(session_id, None)
-        else:
-            _returned_turn.clear()
+        _returned_turn.pop(session_id, None)
+        _clash_turn.pop(session_id, None)
+
+
+def reset_all() -> None:
+    with _lock:
+        _returned_turn.clear()
+        _clash_turn.clear()
 
 
 def _memory_text() -> str:
@@ -61,7 +69,39 @@ def _memory_text() -> str:
     return "\n\n".join(parts)
 
 
-def _briefing(user_words: List[str]) -> str:
+def _running_section(running: List[dict]) -> str:
+    rows = []
+    for t in running[:5]:
+        files = t.get("files") or []
+        changed = f"; changing {', '.join(files[:8])}" if files else ""
+        rows.append(f"- \"{util.short(t.get('goal'), 100)}\" (running {ledger.minutes_since(t.get('started'))} min"
+                    f"{changed})")
+    return "## Other subagents running now\n" + "\n".join(rows) if rows else ""
+
+
+def _unfinished_section(parent: str) -> str:
+    rows = []
+    for t in ledger.unfinished(parent):
+        row = [f"- \"{util.short(t.get('goal'), 100)}\" ended {t['status']} "
+               f"{ledger.minutes_since(t.get('ended'))} min ago."]
+        if t.get("summary"):
+            row.append(f"  Summary: {util.short(t['summary'], 300)}")
+        if t.get("blockers"):
+            row.append("  Blockers: " + "; ".join(util.short(b, 150) for b in t["blockers"][:3]))
+        if t.get("steers"):
+            row.append("  Corrections it got: " + "; ".join(util.short(s, 150) for s in t["steers"][-3:]))
+        if t.get("files"):
+            row.append("  Files it changed: " + ", ".join(t["files"][:8]))
+        if t.get("transcript"):
+            row.append(f"  Full log: {t['transcript']}")
+        rows.append("\n".join(row))
+    if not rows:
+        return ""
+    return ("## Earlier unfinished work in this chat (newest first)\n" + "\n".join(rows)
+            + "\nIf your goal continues one of these, start from what it found instead of redoing it.")
+
+
+def _briefing(user_words: List[str], parent: str, running: List[dict]) -> str:
     parts = [BRIEFING_MARKER]
     if user_words:
         parts.append("## The user's recent messages (latest last)\n"
@@ -69,8 +109,38 @@ def _briefing(user_words: List[str]) -> str:
     memory = _memory_text()
     if memory:
         parts.append("## User and environment memory\n" + memory)
+    for section in (_running_section(running), _unfinished_section(parent)):
+        if section:
+            parts.append(section)
     parts.append("## Working rules\n" + _RULES)
     return "\n\n".join(parts)
+
+
+def _mentions(text: str, path: str) -> bool:
+    """Whether *text* names *path*: the full path, or its last two components (``app/x.toml``),
+    not as part of a longer name."""
+    path = path.strip().replace("\\", "/").rstrip("/")
+    if not path:
+        return False
+    norm = text.replace("\\", "/")
+    candidates = [(path, r"[\w.\-/]")]
+    tail = "/".join(path.split("/")[-2:])
+    if "/" in tail and tail != path:
+        candidates.append((tail, r"[\w.\-]"))
+    for needle, before in candidates:
+        if re.search(rf"(?<!{before}){re.escape(needle)}(?![\w\-/])", norm):
+            return True
+    return False
+
+
+def _clash(tasks: List[dict], running: List[dict]) -> Optional[tuple]:
+    for t in tasks:
+        text = f"{t.get('goal') or ''}\n{t.get('context') or ''}"
+        for other in running:
+            hits = [f for f in other.get("files") or [] if _mentions(text, f)]
+            if hits:
+                return other, hits
+    return None
 
 
 def _return_message(goal: str) -> str:
@@ -83,8 +153,24 @@ def _return_message(goal: str) -> str:
     )
 
 
+def _clash_message(other: dict, files: List[str]) -> str:
+    return (
+        f"[proactive-agent] Handoff returned once: the running subagent \"{util.short(other.get('goal'), 80)}\" is "
+        f"already changing {', '.join(files[:5])}. Two subagents editing the same files overwrite each other. Wait "
+        "for it, redirect it with delegate_task(action='steer'), or stop it (action='stop'). Call delegate_task "
+        "again to dispatch anyway."
+    )
+
+
 def _block(message: str) -> dict:
     return {"action": "block", "message": message, "reason": message}
+
+
+def _first_this_turn(seen: Dict[str, str], session_id: str, turn_id: str) -> bool:
+    with _lock:
+        first = seen.get(session_id) != turn_id
+        seen[session_id] = turn_id
+    return first
 
 
 def gate(session_id: str, turn_id: str, args: Optional[dict], user_words: List[str]) -> Optional[dict]:
@@ -92,6 +178,10 @@ def gate(session_id: str, turn_id: str, args: Optional[dict], user_words: List[s
     action = str(args.get("action") or "spawn").lower()
     if action == "stop":
         workers.mark_stopped_by_parent(str(args.get("subagent_id") or ""))
+        return None
+    if action == "steer":
+        if args.get("subagent_id") and args.get("message"):
+            ledger.add_steer(str(args["subagent_id"]), str(args["message"]))
         return None
     if action != "spawn":
         return None
@@ -107,14 +197,15 @@ def gate(session_id: str, turn_id: str, args: Optional[dict], user_words: List[s
 
     min_chars = int(config.get("handoff_min_context_chars"))
     thin = [t for t in tasks if len(str(t.get("context") or "").strip()) < min_chars]
-    if thin:
-        with _lock:
-            first = _returned_turn.get(session_id) != turn_id
-            _returned_turn[session_id] = turn_id
-        if first:
-            return _block(_return_message(str(thin[0].get("goal") or "")))
+    if thin and _first_this_turn(_returned_turn, session_id, turn_id):
+        return _block(_return_message(str(thin[0].get("goal") or "")))
 
-    briefing = _briefing(user_words)
+    running = workers.running_tasks(session_id)
+    clash = _clash(tasks, running)
+    if clash and _first_this_turn(_clash_turn, session_id, turn_id):
+        return _block(_clash_message(*clash))
+
+    briefing = _briefing(user_words, session_id, running)
     for t in tasks:
         own = str(t.get("context") or "").strip()
         t["context"] = f"{own}\n\n{briefing}" if own else briefing

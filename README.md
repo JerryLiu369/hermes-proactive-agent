@@ -47,7 +47,7 @@ The plugin follows one task through its life and does one simple thing at each s
  You ──► Secretary (main agent) ──── delegate_task ────► Worker (subagent)
           1. Turn budget            2. Handoff            3. Worker limits
              ▲                                                 │
-             └──────────── 4. Results and progress ◄───────────┘
+             └────────── 4. Results and task ledger ◄──────────┘
 ```
 
 1. **The secretary stays responsive.** It may investigate and think, but a turn has a time budget, and long commands
@@ -57,8 +57,8 @@ The plugin follows one task through its life and does one simple thing at each s
    memory and a few working rules.
 3. **Workers do not spin.** A worker is stopped when it keeps repeating the same step. Its step budget is Hermes' own
    `delegation.max_iterations`.
-4. **The loop closes.** The secretary hears how each worker ended and what to check, and you get progress lines while
-   workers run.
+4. **The loop closes.** The secretary hears how each worker ended and what to check. A task ledger remembers every
+   task across restarts, so the next worker starts from what the last one found.
 
 Safety checks that Hermes already does are left to Hermes: subagents' dangerous commands are denied by default
 (`delegation.subagent_auto_approve: false`), and file tools refuse stale overwrites. The plugin makes no extra model
@@ -85,11 +85,15 @@ calls.
 - A `delegate_task` whose `context` is under 120 characters is returned once per turn with a short checklist: what is
   known, exact targets, what must not change, when to stop, what proves success. The second attempt always goes
   through.
+- A `delegate_task` that names a file another running worker is changing is also returned once per turn: wait for
+  that worker, steer it, or stop it. The second attempt always goes through.
 - Every accepted task gets, after the secretary's own context:
   - your last few messages, verbatim, so constraints like "don't touch X" reach the worker;
   - your `USER.md` and `MEMORY.md`, in full (Hermes does not load memory into subagents and already caps both files);
-  - working rules: stay in scope, stop after the same failure twice, risky changes only with a rollback path, check
-    the real end state;
+  - from the task ledger: the other workers running now and the files they are changing, and this chat's recent
+    unfinished tasks (summary, blockers, corrections, changed files, full log path);
+  - working rules: stay in scope, stop after the same failure twice, risky changes only with a rollback path, leave
+    files another worker is changing alone, check the real end state;
   - a default `output_schema` (`status`, `summary`, `evidence`, `blockers`) if the task had none.
 
 ### 3. Worker limits
@@ -103,14 +107,21 @@ These apply to subagents spawned by a governed session.
   without tools to write its report and tells the secretary the task was cut short.
 - **Skills.** Workers keep the skills index and `skill_view`, like the main agent.
 
-### 4. Results and progress
+### 4. Results and task ledger
 
 - When a worker returns, the secretary's next turn gets a note: the evidence the worker reported, or a warning that it
   claimed success without evidence, did not finish, or was stopped by the plugin.
 - The secretary checks running workers on demand with `delegate_task(action='list')`, and the system prompt asks it to
-  stop superseded ones (`action='stop'`). Nothing is injected into every turn.
-- While workers run, a progress line is posted to the chat every 10 minutes, in your language (gateway platforms, via
-  `ctx.post_message`).
+  stop superseded ones (`action='stop'`). Nothing is injected into every turn, and nothing is posted on a timer.
+- The task ledger keeps one record per task: goal, status, files it changed, corrections sent with
+  `action='steer'`, its live transcript path, and how it ended (summary, evidence, blockers). The plugin's hooks write
+  it, with no model calls. It lives in `<hermes home>/plugin-data/proactive-agent/ledger.db` and keeps each chat's
+  last 20 finished tasks for up to 7 days.
+- Hermes does not resume a subagent after it ends or after a restart. Instead, the next worker in the same chat is
+  briefed with the unfinished task's record. After a restart, the secretary is told which tasks were running, that
+  their side effects are unknown, and which files they had changed.
+- The only chat message the plugin sends itself is the alert when a worker is stopped for repeating itself (gateway
+  platforms, via `ctx.post_message`).
 
 ### Scope
 
@@ -141,7 +152,6 @@ plugins:
 | `turn_hard_seconds` | `120` | When editing and execution tools pause for the rest of the turn |
 | `handoff_min_context_chars` | `120` | Shorter `context` is returned once per turn |
 | `worker_repeat_limit` | `5` | Same step with the same result this many times stops a worker (note two repeats earlier) |
-| `progress_interval_seconds` | `600` | Seconds between progress lines (0 disables progress lines and alerts) |
 
 ## Development
 
@@ -162,7 +172,8 @@ skipped otherwise.
 │   ├── context.py         who is calling: governed main agent, worker or cron
 │   ├── secretary.py       turn budget, background detach
 │   ├── handoff.py         delegate_task check and briefing
-│   ├── workers.py         repeat stop, result notes, progress lines
+│   ├── workers.py         repeat stop, result notes, stuck alert
+│   ├── ledger.py          persistent task ledger (SQLite in plugin-data)
 │   ├── prompt.py          system prompt section
 │   └── util.py            text and tool-result helpers
 ├── tests/                 one test file per module, plus end-to-end tests against Hermes
@@ -173,7 +184,7 @@ skipped otherwise.
 ## Compatibility
 
 - Hermes Agent 0.22 or later, with `pre_tool_call` arg rewriting, `subagent_start` / `subagent_stop` and
-  `ctx.post_message` (tested on v0.22.7). Without `post_message` there are no progress lines.
+  `ctx.post_message` (tested on v0.22.7). Without `post_message` there is no stuck alert in the chat.
 - Python 3.10 or later.
 
 ## License

@@ -39,7 +39,7 @@ def test_prompt_only_for_governed_main(plugin, make_ctx):
 def test_config_from_env(plugin, make_ctx):
     make_ctx(config={"worker_repeat_limit": 9})
     assert plugin.config.get("worker_repeat_limit") == 9
-    assert plugin.config.get("progress_interval_seconds") == 600
+    assert plugin.config.get("handoff_min_context_chars") == 120
     with patch.dict(os.environ, {"PROACTIVE_WORKER_REPEAT_LIMIT": "7", "PROACTIVE_GOVERNED_PLATFORMS": "a, b"}):
         assert plugin.config.get("worker_repeat_limit") == 7
         assert plugin.config.governed_platforms() == ["a", "b"]

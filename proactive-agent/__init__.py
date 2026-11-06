@@ -10,8 +10,9 @@ subagents (the "workers") do the slow execution:
    recent messages, memory, working rules and a result schema attached.
 3. Workers: a stop after the same step gives the same result again and again (the step budget
    is Hermes' own delegation.max_iterations).
-4. Results and progress: the secretary is told what to check when a worker returns, and the
-   user gets periodic progress lines.
+4. Results and the task ledger: the secretary is told what to check when a worker returns; a
+   persistent ledger records every task, what it changed and how it ended, survives restarts and
+   briefs the next worker.
 
 Only platforms listed in ``governed_platforms`` (default: weixin) are affected; cron runs and
 workers spawned by ungoverned sessions are never touched.
@@ -22,9 +23,9 @@ from __future__ import annotations
 import logging
 from typing import Any, Optional
 
-from . import config, context, handoff, prompt, secretary, workers
+from . import config, context, handoff, ledger, prompt, secretary, workers
 
-__version__ = "0.1.13"
+__version__ = "0.1.14"
 
 logger = logging.getLogger("hermes.plugins.proactive_agent")
 
@@ -87,6 +88,8 @@ def _post_tool_call(tool_name: str = "", args: Optional[dict] = None, result: An
     worker = _worker_for(**kw)
     if worker is not None:
         workers.post_tool_call(worker, tool_name, args, result, **kw)
+    elif tool_name == "delegate_task" and _main_session(**kw):
+        workers.record_dispatch(result)
 
 
 @_guarded
@@ -118,20 +121,44 @@ def _subagent_stop(**kw: Any) -> None:
 @_guarded
 def _on_turn_end(session_id: str = "", **kw: Any) -> None:
     # Hermes fires on_session_end after every run_conversation, so only per-turn state goes here;
-    # workers, pending result notes and progress timers must outlive the turn.
-    secretary.forget(session_id)
+    # workers and pending result notes must outlive the turn.
+    if session_id:
+        secretary.forget(session_id)
 
 
 @_guarded
-def _on_session_clean(session_id: str = "", **kw: Any) -> None:
-    secretary.forget(session_id)
-    handoff.forget(session_id)
-    workers.forget_parent(session_id)
-    context.forget_session(session_id)
+def _on_session_clean(session_id: str = "", old_session_id: str = "", **kw: Any) -> None:
+    # /new reports the fresh session as session_id and the one that ended as old_session_id.
+    # The ledger is kept: a gateway shutdown fires this too, and restart recovery reads it.
+    ended = old_session_id or session_id
+    if not ended:
+        return
+    secretary.forget(ended)
+    handoff.forget(ended)
+    workers.forget_parent(ended)
+    context.forget_session(ended)
+
+
+def _reset_all() -> None:
+    """Drop all in-memory state (tests)."""
+    secretary.reset_all()
+    handoff.reset_all()
+    workers.reset_all()
+    context.reset_all()
+
+
+def _recover_ledger() -> None:
+    for task in ledger.load():
+        workers.queue_note(task["parent"], workers.lost_note(task))
+        logger.warning("proactive-agent: subagent %s was running when Hermes stopped; marked lost", task["id"])
 
 
 def register(ctx: Any) -> None:
     config.set_ctx(ctx)
+    try:
+        _recover_ledger()
+    except Exception:
+        logger.exception("proactive-agent: task ledger unavailable")
     secretary.install_detach_patch()
     hooks = {
         "pre_llm_call": _pre_llm_call,

@@ -1,6 +1,6 @@
 # Hermes Proactive Agent
 
-> Hermes Agent plugin (`proactive-agent`) that runs the chat agent like a secretary managing subagents: a turn time budget and background detach for the main agent, a handoff check for delegate_task that attaches the user's recent messages and memory, a repeat stop for subagents, result notes and progress lines.
+> Hermes Agent plugin (`proactive-agent`) that runs the chat agent like a secretary managing subagents: a turn time budget and background detach for the main agent, a handoff check for delegate_task that attaches the user's recent messages and memory, a repeat stop for subagents, result notes and a persistent task ledger.
 
 - Repository: https://github.com/JerryLiu369/hermes-proactive-agent
 - Releases: https://github.com/JerryLiu369/hermes-proactive-agent/releases
@@ -20,7 +20,7 @@ The plugin lives in the repository's proactive-agent/ directory. Recommended Her
 
 Roles: the main agent ("secretary") keeps the chat responsive, investigates, decides and writes the handoffs; subagents ("workers") do the slow execution.
 
-One simple step per stage of a task: turn budget (secretary) -> handoff (delegate_task) -> worker limits (subagent) -> results and progress (back to the secretary). Safety checks Hermes already does (denying subagents' dangerous commands, refusing stale file overwrites) are left to Hermes. No extra model calls are made.
+One simple step per stage of a task: turn budget (secretary) -> handoff (delegate_task) -> worker limits (subagent) -> results and task ledger (back to the secretary). Safety checks Hermes already does (denying subagents' dangerous commands, refusing stale file overwrites) are left to Hermes. No extra model calls are made.
 
 ## Features
 
@@ -33,17 +33,20 @@ One simple step per stage of a task: turn budget (secretary) -> handoff (delegat
 
 ### Handoff (delegate_task)
 - context under 120 characters is returned once per turn with a checklist.
-- Accepted tasks get the user's recent messages verbatim, USER.md and MEMORY.md in full, working rules, and a default output_schema (status, summary, evidence, blockers).
+- A brief naming a file another running subagent is changing is returned once per turn.
+- Accepted tasks get the user's recent messages verbatim, USER.md and MEMORY.md in full, the running subagents and the files they change, this chat's recent unfinished tasks from the ledger, working rules, and a default output_schema (status, summary, evidence, blockers).
 
 ### Worker limits
 - Same tool, same arguments, same result: a note after 3 repeats, a stop after 5 (the worker must report "blocked"; the user gets an alert).
 - The step budget is Hermes' delegation.max_iterations.
 - Workers keep the skills index and skill_view.
 
-### Results and progress
+### Results and task ledger
 - When a worker returns, the secretary's next turn notes the reported evidence, missing evidence, an unfinished task or a plugin stop.
-- The secretary checks running workers on demand with delegate_task(action='list'); nothing is injected every turn.
-- Progress lines every 10 minutes via ctx.post_message.
+- The secretary checks running workers on demand with delegate_task(action='list'); nothing is injected every turn and nothing is posted on a timer.
+- Task ledger (SQLite in <hermes home>/plugin-data/proactive-agent/ledger.db, written by hooks only): goal, status, changed files, steers, live transcript path, summary, evidence, blockers. Last 20 finished tasks per chat, up to 7 days.
+- Hermes does not resume a finished or restarted subagent; the next worker is briefed with the unfinished task's record, and after a restart the secretary is told which tasks were lost.
+- The only plugin chat message is the alert when a worker is stopped for repeating itself (ctx.post_message).
 
 Only platforms in governed_platforms (default ["weixin"]) are affected. Cron runs and subagents of ungoverned sessions are untouched.
 
@@ -59,4 +62,3 @@ Keys under plugins.entries.proactive-agent.settings (environment override: PROAC
 | turn_hard_seconds | 120 |
 | handoff_min_context_chars | 120 |
 | worker_repeat_limit | 5 |
-| progress_interval_seconds | 600 |

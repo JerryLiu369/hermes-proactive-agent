@@ -22,8 +22,6 @@ DEFAULTS: dict[str, Any] = {
     "handoff_min_context_chars": 120,
     # Stop a worker after the same step gives the same result this many times.
     "worker_repeat_limit": 5,
-    # Seconds between progress lines in the chat while workers run (0 disables).
-    "progress_interval_seconds": 600,
 }
 
 _ctx: Optional[Any] = None

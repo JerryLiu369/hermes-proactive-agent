@@ -42,12 +42,14 @@ def remember_platform(session_id: str, platform: str) -> None:
             _session_platforms[session_id] = platform.strip().lower()
 
 
-def forget_session(session_id: str = "") -> None:
+def forget_session(session_id: str) -> None:
     with _lock:
-        if session_id:
-            _session_platforms.pop(session_id, None)
-        else:
-            _session_platforms.clear()
+        _session_platforms.pop(session_id, None)
+
+
+def reset_all() -> None:
+    with _lock:
+        _session_platforms.clear()
 
 
 def platform_for(**kw: Any) -> str:

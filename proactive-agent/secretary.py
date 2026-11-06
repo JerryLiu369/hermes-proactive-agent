@@ -151,14 +151,16 @@ def transform_tool_result(session_id: str, tool_name: str, result: Any) -> Optio
     return util.append_note(result, note)
 
 
-def forget(session_id: str = "") -> None:
+def forget(session_id: str) -> None:
     with _lock:
-        if session_id:
-            _turns.pop(session_id, None)
-            _user_words.pop(session_id, None)
-        else:
-            _turns.clear()
-            _user_words.clear()
+        _turns.pop(session_id, None)
+        _user_words.pop(session_id, None)
+
+
+def reset_all() -> None:
+    with _lock:
+        _turns.clear()
+        _user_words.clear()
 
 
 # ---------------------------------------------------------------- background detach

@@ -33,7 +33,7 @@ class FakeContext:
     def get_config(self, key, default=None):
         return self.config.get(key, default)
 
-    def register_hook(self, name, fn):
+    def register_hook(self, name, fn, **kwargs):
         self.hooks[name] = fn
 
     def register_system_prompt_section(self, name, renderer, position="after_memory", max_chars=2000):
@@ -41,11 +41,14 @@ class FakeContext:
 
 
 @pytest.fixture
-def plugin():
+def plugin(tmp_path, monkeypatch):
+    # A real Hermes on sys.path would otherwise put the ledger under the developer's own home.
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
     module = _load()
-    module._on_session_clean()
+    module._reset_all()
+    module.ledger.load(tmp_path / "ledger.db")
     yield module
-    module._on_session_clean()
+    module._reset_all()
     module.config.set_ctx(None)
 
 

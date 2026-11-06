@@ -5,7 +5,9 @@ through Hermes' hook dispatch, so hook kwargs, the worker-thread/contextvar mode
 and config lookup are the real ones.
 """
 
+import os
 import shutil
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -36,7 +38,6 @@ def hermes(tmp_path, monkeypatch):
             "entries": {"proactive-agent": {"settings": {
                 "handoff_min_context_chars": 40,
                 "terminal_auto_detach_seconds": 1,
-                "progress_interval_seconds": 0,
             }}},
         },
     }), encoding="utf-8")
@@ -103,6 +104,11 @@ def test_worker_limits_through_hermes(hermes):
     results = _start_turn("t2")
     text = "\n".join(str(r.get("context", "")) for r in results if isinstance(r, dict))
     assert "The plugin stopped it" in text
+
+    db_path = os.path.join(os.environ["HERMES_HOME"], "plugin-data", "proactive-agent", "ledger.db")
+    with sqlite3.connect(db_path) as db:
+        row = db.execute("SELECT parent, status FROM tasks WHERE id = 'sa-0-e2e'").fetchone()
+    assert row == (SESSION, "blocked"), "the ledger lives in Hermes' plugin-data directory"
 
 
 def test_background_detach_with_real_wait_loop(hermes, monkeypatch):

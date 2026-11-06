@@ -1,4 +1,4 @@
-"""Workers: repeat stop, result notes and progress lines."""
+"""Workers: repeat stop, result notes and the stuck alert."""
 
 import json
 import threading
@@ -16,7 +16,14 @@ def test_worker_only_governed_under_governed_parent(plugin, make_ctx):
 
 def test_worker_reminded_then_stopped_on_repeated_step(plugin, make_ctx):
     posted = []
-    make_ctx(post_message=lambda text: posted.append(text) or SimpleNamespace(ok=True))
+    alerted = threading.Event()
+
+    def post(text):
+        posted.append(text)
+        alerted.set()
+        return SimpleNamespace(ok=True)
+
+    make_ctx(post_message=post)
     start_turn(plugin, user="又 522 了")
     worker = spawn_worker(plugin)
     curl = {"command": "curl -sI https://app.example.com/ping"}
@@ -33,6 +40,7 @@ def test_worker_reminded_then_stopped_on_repeated_step(plugin, make_ctx):
     assert "STOP" in note
     blocked = w_tool(plugin, "terminal", {"command": "ls"}, api="r9")
     assert blocked["action"] == "block" and "final report" in blocked["message"]
+    assert alerted.wait(2) and posted == ["后台子任务卡住了，已叫停：Fix the 522 on app.example.com。主助手会接着处理。"]
 
 
 def test_different_steps_failing_alike_are_not_repeats(plugin, make_ctx):
@@ -122,23 +130,17 @@ def test_running_workers_are_not_injected_each_turn(plugin, make_ctx):
     start_turn(plugin)
     spawn_worker(plugin)
     assert start_turn(plugin, turn="t2") is None
-    assert plugin.workers.active_for_parent("s1")
+    assert plugin.workers.running_tasks("s1")
     assert main_tool(plugin, "delegate_task", {"action": "stop", "subagent_id": "sa-0-abc"}, turn="t2") is None
-    assert not plugin.workers.active_for_parent("s1"), "stopped workers drop out of progress lines"
+    assert not plugin.workers.running_tasks("s1"), "stopped workers are no longer listed as running"
 
 
-def test_progress_tick_posts_to_chat(plugin, make_ctx):
+def test_no_periodic_chat_messages(plugin, make_ctx):
     posted = []
-    done = threading.Event()
-
-    def post(text):
-        posted.append(text)
-        done.set()
-        return SimpleNamespace(ok=True)
-
-    make_ctx(post_message=post, config={"progress_interval_seconds": 3600})
+    make_ctx(post_message=lambda text: posted.append(text) or SimpleNamespace(ok=True))
     start_turn(plugin, user="帮我部署一下")
+    before = threading.active_count()
     spawn_worker(plugin)
-    plugin.workers._progress_tick("s1")
-    assert done.wait(2)
-    assert posted[0].startswith("后台进展：1 个子任务在跑")
+    w_post(plugin, "terminal", {"command": "make deploy"}, json.dumps({"output": "ok", "exit_code": 0}))
+    assert threading.active_count() == before, "spawning a worker starts no timer"
+    assert posted == []

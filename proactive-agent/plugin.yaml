@@ -1,6 +1,6 @@
 name: proactive-agent
-version: "0.1.13"
-description: "Runs the Hermes chat agent like a secretary that manages workers: a turn time budget and background detach for the main agent, a handoff check for delegate_task, a repeat stop for subagents, result notes and progress lines."
+version: "0.1.14"
+description: "Runs the Hermes chat agent like a secretary that manages workers: a turn time budget and background detach for the main agent, a handoff check for delegate_task, a repeat stop for subagents, result notes and a persistent task ledger."
 author: Jerry Liu
 license: MIT
 homepage: https://github.com/JerryLiu369/hermes-proactive-agent
@@ -42,7 +42,3 @@ config_schema:
     type: int
     default: 5
     description: "Stop a subagent after the same step gives the same result this many times (reminder two repeats earlier)."
-  progress_interval_seconds:
-    type: int
-    default: 600
-    description: "Seconds between progress lines in the chat while subagents run (0 disables progress lines and alerts)."
