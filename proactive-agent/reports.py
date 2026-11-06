@@ -1,18 +1,39 @@
-"""Subagent results: checked, recorded and reported to the main agent.
+"""Subagent results: checked, recorded and reported until the user has heard them.
 
 When a subagent ends, its task is closed in the ledger and a note for the main agent waits there
 until that chat's next turn: the evidence to check, or why the task did not finish. After a
 restart, the tasks a stopped Hermes left running are reported lost.
+
+A result counts as heard once a turn that showed it to the main agent ends with a reply that no
+user message cut into. When the user writes while a result is being reported (Hermes then
+redirects or steers the turn, or interrupts it), the result stays unreported: the next tool
+result of that turn says so, and if the turn ends without one, the main agent is woken through
+Hermes' own message injection to report it; the user's next message carries it otherwise.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any, List
+import threading
+from typing import Any, Dict, List, Optional, Tuple
 
-from . import ledger, util, workers
+from . import config, ledger, util, workers
 
 logger = logging.getLogger("hermes.plugins.proactive_agent")
+
+WAKE_MARKER = "[proactive-agent] No new message from the user."
+_WAKE = (f"{WAKE_MARKER} Your last reply answered the message the user sent while subagent results were "
+         "reaching you, so the user has not heard those results yet (listed below). Tell the user now, briefly. "
+         "If your last reply already covered them, reply exactly [SILENT].")
+_NOTHING_LEFT = ("[proactive-agent] Nothing is left to report: the user already got those results in an "
+                 "earlier reply. Reply exactly [SILENT].")
+# Each wake answers a user message that cut into a report, so wakes are bounded by the user's own
+# messages; the cap only guards against a host that loops.
+_MAX_WAKES = 2
+
+_lock = threading.Lock()
+# session -> (turn key, interjections already answered by a reminder in that turn)
+_reminded: Dict[str, Tuple[str, int]] = {}
 
 # The status values of the default output schema, and other words workers use for the same outcomes.
 REPORT_STATUSES = ("completed", "partial", "blocked", "failed")
@@ -21,11 +42,16 @@ _FAILED_STATUSES = ("error", "failure", "aborted", "cancelled", "canceled")
 
 
 def record_dispatch(result: Any) -> None:
-    """Keep each task's live transcript path from the delegate_task dispatch response."""
+    """Keep each task's live transcript path, and whether it runs in the background, from the
+    delegate_task dispatch response."""
     data = util.parse_json(result)
     if not isinstance(data, dict):
         return
     ids, paths = data.get("subagent_ids"), data.get("live_transcripts")
+    if data.get("status") == "dispatched" and isinstance(ids, list):
+        for sid in ids:
+            if isinstance(sid, str) and sid:
+                ledger.mark_background(sid)
     if isinstance(ids, list) and isinstance(paths, list) and len(ids) == len(paths):
         for sid, path in zip(ids, paths):
             if isinstance(sid, str) and sid and isinstance(path, str) and path:
@@ -120,7 +146,11 @@ def on_subagent_stop(**kw: Any) -> None:
         final = ledger.STOPPED
     else:
         final = outcome
-    ledger.finish(w["id"], final, summary, evidence, blockers, files)
+    # Only a background result arrives in a turn of its own that a user message can cut into; an
+    # inline one is the delegate_task tool result. A task the main agent stopped itself is not news.
+    background = bool((ledger.get(w["id"]) or {}).get("background"))
+    ledger.finish(w["id"], final, summary, evidence, blockers, files,
+                  unreported=background and final != ledger.STOPPED)
     ledger.add_note(w["parent_session"], _finished_note(w, final, evidence, kw.get("duration_ms")))
 
 
@@ -135,9 +165,96 @@ def _lost_note(task: dict) -> str:
 def recover_lost() -> None:
     """Open the ledger and tell each chat which of its subagents a previous Hermes process left running."""
     for task in ledger.load():
+        ledger.mark_unreported(task["id"])
         ledger.add_note(task["parent"], _lost_note(task))
         logger.warning("proactive-agent: subagent %s was running when Hermes stopped; marked lost", task["id"])
 
 
-def pending_notes(parent_session: str) -> str:
-    return "\n\n".join(ledger.pop_notes(parent_session))
+# ---------------------------------------------------------------- results the user has not heard
+
+def _unreported_note(tasks: List[dict]) -> str:
+    rows = []
+    for t in tasks:
+        summary = util.short(t.get("summary"), 200)
+        rows.append(f"- \"{util.short(t.get('goal'), 80)}\" ended {t.get('status')} "
+                    f"{ledger.minutes_since(t.get('ended'))} min ago" + (f": {summary}" if summary else "."))
+    return ("[proactive-agent] The user has not heard these subagent results yet: the turn that received them "
+            "was cut short or answered another message.\n" + "\n".join(rows) + "\nTheir full results are earlier in this chat. "
+            "Answer the user's latest message and, in the same reply, tell the user these results: what was done, "
+            "what is left.")
+
+
+def is_wake(user_message: Any) -> bool:
+    return isinstance(user_message, str) and WAKE_MARKER in user_message
+
+
+def pending_notes(parent_session: str, turn: str, user_message: Any = None) -> str:
+    """Notes for the start of a main-agent turn: new results first, then those the user still has not heard."""
+    notes = ledger.pop_notes(parent_session)
+    shown = ledger.show_unreported(parent_session, turn)
+    again = [t for t in shown if t["seen_before"]]
+    if again:
+        notes.append(_unreported_note(again))
+    elif is_wake(user_message) and not shown and not notes:
+        notes.append(_NOTHING_LEFT)
+    return "\n\n".join(notes)
+
+
+def _answered(session_id: str, turn: str) -> int:
+    seen_turn, count = _reminded.get(session_id, ("", 0))
+    return count if seen_turn == turn else 0
+
+
+def tool_result_note(session_id: str, turn: Optional[dict], result: Any) -> Optional[str]:
+    """After the user wrote into a turn that is reporting results, say so on the next tool result."""
+    if not turn:
+        return None
+    with _lock:
+        if turn["interjections"] <= _answered(session_id, turn["key"]):
+            return None
+        _reminded[session_id] = (turn["key"], turn["interjections"])
+    tasks = ledger.unreported_in_turn(session_id, turn["key"])
+    return util.append_note(result, _unreported_note(tasks)) if tasks else None
+
+
+def _wake(session_key: str) -> bool:
+    ctx = config.host()
+    inject = getattr(ctx, "inject_message", None)
+    if not session_key or not callable(inject):
+        return False
+    try:
+        # An internal turn: Hermes queues it behind a running turn and never lets it interrupt one.
+        return bool(inject(_WAKE, session_key=session_key))
+    except Exception as e:
+        logger.warning("proactive-agent: could not wake the main agent: %s", e)
+        return False
+
+
+def on_turn_end(session_id: str, turn: Optional[dict], completed: bool) -> None:
+    """Settle the results this turn reported, or keep them for a wake or the next turn."""
+    if not turn:
+        return
+    with _lock:
+        answered = _answered(session_id, turn["key"])
+        _reminded.pop(session_id, None)
+    tasks = ledger.unreported_in_turn(session_id, turn["key"])
+    if not tasks or not completed:
+        # An interrupted or failed turn: the user's next message (Hermes runs it next) repeats them.
+        return
+    if turn["interjections"] <= answered:
+        ledger.settle(t["id"] for t in tasks)
+        return
+    due = [t["id"] for t in tasks if int(t.get("wakes") or 0) < _MAX_WAKES]
+    if due and _wake(turn.get("session_key") or ""):
+        ledger.add_wake(due)
+        logger.info("proactive-agent: woke %s to report %d result(s) the user has not heard", session_id, len(due))
+
+
+def forget(session_id: str) -> None:
+    with _lock:
+        _reminded.pop(session_id, None)
+
+
+def reset_all() -> None:
+    with _lock:
+        _reminded.clear()

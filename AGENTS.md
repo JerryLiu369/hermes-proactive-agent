@@ -8,7 +8,7 @@ Guidance for agents (and people) changing this repository. Read it before you ch
 **main agent** (the secretary) stays reachable, decides and reports; **subagents** (workers, started with
 `delegate_task`) do the slow work; every job ends with a result that is checked and recorded.
 
-It exists because of five problems a chat agent has when it delegates on its own, and it keeps four promises, one
+It exists because of six problems a chat agent has when it delegates on its own, and it keeps four promises, one
 module each:
 
 | Problem | Promise | Module |
@@ -16,7 +16,7 @@ module each:
 | The main agent does long work itself and the chat goes silent | 1. The chat stays responsive | `secretary.py` |
 | A subagent starts blind | 2. Subagents start informed | `handoff.py` |
 | A stuck subagent repeats the same step | 3. Subagents do not spin | `workers.py` |
-| "Done" is a self-report; what a subagent did is lost when it ends or Hermes restarts | 4. Results are checked and remembered | `reports.py`, `ledger.py` |
+| "Done" is a self-report; a result the user writes over never reaches them; what a subagent did is lost when it ends or Hermes restarts | 4. Results are checked, reported and remembered | `reports.py`, `ledger.py` |
 
 Supporting modules: `context.py` (who is calling: governed main agent, subagent or cron run), `prompt.py` (system
 prompt section), `config.py` (settings), `util.py` (text and tool-result helpers), `__init__.py` (hook wiring).
@@ -29,10 +29,10 @@ A new feature should fit one of the four promises. If it does not, question it b
 These are decisions the maintainer made. Do not change them without being asked.
 
 - **Talk only to the main agent.** The plugin adds notes to the main agent's context (`pre_llm_call` context, tool
-  result notes, `pre_tool_call` block messages). It never posts to the user's chat, and the main agent decides what
-  the user hears.
+  result notes, `pre_tool_call` block messages) and, when a report was cut short, wakes it with an internal message
+  through `ctx.inject_message`. It never posts to the user's chat, and the main agent decides what the user hears.
 - **No timed messages.** No progress lines, timers or periodic injections. Notes are triggered by events (a turn
-  starts, a tool returns, a subagent ends) and delivered once.
+  starts, a tool returns, a subagent ends, a turn ends with a result unreported) and delivered once.
 - **No model calls.** Every check is plain code.
 - **Hermes keeps its own job.** Before adding anything, check whether Hermes already does it (see "Already in
   Hermes" below). The plugin only fills gaps Hermes leaves open.
@@ -45,15 +45,18 @@ These are decisions the maintainer made. Do not change them without being asked.
 
 ## Hermes facts the code relies on
 
-Checked against the Hermes Agent v0.22.7 source. File paths are relative to the `hermes-agent` checkout.
+Checked against the Hermes Agent v0.22.7 source (last checked at `v0.22.7+canary.20261104`). File paths are relative to
+the `hermes-agent` checkout.
 
 **Hooks and their arguments**
 
 - `pre_llm_call` (`agent/turn_context.py`): `session_id, task_id, turn_id, user_message, conversation_history,
   is_first_turn, model, platform, parent_session_id, sender_id`. A returned `{"context": str}` is added to the user
-  message, not the system prompt.
+  message, not the system prompt. `conversation_history` is `list(messages)`, the live turn list.
 - `pre_api_request` (`agent/turn_api_request.py`): includes `session_id, turn_id, platform, request_messages,
-  conversation_history`. Fires before every model call, so it sees mid-turn user messages.
+  conversation_history`. Fires before every model call, so it sees mid-turn user messages. `conversation_history`
+  is the same live list (the user's own words, `api_content` sidecars kept); `request_messages` is the wire copy
+  (sidecars substituted, plugin context appended). Its return value is ignored.
 - `pre_tool_call` (`hermes_cli/plugins.py`): `tool_name, args, task_id, session_id, tool_call_id, turn_id,
   api_request_id`. **No `platform`**: the platform comes from `pre_llm_call` (`context.remember_platform`) or the
   session env. Directives: `{"action": "block", "message"}` (the message becomes the tool result) and
@@ -67,8 +70,9 @@ Checked against the Hermes Agent v0.22.7 source. File paths are relative to the 
   child_role, child_summary, child_status, tool_call_history, duration_ms`. **No subagent id**: the worker is found
   by `child_session_id`. `child_status` is `completed`, `interrupted` or `failed`. `tool_call_history` items carry
   `tool_name`, `tool_input.targets` (not full args) and `status` (`ok`, `error`, `unknown`).
-- `on_session_end` (`agent/turn_finalizer.py`) fires after **every** `run_conversation`, i.e. every turn. Only
-  per-turn state may be dropped there.
+- `on_session_end` (`agent/turn_finalizer.py`) fires after **every** `run_conversation`, i.e. every turn, with
+  `session_id, task_id, turn_id, completed, failed, interrupted, turn_exit_reason, model, platform`. `completed`
+  means a reply exists and the turn neither failed nor was interrupted. Only per-turn state may be dropped there.
 - `on_session_reset`: `/new` passes the new session as `session_id` and the ended one as `old_session_id`
   (`gateway/slash_commands_session.py`). Gateway shutdown fires it too (`gateway/run_shutdown_session_end.py`), so
   it must never delete the ledger.
@@ -80,8 +84,12 @@ Checked against the Hermes Agent v0.22.7 source. File paths are relative to the 
 - Cron: task id `cron:<job>:<run>`, session `cron_<job>_<time>` (`cron/scheduler.py`), the contextvars
   `cron.execution_identity.current_cron_execution()` and `gateway.session_cron.current_execution()`, and a truthy
   `HERMES_CRON_SESSION`.
-- Session facts such as `HERMES_SESSION_ID` and `HERMES_SESSION_PLATFORM` are contextvars read with
-  `gateway.session_context.get_session_env`; hook workers run in a copy of that context.
+- Session facts such as `HERMES_SESSION_ID`, `HERMES_SESSION_PLATFORM` and `HERMES_SESSION_KEY` (the gateway route
+  key, `agent:<profile>:<platform>:...`) are contextvars read with `gateway.session_context.get_session_env`; the
+  gateway binds them per turn (`gateway/run_turn_runner.py`) and hook workers run in a copy of that context.
+- The background memory/skill review (`agent/background_review.py`) is a fork with the parent's `session_id` and
+  `_persist_disabled`: it fires no `pre_llm_call` or `on_session_end`, but `pre_api_request` and the tool hooks
+  fire for it under its own turn id. Only `pre_llm_call` starts a main-agent turn in `secretary`.
 
 **Tools and delegation**
 
@@ -95,6 +103,17 @@ Checked against the Hermes Agent v0.22.7 source. File paths are relative to the 
   They cannot use `clarify`, `memory`, `send_message` or `cronjob_manage`. Hermes cannot resume a finished
   subagent; a follow-up is a new subagent.
 - Mid-turn user messages carry `[OUT-OF-BAND USER MESSAGE` (`agent/prompt_builder.py`) or `display_kind: "steer"`.
+- How a user message reaches a busy chat (`gateway/run_inbound.py`, `busy_input_mode`): `interrupt` (default)
+  redirects the live turn for text, else `agent.interrupt()` ends it (`interrupted=True`) and the text runs as the
+  next turn; `steer` delivers it after the current tool batch; `queue` runs it after the turn. A redirect during a
+  model request (`agent/interrupt_control.py`, `agent/conversation_loop.py::_apply_active_turn_redirect`) appends
+  `{"role": "user", "content": <text>, "api_content": "[Context from the interrupted assistant response]\n[This
+  response was interrupted by a user correction.]..."}` and the same turn continues; during tool execution it
+  degrades to a steer.
+- Internal events (async-delegation results, plugin injections) never interrupt or steer a running turn; they queue
+  behind it. Async results arrive as a user row starting `[ASYNC DELEGATION BATCH COMPLETE — <id>]` or
+  `[ASYNC DELEGATION TASK FAILED` (`tools/process_registry_notifications.py`); `display_kind:
+  "internal_notification"` is stored in the database only.
 
 **Other extension points**
 
@@ -104,6 +123,16 @@ Checked against the Hermes Agent v0.22.7 source. File paths are relative to the 
 - `ctx.register_system_prompt_section(id, fn, *, position, max_chars)`: `fn` receives read-only session info, and the
   rendered text is frozen per session.
 - `ctx.get_config(key)` reads `plugins.entries.proactive-agent.settings.<key>`.
+- `ctx.inject_message(content, role="user", *, session_key=None, origin=None) -> bool` (`hermes_cli/plugins.py`,
+  `hermes_cli/plugins_injection.py`) starts an internal turn in an existing gateway session
+  (`gateway/run_plugin_injection.py`). It needs `plugins.entries.<plugin id>.allow_gateway_injection: true` and, for
+  a messaging chat, the `session_key`; otherwise it returns `False` and Hermes logs why. A busy session queues it.
+- A reply that is exactly `[SILENT]` (or `NO_REPLY`) is dropped only on a machinery turn (an internal event such as
+  an `inject_message` turn, or `reply_expected` false; `gateway/response_filters.py::silence_allowed`). On a user
+  turn Hermes logs "silence marker rejected on a user turn" and sends `gateway.errors.unexpected_silence` instead
+  (`gateway/run_turn_persistence.py`). So the plugin suggests `[SILENT]` only in its own wake turn. Hermes never
+  merges a queued internal event with a user message (`gateway/run_busy.py::_queue_or_replace_pending_event`), and
+  each turn of a queued chain is judged by its own kind (`gateway/run_turn.py`).
 - `plugins.plugin_storage.plugin_db(name, file)` opens the ledger's SQLite file under `plugin-data/`.
 
 **Already in Hermes (do not rebuild)**
@@ -116,6 +145,8 @@ Checked against the Hermes Agent v0.22.7 source. File paths are relative to the 
 - Dangerous-command approvals (`approvals`; subagents resolve them non-interactively) and user shell hooks (`hooks`,
   with tool matchers, which can block `pre_tool_call`).
 - Memory and skill nudges with a background review (`memory.nudge_interval`, `skills.creation_nudge_interval`).
+- Delivery of subagent results to the main agent (the async-delegation wake). The plugin only makes sure they then
+  reach the user.
 - The bundled `security-guidance` plugin, which scans file writes.
 
 ## Working on the code
@@ -149,7 +180,7 @@ uv run --group dev ruff check
   live in the READMEs and `llms-full.txt`; `llms.txt` is the compact index an answer engine reads first, so it carries
   the same numbers in short answers and then links out.
 - `README.md` and `README_zh.md` follow llmstxt.org-style answer-first order: an answer block under 100 words, then the
-  five problems, the four promises, the design rules, the settings, then the FAQ. Keep that order and keep the two
+  six problems, the four promises, the design rules, the settings, then the FAQ. Keep that order and keep the two
   files mirrored section by section.
 - `llms.txt` follows the llmstxt.org v2 shape: H1, one blockquote summary, plain details (citable facts and direct
   answers, no headings), then `##` sections that are markdown link lists, with `## Optional` last. `llms-full.txt` is

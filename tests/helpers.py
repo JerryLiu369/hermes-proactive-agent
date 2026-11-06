@@ -19,6 +19,12 @@ def start_turn(plugin, session="s1", turn="t1", platform="weixin", history=None,
                                 conversation_history=history or [], user_message=user)
 
 
+def end_turn(plugin, session="s1", turn="t1", completed=True, interrupted=False):
+    # Hermes fires on_session_end after every run_conversation (agent/turn_finalizer.py).
+    plugin._on_turn_end(session_id=session, task_id="main", turn_id=turn, completed=completed, failed=False,
+                        interrupted=interrupted, turn_exit_reason="text_response(finish_reason=stop)", platform="weixin")
+
+
 def main_tool(plugin, name, args=None, session="s1", turn="t1"):
     return plugin._pre_tool_call(name, args or {}, session_id=session, turn_id=turn, task_id="main")
 
