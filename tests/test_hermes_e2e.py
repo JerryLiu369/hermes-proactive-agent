@@ -15,7 +15,7 @@ import time
 import pytest
 import yaml
 
-from conftest import REPO_ROOT
+from helpers import REPO_ROOT
 
 plugins_mod = pytest.importorskip("hermes_cli.plugins")
 

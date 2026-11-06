@@ -1,19 +1,11 @@
 name: proactive-agent
-version: "0.1.11"
+version: "0.1.12"
 description: "Runs the Hermes chat agent like a secretary that manages workers: a turn time budget and background detach for the main agent, a handoff check for delegate_task, a repeat stop for subagents, result notes and progress lines."
 author: Jerry Liu
 license: MIT
-hooks:
-  - pre_llm_call
-  - pre_api_request
-  - pre_tool_call
-  - post_tool_call
-  - transform_tool_result
-  - subagent_start
-  - subagent_stop
-  - on_session_end
-  - on_session_reset
-  - on_session_finalize
+homepage: https://github.com/JerryLiu369/hermes-proactive-agent
+tags: [delegation, subagents, governance]
+requires_hermes: ">=0.22"
 provides_hooks:
   - pre_llm_call
   - pre_api_request
