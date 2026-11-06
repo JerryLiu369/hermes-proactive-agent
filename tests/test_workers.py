@@ -4,7 +4,7 @@ import json
 import threading
 from types import SimpleNamespace
 
-from helpers import main_tool, spawn_worker, start_turn, w_note, w_post, w_tool
+from helpers import CHILD, main_tool, spawn_worker, start_turn, w_note, w_post, w_tool
 
 
 def test_worker_only_governed_under_governed_parent(plugin, make_ctx):
@@ -88,3 +88,58 @@ def test_no_periodic_chat_messages(plugin, make_ctx):
     w_post(plugin, "terminal", {"command": "make deploy"}, json.dumps({"output": "ok", "exit_code": 0}))
     assert threading.active_count() == before, "spawning a worker starts no timer"
     assert posted == []
+
+
+# ---------------------------------------------------------------- refused steps (issue #7)
+
+DENIED = json.dumps({"output": "", "exit_code": -1, "status": "blocked",
+                     "error": "BLOCKED: User denied this command. The user has NOT consented to this action.",
+                     "user_summary": "You denied this command — it did not run."})
+PENDING = json.dumps({"output": "", "exit_code": -1, "error": "", "status": "pending_approval",
+                      "approval_pending": True, "command": "systemctl restart nginx", "description": "restart"})
+
+
+def _transform(plugin, args, result, name="terminal"):
+    out = plugin._transform_tool_result(name, args, result, **CHILD)
+    return json.loads(out)["proactive_agent_note"] if out else None
+
+
+def test_an_approval_refusal_tells_the_worker_to_bring_it_back(plugin, make_ctx):
+    make_ctx()
+    start_turn(plugin)
+    spawn_worker(plugin)
+    rm = {"command": "rm -rf /srv/app/cache"}
+    note = _transform(plugin, rm, DENIED)
+    assert "approval or a safety rule refused this call" in note and "needs_decision" in note
+    assert "Do not retry it, rephrase it or reach the same result another way" in note
+    assert _transform(plugin, rm, DENIED) is None, "said once per call"
+    assert "refused this call" in _transform(plugin, {"command": "rm -rf /srv/app/tmp"}, DENIED)
+    pending = _transform(plugin, {"command": "systemctl restart nginx"}, PENDING)
+    assert "waiting for the user's approval" in pending and "cannot wait" in pending
+    assert _transform(plugin, {"command": "false"}, json.dumps({"output": "", "exit_code": 1,
+                                                                 "error": "command failed"})) is None
+
+
+def test_a_hook_refusal_is_noted_on_the_next_result(plugin, make_ctx):
+    make_ctx()
+    start_turn(plugin)
+    spawn_worker(plugin)
+    push = {"command": "git push origin main"}
+    # agent/tool_executor.py::_blocked_tool_result: no transform_tool_result for a blocked call
+    plugin._post_tool_call("terminal", push, json.dumps({"error": "pushes to main need review"}), status="blocked",
+                           error_type="plugin_block", error_message="pushes to main need review", **CHILD)
+    note = _transform(plugin, {"command": "git status"}, json.dumps({"output": "clean", "exit_code": 0}))
+    assert "Your earlier call terminal git push origin main was refused by a hook or plugin rule" in note
+    assert "pushes to main need review" in note and "needs_decision" in note
+    assert _transform(plugin, {"command": "git status"}, json.dumps({"output": "clean", "exit_code": 0})) is None
+
+
+def test_the_plugins_own_stop_is_not_a_refusal(plugin, make_ctx):
+    make_ctx()
+    start_turn(plugin)
+    worker = spawn_worker(plugin)
+    worker["stop_reason"] = "ran the same step 5 times"
+    blocked = w_tool(plugin, "terminal", {"command": "ls"})
+    plugin._post_tool_call("terminal", {"command": "ls"}, json.dumps({"error": blocked["message"]}),
+                           status="blocked", error_type="plugin_block", error_message=blocked["message"], **CHILD)
+    assert worker["pending_note"] is None

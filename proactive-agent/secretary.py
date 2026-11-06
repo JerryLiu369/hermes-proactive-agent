@@ -65,7 +65,8 @@ def _interjections(messages: Any) -> List[str]:
     return found
 
 
-def _by_user(text: Any) -> bool:
+def by_user(text: Any) -> bool:
+    """Whether *text* is a message the user wrote, not one Hermes or this plugin injected."""
     return isinstance(text, str) and bool(text.strip()) and not text.lstrip().startswith(_MACHINE_PREFIXES)
 
 
@@ -74,7 +75,7 @@ def _user_messages(messages: Any) -> List[str]:
         return []
     texts = (util.message_text(m) for m in messages if isinstance(m, dict) and m.get("role") == "user"
              and m.get("display_kind") != "internal_notification")
-    return [t for t in texts if _by_user(t)]
+    return [t for t in texts if by_user(t)]
 
 
 def user_words(session_id: str) -> List[str]:
@@ -110,7 +111,7 @@ def turn_facts(session_id: str, turn_id: str = "") -> Optional[dict]:
 def on_turn_start(session_id: str, turn_id: str, platform: str, messages: Any, user_message: Any) -> None:
     context.remember_platform(session_id, platform)
     words = _user_messages(messages)
-    if _by_user(user_message) and (not words or words[-1] != user_message):
+    if by_user(user_message) and (not words or words[-1] != user_message):
         words.append(user_message)
     with _lock:
         _turns[session_id] = _new_turn(turn_id, len(_interjections(messages)),

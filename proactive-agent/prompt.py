@@ -21,4 +21,5 @@ def render(session_info: Optional[Any] = None) -> str:
 {background}- A subagent has no memory and cannot see this chat. Write each delegate_task context yourself: what is already known, the exact targets, what must not change, when to stop, and what proves success.
 - To see which subagents are still running, use delegate_task action='list'. If the user corrects a running task, send the correction with action='steer' instead of spawning a new one; if the plan changed, stop the superseded one (action='stop').
 - Subagent reports are self-reports: check the evidence, then tell the user. If the user wrote while a result came in, answer them and report the result in the same reply.
+- Subagents cannot ask the user, so one that needs a decision ends with status needs_decision and a question. Ask the user in one short message with its options, then dispatch a new subagent with the answer. Work that may need the user's choice can still be delegated.
 - Tell the user in one line what runs in the background. Never expose internal ids, PIDs or raw commands."""

@@ -1,6 +1,8 @@
 """delegate_task gate. A brief that is too short goes back to the main agent once per turn, and so
 does one that names a file another running subagent is changing. Every accepted brief gets the
-user's own words, memory, the chat's task ledger, working rules and a result schema."""
+user's own words, memory, the chat's task ledger, working rules and a result schema. The rules and
+the schema's needs_decision status are how a subagent, which cannot ask the user, brings a
+decision back instead of guessing or working around a refusal."""
 
 from __future__ import annotations
 
@@ -22,14 +24,28 @@ DEFAULT_OUTPUT_SCHEMA: Dict[str, Any] = {
         "evidence": {"type": "array", "items": {"type": "string"},
                      "description": "Checkable proof: URL + status code, command + exit code, file path, service state."},
         "blockers": {"type": "array", "items": {"type": "string"}},
+        "question": {"type": "string",
+                     "description": "With needs_decision: the one question for the user, with the facts they need."},
+        "options": {"type": "array", "items": {"type": "string"},
+                    "description": "With needs_decision: the choices, each with what it would mean."},
     },
     "required": ["status", "summary"],
+    # Hermes validates the final answer against this schema, so a needs_decision report without a
+    # question gets a correction turn.
+    "if": {"properties": {"status": {"const": reports.DECISION}}, "required": ["status"]},
+    "then": {"required": ["question"]},
 }
 
 _RULES = (
     "- Do only the goal above. Never delete, stub out or rewrite working code or config just to make a check pass.\n"
     "- If a step fails the same way twice, stop trying variations and report the blocker.\n"
-    "- Risky changes (SSH, firewall, DNS, deletes) only with a rollback path; otherwise report what you need.\n"
+    "- You cannot ask the user. If the goal needs a choice only the user can make (between workable approaches, a "
+    "production change, spending, deleting data) and their words and memory above do not settle it, stop and report "
+    "status \"needs_decision\" with the question and the options. Do not guess.\n"
+    "- If approval or a rule refuses a command (a BLOCKED result, a hook, an approval still pending), do not retry it "
+    "or reach the same result another way. If the goal needs it, report \"needs_decision\": what was refused and why "
+    "it is needed. A refusal that says the user denied it may be automatic.\n"
+    "- Risky changes (SSH, firewall, DNS, deletes) only with a rollback path; otherwise report \"needs_decision\".\n"
     "- Do not edit a file another running subagent is changing; report it as a blocker instead.\n"
     "- Before reporting completed, check the real end state and list it as evidence."
 )
@@ -81,13 +97,16 @@ def _running_section(running: List[dict]) -> str:
 
 def _unfinished_section(parent: str) -> str:
     rows = []
-    for t in ledger.unfinished(parent):
+    tasks = ledger.unfinished(parent)
+    for t in tasks:
         row = [f"- \"{util.short(t.get('goal'), 100)}\" ended {t['status']} "
                f"{ledger.minutes_since(t.get('ended'))} min ago."]
         if t.get("summary"):
             row.append(f"  Summary: {util.short(t['summary'], 300)}")
         if t.get("blockers"):
             row.append("  Blockers: " + "; ".join(util.short(b, 150) for b in t["blockers"][:3]))
+        if t.get("question"):
+            row.append("  It asked the user: " + reports.describe_question(t["question"], t.get("options") or []))
         if t.get("steers"):
             row.append("  Corrections it got: " + "; ".join(util.short(s, 150) for s in t["steers"][-3:]))
         if t.get("files"):
@@ -97,8 +116,10 @@ def _unfinished_section(parent: str) -> str:
         rows.append("\n".join(row))
     if not rows:
         return ""
+    asked = any(t.get("question") for t in tasks)
     return ("## Earlier unfinished work in this chat (newest first)\n" + "\n".join(rows)
-            + "\nIf your goal continues one of these, start from what it found instead of redoing it.")
+            + "\nIf your goal continues one of these, start from what it found instead of redoing it."
+            + (" For a task that asked the user a question, look for their answer above." if asked else ""))
 
 
 def _briefing(user_words: List[str], parent: str, running: List[dict]) -> str:
@@ -205,6 +226,8 @@ def gate(session_id: str, turn_id: str, args: Optional[dict], user_words: List[s
         return util.block(_clash_message(*clash))
 
     briefing = _briefing(user_words, session_id, running)
+    # A new dispatch is the follow-up a question for the user waits for; stop reminding of it.
+    ledger.stop_awaiting(t["id"] for t in ledger.awaiting_decision(session_id))
     for t in tasks:
         own = str(t.get("context") or "").strip()
         t["context"] = f"{own}\n\n{briefing}" if own else briefing

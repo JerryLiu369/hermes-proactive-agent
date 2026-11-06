@@ -10,7 +10,7 @@ English | [简体中文](README_zh.md)
 
 ## Answer first
 
-**Hermes Proactive Agent is a plugin for [Hermes Agent](https://hermes-agent.nousresearch.com) that keeps a chat assistant responsive while subagents do the slow work.** It caps every main-agent turn at 60 s (a reminder to answer or delegate) and 120 s (editing and execution paused), moves terminal commands past 30 s to the background, returns `delegate_task` briefs under 120 characters, stops a subagent at the fifth identical tool result, repeats each background result until you have heard it, and records every task in a SQLite ledger that survives restarts. Zero model calls; it never posts into your chat or blocks a tool.
+**Hermes Proactive Agent is a plugin for [Hermes Agent](https://hermes-agent.nousresearch.com) that keeps a chat assistant responsive while subagents do the slow work.** It caps each main-agent turn at 60 s (a reminder to answer or delegate) and 120 s (editing and execution paused), backgrounds terminal commands past 30 s, returns `delegate_task` briefs under 120 characters, stops a subagent at its fifth identical tool result, brings back questions only you can answer, repeats each background result until you hear it, and records every task in a SQLite ledger that survives restarts. Zero model calls; it never posts into your chat.
 
 ## Install
 
@@ -44,7 +44,7 @@ Six failures of ungoverned delegation, and the mechanism that answers each:
 |---|---|
 | The main agent runs builds and long debugging itself, and the chat goes silent | A per-turn time budget (60 s reminder, 120 s pause on editing and execution); terminal commands past 30 s move to the background |
 | A subagent starts blind: no conversation, no constraints, no idea what was tried | Briefs under 120 characters are returned; every accepted brief carries your words, memory and earlier work |
-| A stuck subagent repeats the same step until its budget runs out | Identical tool results are counted; a warning at 3, a hard stop at 5 |
+| A stuck subagent repeats the same step until its budget runs out, or guesses at a choice only you can make | Identical tool results are counted: a warning at 3, a hard stop at 5. A subagent that needs your decision, or is refused by approval or a rule, ends with a question the main agent brings to you |
 | "Done" is a self-report | The main agent is shown the evidence the subagent reported, or told it has none |
 | You write just as a result comes in, the main agent answers your message, and the result never reaches you | The result stays unreported until a reply you did not interrupt; it is repeated in the same turn, by waking the main agent, or with your next message |
 | What a subagent did is lost when it ends or Hermes restarts | A SQLite ledger keeps every task, survives restarts and briefs the next subagent |
@@ -63,6 +63,8 @@ Status quo is a vanilla Hermes Agent with delegation enabled and this plugin abs
 | Write contention | Found by accident | A brief naming a file another subagent is changing is returned once per turn |
 | Subagent starting context | Empty | Last 6 user messages verbatim, `USER.md`, `MEMORY.md`, running subagents and their files, unfinished tasks, working rules, default `output_schema` |
 | Identical-result loop | Hermes warns subagents but does not stop them | Warn at 3, stop at 5, then tool calls are refused and the subagent must report `blocked` |
+| A choice only you can make | The subagent cannot ask you, so it guesses or gives up | It ends with `needs_decision`, a question and options; the main agent asks you and dispatches again with your answer |
+| A step refused by approval or a hook | The subagent may try another way to the same result | A note on the spot: do not work around it; if the goal needs it, report `needs_decision` |
 | Result verification | "Done" is a self-report | Next turn opens with the evidence, or a warning about missing evidence, unfinished work or a repeat stop |
 | A result arrives while you type | The main agent may answer only your message; the result is never mentioned | Repeated until a reply you did not interrupt; the main agent is woken to report it if needed |
 | Durability | Gone when the subagent ends or the gateway restarts | SQLite ledger, last 20 finished tasks per chat, up to 7 days |
@@ -103,14 +105,20 @@ A second attempt always goes through. Every accepted task then gets a briefing a
 | `USER.md` and `MEMORY.md` | Hermes does not load memory into subagents |
 | Subagents running now and their files | So it leaves those files alone |
 | This chat's recent unfinished tasks | Summary, blockers, corrections, changed files and log path, so it builds on them |
-| Working rules | Stay in scope, stop after the same failure twice, keep risky changes reversible, verify the end state |
-| A default `output_schema` | `status`, `summary`, `evidence`, `blockers`, unless the task brought its own |
+| Working rules | Stay in scope, stop after the same failure twice, bring back choices only you can make, never work around a refusal, keep risky changes reversible, verify the end state |
+| A default `output_schema` | `status` (`completed`, `partial`, `blocked`, `needs_decision` or `failed`), `summary`, `evidence`, `blockers`, and `question` and `options` for a decision, unless the task brought its own |
 
-### 3. Subagents do not spin
+### 3. Subagents do not spin or guess
 
-A subagent that runs the same tool with the same arguments and gets the same result is warned at the third time and stopped at the fifth. Repeats count over the whole run, not only back to back. Results are compared by their first line, with long numbers and hashes masked, so a fresh request id does not make a result new. Once stopped, its tool calls are refused and it must report `blocked`.
+**It does not spin.** A subagent that runs the same tool with the same arguments and gets the same result is warned at the third time and stopped at the fifth. Repeats count over the whole run, not only back to back. Results are compared by their first line, with long numbers and hashes masked, so a fresh request id does not make a result new. Once stopped, its tool calls are refused and it must report `blocked`.
 
 Hermes' own loop guard also notices repeats, but for subagents it only warns. Their overall step budget stays with Hermes (`delegation.max_iterations`).
+
+**It does not guess.** A subagent cannot ask you anything: Hermes gives it no `clarify` tool and cannot resume it once it ends. So when the goal needs a choice only you can make (two workable approaches, a production change, spending, deleting data) and your words and memory do not settle it, its working rules tell it to stop and report `needs_decision` with one question and the options. Hermes checks the report against the schema and asks once more if the question is missing.
+
+The same goes for a step that Hermes' approval or a hook refuses, or that waits for an approval nobody can give during the run. The subagent gets a note on that result (for a hook, on its next one): do not retry it or reach the same result another way; if the goal needs it, report `needs_decision`. A refusal that says the user denied it may be automatic: in some setups Hermes denies a subagent's dangerous commands without asking anyone.
+
+The main agent is told to ask you in one short message with the options, and to dispatch a new subagent with your answer. That subagent is briefed with the earlier task's record, question included. If the main agent has not dispatched again by your next message after you heard the question, it is reminded once with that message.
 
 ### 4. Results are checked, reported and remembered
 
@@ -124,7 +132,7 @@ Hermes' own loop guard also notices repeats, but for subagents it only warns. Th
 
 Writing several times does not lose it either: each message that cuts in leads to a fresh reminder. At most 2 wakes are sent per result, and a result older than a day is no longer chased.
 
-**Every task is recorded.** The task ledger keeps one record per task: goal, status, the files it changed, corrections sent with `action='steer'`, its live transcript path, how it ended (summary, evidence, blockers) and whether you have heard the result.
+**Every task is recorded.** The task ledger keeps one record per task: goal, status, the files it changed, corrections sent with `action='steer'`, its live transcript path, how it ended (summary, evidence, blockers, and the question it asked you) and whether you have heard the result.
 
 **Work carries over.** Hermes cannot resume a subagent once it ends, so the next subagent in the chat is briefed with the unfinished task's record instead. If Hermes restarts mid-task, the main agent is told which tasks were lost, that their side effects are unknown, and which files they had touched. Notes and unreported results wait in the ledger, so a restart never drops them.
 
@@ -176,6 +184,9 @@ Enable the plugin. The main agent is nudged at 60 s to answer or delegate and lo
 **I sent a message just as a subagent finished, and the agent never told me the result. What fixes that?**
 The plugin keeps that result marked unreported until a reply you did not interrupt. The main agent is reminded on its next tool result, woken for a short follow-up if it answered you without one, or reminded with your next message. Set `allow_gateway_injection: true` for the wake; see Install.
 
+**Can a subagent ask me a question?**
+Not directly: Hermes gives subagents no way to reach you. With the plugin, a subagent that needs your decision, or whose step was refused by approval or a hook, ends with status `needs_decision`, a question and options. The main agent asks you, then dispatches a new subagent with your answer, briefed with what the first one found.
+
 **How do I stop subagents from repeating the same tool call forever?**
 Identical tool, arguments and result are counted over the whole run: a warning at 3, a hard stop at 5, then tool calls are refused so the subagent must report `blocked`. Lowering `delegation.max_iterations` to about 60 catches the remaining cases earlier.
 
@@ -189,7 +200,7 @@ Any governed foreground terminal command still running after 30 s is detached th
 Hermes does not load chat history or memory into subagents. This plugin appends your last messages verbatim plus `USER.md` and `MEMORY.md` to every accepted brief, and refuses briefs under 120 characters once per turn.
 
 **How do I verify a subagent actually finished?**
-Every accepted task carries a default `output_schema` of `status`, `summary`, `evidence`, `blockers`. The main agent's next turn opens with the reported evidence, or explicitly warns about a success claim without evidence, an unfinished task, or a repeat stop.
+Every accepted task carries a default `output_schema` of `status`, `summary`, `evidence`, `blockers`, plus `question` and `options` when it needs your decision. The main agent's next turn opens with the reported evidence, or explicitly warns about a success claim without evidence, an unfinished task, or a repeat stop.
 
 **Does it make extra model calls or cost tokens?**
 No model calls of its own. It only adds text to the main agent's context. A wake to finish an interrupted report is one extra turn of the main agent, the same cost as one message from you.
@@ -198,7 +209,7 @@ No model calls of its own. It only adds text to the main agent's context. A wake
 No. Only platforms in `governed_platforms` (default `["weixin"]`) and their subagents are governed. Cron runs and unlisted platforms are untouched.
 
 **Does it replace Hermes' approval, file protection or loop guard?**
-No. Those stay with Hermes, and the plugin fails open: a plugin error is logged and never blocks a tool.
+No. Those stay with Hermes, and the plugin fails open: a plugin error is logged and never blocks a tool. A subagent that Hermes' approval refuses is only told not to work around it and to bring the question back.
 
 ## Compatibility
 
@@ -219,9 +230,9 @@ skipped otherwise.
 ```
 proactive-agent/      the plugin, and all that Hermes installs
 ├── secretary.py      1. turn budget, background detach, user messages mid-turn
-├── handoff.py        2. brief checks and briefing
-├── workers.py        3. subagent registry, repeat stop
-├── reports.py        4. result notes, unreported results, restart recovery
+├── handoff.py        2. brief checks and briefing; 3. working rules and result schema
+├── workers.py        3. subagent registry, repeat stop, notes on refused steps
+├── reports.py        3. questions for you; 4. result notes, unreported results, restart recovery
 ├── ledger.py         4. task ledger
 ├── prompt.py         system prompt section for the main agent
 ├── context.py        who is calling: main agent, subagent or cron

@@ -5,6 +5,7 @@ through Hermes' hook dispatch, so hook kwargs, the worker-thread/contextvar mode
 and config lookup are the real ones.
 """
 
+import json
 import os
 import shutil
 import sqlite3
@@ -188,3 +189,48 @@ def test_report_cut_short_by_the_user_reaches_the_next_turn_through_hermes(herme
     results = _start_turn("t3")
     text = "\n".join(str(r.get("context", "")) for r in results if isinstance(r, dict))
     assert "has not heard" in text and "freed 3.4 GiB" in text
+
+
+def _child_ids():
+    return {"task_id": "sa-0-e2e", "session_id": "child-e2e", "turn_id": "ct"}
+
+
+def _spawn_e2e_worker():
+    _start_turn()
+    plugins_mod.invoke_hook("subagent_start", parent_session_id=SESSION, parent_turn_id="t1",
+                            parent_subagent_id=None, child_session_id="child-e2e",
+                            child_subagent_id="sa-0-e2e", child_role="leaf", child_goal="清理缓存")
+
+
+def test_hermes_enforces_the_question_of_a_needs_decision_report(hermes):
+    from tools.delegation_output_schema import coerce_output_schema, validate_output
+
+    _start_turn()
+    _, modified = _pre_tool("delegate_task", {"tasks": [{"goal": "修复 522", "context": CONTEXT}]})
+    schema, err = coerce_output_schema(modified["tasks"][0]["output_schema"])
+    assert err is None, err
+    asks = {"status": "needs_decision", "summary": "两种修法", "question": "改 worker 路由还是关掉 DNS 代理？",
+            "options": ["改路由：不停机，要重新部署", "关代理：立即生效，暴露源站 IP"]}
+    assert validate_output(json.dumps(asks, ensure_ascii=False), schema) == (True, [])
+    valid, errors = validate_output(json.dumps({"status": "needs_decision", "summary": "两种修法"}), schema)
+    assert not valid and any("question" in e for e in errors), errors
+    done = {"status": "completed", "summary": "ok", "evidence": ["HTTP/2 200"]}
+    assert validate_output(json.dumps(done), schema) == (True, [])
+
+
+def test_hermes_approval_refusals_reach_the_worker_as_a_note(hermes):
+    from tools.approval import _COMMAND_GATE
+    from tools.terminal_tool import _error_json
+
+    _spawn_e2e_worker()
+    denied = _error_json(_COMMAND_GATE.cli_denied.format(breaker=""), status="blocked")
+    pending = _error_json("", status="pending_approval", approval_pending=True, command="systemctl restart nginx",
+                          description="restart a service", pattern_key="systemctl", smart_denied=False,
+                          allow_permanent=True)
+    for command, result, expected in (("rm -rf /srv/cache", denied, "refused this call"),
+                                      ("systemctl restart nginx", pending, "waiting for the user's approval")):
+        out = plugins_mod.invoke_hook("transform_tool_result", tool_name="terminal", args={"command": command},
+                                      result=result, duration_ms=5, status="error", error_type="tool_error",
+                                      error_message=None, tool_call_id=f"c-{command}", **_child_ids())
+        note = json.loads(next(r for r in out if isinstance(r, str)))["proactive_agent_note"]
+        assert expected in note and "needs_decision" in note

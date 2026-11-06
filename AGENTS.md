@@ -15,7 +15,7 @@ module each:
 |---|---|---|
 | The main agent does long work itself and the chat goes silent | 1. The chat stays responsive | `secretary.py` |
 | A subagent starts blind | 2. Subagents start informed | `handoff.py` |
-| A stuck subagent repeats the same step | 3. Subagents do not spin | `workers.py` |
+| A stuck subagent repeats the same step, or guesses at a choice only the user can make | 3. Subagents do not spin or guess | `workers.py` (rules and schema in `handoff.py`, the question in `reports.py`) |
 | "Done" is a self-report; a result the user writes over never reaches them; what a subagent did is lost when it ends or Hermes restarts | 4. Results are checked, reported and remembered | `reports.py`, `ledger.py` |
 
 Supporting modules: `context.py` (who is calling: governed main agent, subagent or cron run), `prompt.py` (system
@@ -62,8 +62,13 @@ the `hermes-agent` checkout.
   session env. Directives: `{"action": "block", "message"}` (the message becomes the tool result) and
   `{"action": "modify", "args"}` (shallow-merged into the original args).
 - `post_tool_call` and `transform_tool_result` (`model_tools.py`): add `result, duration_ms, status, error_type,
-  error_message`. `status` is `"ok"` or `"error"`. The first string returned by `transform_tool_result` replaces the
-  result.
+  error_message`. `status` is `"ok"` or `"error"`, or `"blocked"` for a refused call (below). The first string
+  returned by `transform_tool_result` replaces the result.
+- A call a `pre_tool_call` hook refused (a plugin or a user shell hook from `hooks`, which register on the same
+  manager, `agent/shell_hooks.py`) gets the result `{"error": <message>}` and one `post_tool_call` with
+  `status="blocked"`, `error_type="plugin_block"` and `error_message`; no `transform_tool_result` runs for it
+  (`agent/tool_executor.py::_blocked_tool_result`, `_publish_sequential_result`). Hermes' default shell-hook message
+  is `"Blocked by shell hook."`.
 - `subagent_start` (`tools/delegate_tool.py`): `parent_session_id, parent_turn_id, parent_subagent_id,
   child_session_id, child_subagent_id, child_role, child_goal`.
 - `subagent_stop` (`tools/delegate_tool_results.py`): `parent_session_id, parent_turn_id, child_session_id,
@@ -100,8 +105,25 @@ the `hermes-agent` checkout.
   `secretary.RED_ALLOWED_TOOLS` against the live registry.
 - The `delegate_task` dispatch result has `subagent_ids` and `live_transcripts` (`tools/delegate_tool_dispatch.py`).
 - Subagents run with `skip_memory=True`, so `USER.md` and `MEMORY.md` reach them only through the handoff briefing.
-  They cannot use `clarify`, `memory`, `send_message` or `cronjob_manage`. Hermes cannot resume a finished
-  subagent; a follow-up is a new subagent.
+  They cannot use `clarify`, `memory`, `send_message` or `cronjob_manage` (`DELEGATE_BLOCKED_TOOLS`,
+  `tools/delegate_tool_toolsets.py`; the tools are removed, not refused). Hermes cannot resume a finished subagent; a
+  follow-up is a new subagent. Hermes has no channel for a subagent to ask the user or its parent anything, and the
+  `delegate_task` description tells the parent "subagents cannot ask questions" (`tools/delegate_tool.py`), which
+  is why the prompt section says a `needs_decision` report brings the question back.
+- `output_schema` (`tools/delegation_output_schema.py`): checked with `jsonschema` when the task is spawned (an invalid
+  schema fails the whole call) and appended to the child's `context` as an "OUTPUT CONTRACT". The final answer is
+  validated with jsonschema, so an enum is enforced (`needs_decision` must be in it); on failure the child gets one
+  correction turn, then its raw text is passed on with `schema_valid: false`. `child_status` stays `completed`
+  either way, and `child_summary` is the answer text (the JSON itself when valid). The summary is capped by
+  `delegation.max_summary_chars` (default 24000) before `subagent_stop` sees it.
+- Approval of a subagent's dangerous command (`tools/approval.py`, `tools/terminal_tool.py`): every refusal is a
+  result whose `error` starts with `BLOCKED` (terminal: `{"output": "", "exit_code": -1, "error": "BLOCKED: ...",
+  "status": "blocked"}`; execute_code: `"status": "error"`). In a CLI process the subagent's approval callback
+  denies on its own (`delegation.subagent_auto_approve: false`, `tools/delegate_tool_config.py`) and the message
+  still reads "BLOCKED: User denied this command." In the gateway the subagent shares the parent's session, so the
+  user gets an approval card and the subagent waits (`approvals.timeout`, default 300 s); with no live notifier the
+  terminal result is `{"error": "", "status": "pending_approval", "approval_pending": true, ...}` with no message.
+  `approvals.mode` defaults to `smart`, which may approve without asking. `post_tool_call` gets `status="error"`.
 - Mid-turn user messages carry `[OUT-OF-BAND USER MESSAGE` (`agent/prompt_builder.py`) or `display_kind: "steer"`.
 - How a user message reaches a busy chat (`gateway/run_inbound.py`, `busy_input_mode`): `interrupt` (default)
   redirects the live turn for text, else `agent.interrupt()` ends it (`interrupted=True`) and the text runs as the
@@ -142,8 +164,9 @@ the `hermes-agent` checkout.
   `workers.py` stops them.
 - Step budget: `delegation.max_iterations`. Background vs inline delegation: `delegation.gateway_mode` (`auto` joins
   inline where interim assistant messages are off).
-- Dangerous-command approvals (`approvals`; subagents resolve them non-interactively) and user shell hooks (`hooks`,
-  with tool matchers, which can block `pre_tool_call`).
+- Dangerous-command approvals (`approvals`; see above for what a subagent gets) and user shell hooks (`hooks`, with
+  tool matchers, which can block `pre_tool_call`). The plugin never decides an approval; it only tells a refused
+  subagent not to work around it and to report `needs_decision`.
 - Memory and skill nudges with a background review (`memory.nudge_interval`, `skills.creation_nudge_interval`).
 - Delivery of subagent results to the main agent (the async-delegation wake). The plugin only makes sure they then
   reach the user.

@@ -9,13 +9,18 @@ user message cut into. When the user writes while a result is being reported (He
 redirects or steers the turn, or interrupts it), the result stays unreported: the next tool
 result of that turn says so, and if the turn ends without one, the main agent is woken through
 Hermes' own message injection to report it; the user's next message carries it otherwise.
+
+A worker that needs a decision only the user can make ends with status needs_decision, a question
+and options. The main agent is told to ask the user and dispatch again with the answer, and on
+the user's next message after hearing the question it is reminded once, unless it has dispatched
+again by then.
 """
 
 from __future__ import annotations
 
 import logging
 import threading
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from . import config, ledger, util, workers
 
@@ -36,9 +41,11 @@ _lock = threading.Lock()
 _reminded: Dict[str, Tuple[str, int]] = {}
 
 # The status values of the default output schema, and other words workers use for the same outcomes.
-REPORT_STATUSES = ("completed", "partial", "blocked", "failed")
+DECISION = "needs_decision"
+REPORT_STATUSES = ("completed", "partial", "blocked", DECISION, "failed")
 _DONE_STATUSES = ("completed", "complete", "success", "done")
 _FAILED_STATUSES = ("error", "failure", "aborted", "cancelled", "canceled")
+_DECISION_STATUSES = ("needs_input", "needs_user", "needs_approval", "awaiting_decision", "awaiting_user")
 
 
 def record_dispatch(result: Any) -> None:
@@ -74,6 +81,8 @@ def _outcome(report: dict, child_status: Any) -> str:
         own = "completed"
     elif own in _FAILED_STATUSES:
         own = "failed"
+    elif own in _DECISION_STATUSES:
+        own = DECISION
     elif own and own not in REPORT_STATUSES:
         own = "partial"
     if hermes in ("failed", "interrupted") and own in ("", "completed"):
@@ -83,6 +92,23 @@ def _outcome(report: dict, child_status: Any) -> str:
 
 def _strings(value: Any) -> List[str]:
     return [str(v) for v in value if str(v).strip()] if isinstance(value, list) else []
+
+
+def _options(value: Any) -> List[str]:
+    """The choices a worker offered; an option may also be an object such as {label, consequence}."""
+    out = []
+    for v in value if isinstance(value, list) else []:
+        text = " - ".join(str(x) for x in v.values() if str(x).strip()) if isinstance(v, dict) else str(v)
+        if text.strip():
+            out.append(text)
+    return out
+
+
+def describe_question(question: Any, options: Sequence[str]) -> str:
+    text = util.short(question, 300)
+    if options:
+        text += " Options: " + "; ".join(util.short(o, 120) for o in options[:6]) + "."
+    return text
 
 
 def _written_paths(history: Any) -> List[str]:
@@ -98,7 +124,8 @@ def _written_paths(history: Any) -> List[str]:
     return paths
 
 
-def _finished_note(w: dict, final: str, evidence: List[str], duration_ms: Any) -> str:
+def _finished_note(w: dict, final: str, evidence: List[str], duration_ms: Any, question: str = "",
+                   options: Sequence[str] = ()) -> str:
     minutes = (duration_ms or 0) / 60000.0
     lines = [f"[proactive-agent] Subagent finished: \"{util.short(w['goal'], 80)}\" "
              f"(status: {final}, {len(w['rounds'])} tool rounds, {minutes:.1f} min)."]
@@ -111,6 +138,12 @@ def _finished_note(w: dict, final: str, evidence: List[str], duration_ms: Any) -
         lines.append("- You stopped it (action='stop'). Nothing to report unless the user asks about it."
                      + (f" It had changed: {', '.join(changed[:5])}." if changed else "")
                      + " A follow-up subagent is briefed with its partial work automatically.")
+    elif final == DECISION:
+        lines.append((f"- It needs the user's decision: {describe_question(question, options)}" if question else
+                      "- It needs the user's decision but asked no clear question; read its summary.")
+                     + " Ask the user in one short message, with the options. Do not choose for them unless their "
+                     "own words or memory already decide it. When they answer, dispatch a new subagent with the "
+                     "answer; it is briefed with this task's record automatically.")
     elif final == "completed":
         if evidence:
             lines.append("- Evidence it reported: " + "; ".join(util.short(e, 120) for e in evidence[:5])
@@ -149,9 +182,11 @@ def on_subagent_stop(**kw: Any) -> None:
     # Only a background result arrives in a turn of its own that a user message can cut into; an
     # inline one is the delegate_task tool result. A task the main agent stopped itself is not news.
     background = bool((ledger.get(w["id"]) or {}).get("background"))
+    question = str(report.get("question") or "").strip() if final == DECISION else ""
+    options = _options(report.get("options")) if question else []
     ledger.finish(w["id"], final, summary, evidence, blockers, files,
-                  unreported=background and final != ledger.STOPPED)
-    ledger.add_note(w["parent_session"], _finished_note(w, final, evidence, kw.get("duration_ms")))
+                  unreported=background and final != ledger.STOPPED, question=question, options=options)
+    ledger.add_note(w["parent_session"], _finished_note(w, final, evidence, kw.get("duration_ms"), question, options))
 
 
 def _lost_note(task: dict) -> str:
@@ -176,8 +211,10 @@ def _unreported_note(tasks: List[dict]) -> str:
     rows = []
     for t in tasks:
         summary = util.short(t.get("summary"), 200)
+        asks = (f" It asks the user: {describe_question(t['question'], t.get('options') or [])}"
+                if t.get("question") else "")
         rows.append(f"- \"{util.short(t.get('goal'), 80)}\" ended {t.get('status')} "
-                    f"{ledger.minutes_since(t.get('ended'))} min ago" + (f": {summary}" if summary else "."))
+                    f"{ledger.minutes_since(t.get('ended'))} min ago" + (f": {summary}" if summary else ".") + asks)
     return ("[proactive-agent] The user has not heard these subagent results yet: the turn that received them "
             "was cut short or answered another message.\n" + "\n".join(rows) + "\nTheir full results are earlier in this chat. "
             "Answer the user's latest message and, in the same reply, tell the user these results: what was done, "
@@ -188,8 +225,29 @@ def is_wake(user_message: Any) -> bool:
     return isinstance(user_message, str) and WAKE_MARKER in user_message
 
 
-def pending_notes(parent_session: str, turn: str, user_message: Any = None) -> str:
-    """Notes for the start of a main-agent turn: new results first, then those the user still has not heard."""
+def _decision_note(tasks: List[dict]) -> str:
+    rows = [f"- \"{util.short(t.get('goal'), 80)}\" asked: {describe_question(t['question'], t.get('options') or [])}"
+            for t in tasks]
+    return ("[proactive-agent] A subagent is waiting for the user's decision:\n" + "\n".join(rows)
+            + "\nIf the user has answered it, in this message or earlier, dispatch a new subagent with the answer now; "
+            "it is briefed with that task's record automatically. If not, leave it until they do.")
+
+
+def _decision_reminder(parent_session: str, turn: str, by_user: bool) -> Optional[str]:
+    """Once the user has heard a question, remind the main agent of it on their next message."""
+    heard = [t for t in ledger.awaiting_decision(parent_session) if not t.get("unreported")]
+    # An inline result's question reached the main agent as the delegate_task result; its note lands now.
+    ledger.mark_asked([t["id"] for t in heard if not t.get("asked_turn")], turn)
+    due = [t for t in heard if t.get("asked_turn") and t["asked_turn"] != turn] if by_user else []
+    if not due:
+        return None
+    ledger.stop_awaiting(t["id"] for t in due)
+    return _decision_note(due)
+
+
+def pending_notes(parent_session: str, turn: str, user_message: Any = None, by_user: bool = False) -> str:
+    """Notes for the start of a main-agent turn: new results first, then those the user still has not
+    heard, then a question the user has heard and may be answering (*by_user*: the user wrote this turn)."""
     notes = ledger.pop_notes(parent_session)
     shown = ledger.show_unreported(parent_session, turn)
     again = [t for t in shown if t["seen_before"]]
@@ -197,6 +255,9 @@ def pending_notes(parent_session: str, turn: str, user_message: Any = None) -> s
         notes.append(_unreported_note(again))
     elif is_wake(user_message) and not shown and not notes:
         notes.append(_NOTHING_LEFT)
+    reminder = _decision_reminder(parent_session, turn, by_user)
+    if reminder:
+        notes.append(reminder)
     return "\n\n".join(notes)
 
 
@@ -242,7 +303,7 @@ def on_turn_end(session_id: str, turn: Optional[dict], completed: bool) -> None:
         # An interrupted or failed turn: the user's next message (Hermes runs it next) repeats them.
         return
     if turn["interjections"] <= answered:
-        ledger.settle(t["id"] for t in tasks)
+        ledger.settle((t["id"] for t in tasks), turn["key"])
         return
     due = [t["id"] for t in tasks if int(t.get("wakes") or 0) < _MAX_WAKES]
     if due and _wake(turn.get("session_key") or ""):

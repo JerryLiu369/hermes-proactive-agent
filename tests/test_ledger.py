@@ -319,3 +319,15 @@ def test_one_segment_path_with_dot_slash(plugin):
     assert mentions("edit wrangler.toml", "./wrangler.toml")
     assert not mentions("edit app/wrangler.toml", "wrangler.toml")
     assert not mentions("edit ../wrangler.toml", "wrangler.toml")
+
+
+def test_a_question_for_the_user_survives_a_reload(plugin, tmp_path):
+    path = tmp_path / "ask.db"
+    plugin.ledger.load(path)
+    plugin.ledger.start("sa-1", "s1", "Fix the 522", "c1")
+    plugin.ledger.finish("sa-1", "needs_decision", "two ways", question="Route or proxy?", options=["route", "proxy"])
+    plugin.ledger.load(path)
+    waiting = plugin.ledger.awaiting_decision("s1")
+    assert [(t["question"], t["options"]) for t in waiting] == [("Route or proxy?", ["route", "proxy"])]
+    plugin.ledger.stop_awaiting(["sa-1"])
+    assert plugin.ledger.awaiting_decision("s1") == []
