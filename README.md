@@ -10,7 +10,7 @@ English | [简体中文](README_zh.md)
 
 A plugin for [Hermes Agent](https://hermes-agent.nousresearch.com) that makes the chat agent work like a good secretary. The main agent stays reachable while subagents do the slow work, and every job ends with a result that has been checked, has reached you, and is written down.
 
-It is meant for talking to Hermes from a messaging app (WeChat by default). It makes no model calls of its own and never writes into your chat; what you hear still comes from the main agent.
+It is meant for talking to Hermes from a messaging app. It makes no model calls of its own and never writes into your chat; what you hear still comes from the main agent.
 
 ## Install
 
@@ -99,7 +99,7 @@ The ledger is at `<hermes home>/plugin-data/proactive-agent/ledger.db`. It keeps
 - **No model calls.** Every check is plain code.
 - **Hermes keeps its own jobs.** Command approval, stale-file protection, step budgets, loop warnings and handing finished results to the main agent all stay with Hermes. The plugin only fills the gaps.
 - **It never gets in the way.** If the plugin itself fails, the error is logged and the tool call goes ahead.
-- **It only acts where you ask.** Only the platforms in `governed_platforms` (default `["weixin"]`) and the subagents they start are governed. Other platforms and cron jobs are left alone.
+- **It only acts where you ask.** Only the platforms in `governed_platforms` and the subagents they start are governed. Other platforms and cron jobs are left alone.
 
 ## Settings
 

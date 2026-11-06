@@ -205,7 +205,7 @@ uv run --group dev ruff check
 - `README.md` and `README_zh.md` are written for people, as plain explanation in this order: what the plugin is,
   install, why (the six problems), what it does (one section per promise), principles (the design rules), settings, a
   short FAQ, then compatibility and development. Keep the two files mirrored section by section; write the Chinese one
-  as natural Chinese, not a line-by-line translation. Phrasing aimed at search and answer engines (answer blocks,
+  as natural Chinese, not a line-by-line translation (there the main agent is "助手" and a subagent is "子代理"). Phrasing aimed at search and answer engines (answer blocks,
   comparison matrices, question-shaped headings) belongs in `llms.txt` and `llms-full.txt`, not in the READMEs.
 - `llms.txt` follows the llmstxt.org v2 shape: H1, one blockquote summary, plain details (citable facts and direct
   answers, no headings), then `##` sections that are markdown link lists, with `## Optional` last. `llms-full.txt` is
