@@ -39,7 +39,8 @@ Five problems when a chat agent delegates on its own, and the plugin's answer to
 - Accepted tasks get a briefing: the user's recent messages verbatim, USER.md and MEMORY.md, running subagents and their files, this chat's recent unfinished tasks (summary, blockers, steers, changed files, log path), working rules, and a default output_schema (status, summary, evidence, blockers).
 
 ### 3. Subagents do not spin
-- Same tool, same arguments, same result: a note at 3, a stop at 5; the subagent must then report "blocked". The overall step budget is Hermes' delegation.max_iterations.
+- Same tool, same arguments, same result: a note at 3, a stop at 5; the subagent must then report "blocked". Repeats count over the whole run, not only back to back; results are compared by their first line with long numbers and hashes masked.
+- Hermes' own loop guard only warns subagents. The overall step budget is Hermes' delegation.max_iterations.
 
 ### 4. Results are checked and remembered
 - The main agent's next turn notes the reported evidence, missing evidence, an unfinished task, or a repeat stop (then it tells the user in one line). Tasks the main agent stopped with action='stop' are noted as such.
@@ -50,7 +51,7 @@ Five problems when a chat agent delegates on its own, and the plugin's answer to
 
 - Talks only to the main agent, never to the user's chat.
 - No model calls.
-- Command approval, stale-file protection, step budgets, stall detection and result delivery stay with Hermes.
+- Command approval, stale-file protection, step budgets, loop warnings and result delivery stay with Hermes; the plugin only adds what Hermes leaves open.
 - A plugin error never blocks a tool.
 - Only platforms in governed_platforms (default ["weixin"]) and the subagents they spawn are governed; cron runs are untouched.
 

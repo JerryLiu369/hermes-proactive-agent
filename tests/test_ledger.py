@@ -180,7 +180,7 @@ def test_stop_by_the_main_agent_is_recorded_at_once(plugin, make_ctx):
     w_post(plugin, "write_file", {"path": WRANGLER}, '{"ok": true}')
     main_tool(plugin, "delegate_task", {"action": "stop", "subagent_id": "sa-0-abc"})
     assert plugin.ledger.get("sa-0-abc")["status"] == "stopped"
-    assert plugin.workers.running_tasks("s1") == []
+    assert plugin.ledger.running("s1") == []
     res = main_tool(plugin, "delegate_task", {"tasks": [{"goal": "New plan", "context": GOOD_CONTEXT}]})
     briefing = res["args"]["tasks"][0]["context"]
     assert "ended stopped" in briefing and WRANGLER in briefing, "the next worker still sees the partial work"
@@ -206,7 +206,7 @@ def test_status_comes_from_the_report_not_from_quoted_json(plugin, make_ctx):
     spawn_worker(plugin)
     _stop(plugin, 'Checked the service, it answered {"status": "running", "uptime": 5}. All good.')
     assert plugin.ledger.get("sa-0-abc")["status"] == "completed"
-    assert plugin.workers.running_tasks("s1") == []
+    assert plugin.ledger.running("s1") == []
 
     spawn_worker(plugin, sub_id="sa-1", child_session="child-2")
     _stop(plugin, json.dumps({"status": "completed", "summary": "done"}), child="child-2", status="failed")
@@ -254,7 +254,7 @@ def test_running_records_expire_like_the_worker_registry(plugin, make_ctx, tmp_p
     plugin.ledger.start("sa-stale", "s1", "Never reported back", "c-stale")
     plugin.ledger._conn().execute("UPDATE tasks SET started = started - 7 * 3600 WHERE id = 'sa-stale'")
     plugin.ledger._conn().commit()
-    assert plugin.workers.running_tasks("s1") == []
+    assert plugin.ledger.running("s1") == []
 
 
 def test_thin_brief_is_returned_again_next_turn_without_turn_ids(plugin, make_ctx):

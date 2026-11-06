@@ -39,7 +39,12 @@ def w_tool(plugin, name, args, api="r1"):
 
 
 def w_post(plugin, name, args, result, api="r1"):
-    plugin._post_tool_call(name, args, result, api_request_id=api, **CHILD)
+    # Hermes derives status from the result the same way: a JSON "error" field means "error".
+    try:
+        failed = bool(json.loads(result).get("error"))
+    except (TypeError, ValueError, AttributeError):
+        failed = False
+    plugin._post_tool_call(name, args, result, api_request_id=api, status="error" if failed else "ok", **CHILD)
 
 
 def w_note(plugin, result='{"output": "x"}'):

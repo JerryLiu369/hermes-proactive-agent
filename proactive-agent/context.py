@@ -65,26 +65,12 @@ def platform_for(**kw: Any) -> str:
     return (session_env("HERMES_SESSION_PLATFORM") or os.environ.get("HERMES_PLATFORM", "")).strip().lower()
 
 
-def _looks_cron(value: str) -> bool:
-    return bool(value) and (value == "cron" or value.startswith(("cron:", "cron_")) or ":cron:" in value)
+def _platform_is(name: str, **kw: Any) -> bool:
+    return str(kw.get("platform") or info_get(kw.get("session_info"), "platform")).strip().lower() == name
 
 
-def is_cron(**kw: Any) -> bool:
-    """Cron runs have no human waiting on them and are never governed."""
-    session_info = kw.get("session_info")
-    for value in (kw.get("task_id") or "", kw.get("session_id") or "", kw.get("turn_id") or "",
-                  info_get(session_info, "session_id")):
-        if _looks_cron(str(value)):
-            return True
-    if (kw.get("platform") or "") == "cron" or info_get(session_info, "platform") == "cron":
-        return True
-    ctx = config.ctx()
-    if ctx is not None and hasattr(ctx, "current_cron_execution"):
-        try:
-            if ctx.current_cron_execution() is not None:
-                return True
-        except Exception:
-            pass
+def _cron_running() -> bool:
+    """Hermes binds the cron run executing now in a contextvar (two of them: the scheduler's and the gateway's)."""
     try:
         from cron.execution_identity import current_cron_execution
         if current_cron_execution() is not None:
@@ -93,20 +79,26 @@ def is_cron(**kw: Any) -> bool:
         pass
     try:
         from gateway.session_cron import current_execution
-        if current_execution() is not None:
-            return True
+        return current_execution() is not None
     except Exception:
-        pass
-    if session_env("HERMES_CRON_SESSION") == "1":
+        return False
+
+
+def is_cron(**kw: Any) -> bool:
+    """Cron runs have no human waiting on them and are never governed. Hermes names a cron task
+    ``cron:<job>:<run>`` and its session ``cron_<job>_<time>``."""
+    ids = (kw.get("task_id"), kw.get("session_id"), kw.get("turn_id"), info_get(kw.get("session_info"), "session_id"))
+    if any(str(v or "").startswith(("cron:", "cron_")) for v in ids) or _platform_is("cron", **kw):
         return True
-    return os.environ.get("HERMES_CRON_SESSION") == "1" or bool(os.environ.get("_HERMES_CRON_EXTERNAL_WORKER"))
+    if _cron_running():
+        return True
+    flag = session_env("HERMES_CRON_SESSION") or os.environ.get("HERMES_CRON_SESSION", "")
+    return flag.strip().lower() in ("1", "true", "yes", "on") or bool(os.environ.get("_HERMES_CRON_EXTERNAL_WORKER"))
 
 
 def is_child(**kw: Any) -> bool:
-    task_id = str(kw.get("task_id") or "")
-    if task_id.startswith(("sa-", "subagent-")):
-        return True
-    if (kw.get("platform") or "") == "subagent" or info_get(kw.get("session_info"), "platform") == "subagent":
+    """A delegated subagent: Hermes gives it a ``sa-<n>-<hex>`` task id and the "subagent" platform."""
+    if str(kw.get("task_id") or "").startswith("sa-") or _platform_is("subagent", **kw):
         return True
     try:
         from agent.delegation_context import is_delegated_child_context

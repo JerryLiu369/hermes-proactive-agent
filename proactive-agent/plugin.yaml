@@ -33,7 +33,7 @@ config_schema:
   turn_hard_seconds:
     type: number
     default: 120.0
-    description: "After this many seconds in one turn, only read-only tools and delegate_task stay available."
+    description: "After this many seconds in one turn, editing and execution pause; reading, delegate_task and wrap-up tools stay available."
   handoff_min_context_chars:
     type: int
     default: 120

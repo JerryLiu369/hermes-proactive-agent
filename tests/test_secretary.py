@@ -54,6 +54,14 @@ def test_ungoverned_platforms_and_cron_are_untouched(plugin, make_ctx):
         assert main_tool(plugin, "delegate_task", {"tasks": [{"goal": "g"}]}, session=session) is None
 
 
+def test_cron_runs_are_recognised_by_hermes_names_and_flag(plugin, monkeypatch):
+    context = plugin.context
+    assert context.is_cron(task_id="cron:job1:9f2c") and context.is_cron(session_id="cron_job1_20261106_101500")
+    assert not context.is_cron(session_id="s1", platform="weixin")
+    monkeypatch.setenv("HERMES_CRON_SESSION", "true")
+    assert context.is_cron(session_id="s1", platform="weixin")
+
+
 def test_main_agent_cannot_wait_on_background_jobs(plugin, make_ctx):
     make_ctx()
     start_turn(plugin)

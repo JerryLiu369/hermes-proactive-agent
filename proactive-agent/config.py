@@ -14,8 +14,8 @@ DEFAULTS: dict[str, Any] = {
     "governed_platforms": ["weixin"],
     # Foreground terminal commands longer than this move to the background (0 disables).
     "terminal_auto_detach_seconds": 30,
-    # Main-agent turn budget: a reminder at the soft limit; at the hard limit only read-only
-    # tools and delegate_task stay available.
+    # Main-agent turn budget: a reminder at the soft limit; from the hard limit only reading,
+    # delegate_task and wrap-up tools stay available.
     "turn_soft_seconds": 60.0,
     "turn_hard_seconds": 120.0,
     # delegate_task context shorter than this is returned once per turn.
@@ -30,10 +30,6 @@ _ctx: Optional[Any] = None
 def set_ctx(ctx: Any) -> None:
     global _ctx
     _ctx = ctx
-
-
-def ctx() -> Optional[Any]:
-    return _ctx
 
 
 def _coerce(value: Any, default: Any) -> Any:

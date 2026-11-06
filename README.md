@@ -84,8 +84,11 @@ A second attempt always goes through. Every accepted task then gets a briefing a
 ### 3. Subagents do not spin
 
 A subagent that runs the same tool with the same arguments and gets the same result is warned at the third time and
-stopped at the fifth. From then on its tool calls are refused and it must report `blocked`. Its overall step budget
-stays with Hermes (`delegation.max_iterations`).
+stopped at the fifth. Repeats count over the whole run, not only back to back. Results are compared by their first
+line, with long numbers and hashes masked, so a fresh request id does not make a result new. Once stopped, its tool calls are refused and it must report `blocked`.
+
+Hermes' own loop guard also notices repeats, but for subagents it only warns. Their overall step budget stays with
+Hermes (`delegation.max_iterations`).
 
 ### 4. Results are checked and remembered
 
@@ -109,8 +112,8 @@ for up to 7 days.
 
 - **It talks only to the main agent.** It adds notes to the main agent's context and never posts to your chat.
 - **No model calls.** Every check is plain code.
-- **Hermes keeps its own job.** Command approval, stale-file protection, step budgets, stall detection and delivery
-  of finished results stay with Hermes.
+- **Hermes keeps its own job.** Command approval, stale-file protection, step budgets, loop warnings and delivery
+  of finished results stay with Hermes. The plugin only adds what Hermes leaves open.
 - **Never in the way.** A plugin error is logged; it never blocks a tool.
 - **Only where you ask.** Only platforms in `governed_platforms` (default `["weixin"]`) and the subagents they spawn
   are governed. Other platforms and cron runs are left alone.
@@ -158,7 +161,8 @@ skipped otherwise.
 proactive-agent/      the plugin, and all that Hermes installs
 ├── secretary.py      1. turn budget, background detach
 ├── handoff.py        2. brief checks and briefing
-├── workers.py        3. repeat stop, 4. result notes
+├── workers.py        3. subagent registry, repeat stop
+├── reports.py        4. result notes, restart recovery
 ├── ledger.py         4. task ledger
 ├── prompt.py         system prompt section for the main agent
 ├── context.py        who is calling: main agent, subagent or cron

@@ -2,19 +2,22 @@
 proactive-agent: runs the Hermes chat agent like a secretary with a team of workers.
 
 The main agent stays reachable and decides; delegated subagents do the slow work. The plugin
-answers the five ways that goes wrong:
+keeps four promises, one module each:
 
-1. The chat stays responsive: a turn time budget (a note at the soft limit, editing and
-   execution paused at the hard limit) and long terminal commands moved to the background.
-2. Subagents start informed: a thin or clashing delegate_task brief is returned once; accepted
-   ones get the user's words, memory, the ledger's running and unfinished tasks, working rules
+1. The chat stays responsive (secretary): a turn time budget, with a note at the soft limit and
+   editing and execution paused at the hard limit, and long terminal commands moved to the
+   background.
+2. Subagents start informed (handoff): a thin or clashing delegate_task brief is returned once;
+   an accepted one carries the user's words, memory, running and unfinished tasks, working rules
    and a result schema.
-3. Subagents do not spin: a stop after the same step gives the same result again and again.
-4. Results are checked and remembered: the main agent is told what to verify when a subagent
-   returns, and a persistent ledger records every task, survives restarts and briefs the next one.
+3. Subagents do not spin (workers): a subagent that gets the same result from the same step
+   again and again is stopped.
+4. Results are checked and remembered (reports, ledger): the main agent is told what to verify
+   when a subagent returns, and a persistent ledger records every task, survives restarts and
+   briefs the next one.
 
-Only platforms listed in ``governed_platforms`` (default: weixin) are affected; cron runs and
-subagents spawned by ungoverned sessions are never touched.
+Only platforms listed in ``governed_platforms`` (default: weixin) and the subagents they spawn
+are governed; cron runs are never touched.
 """
 
 from __future__ import annotations
@@ -22,7 +25,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Optional
 
-from . import config, context, handoff, ledger, prompt, secretary, workers
+from . import config, context, handoff, prompt, reports, secretary, workers
 
 __version__ = "0.1.14"
 
@@ -59,8 +62,10 @@ def _pre_llm_call(**kw: Any) -> Optional[dict]:
     session_id = _main_session(**kw)
     if not session_id:
         return None
-    return secretary.on_turn_start(session_id, str(kw.get("turn_id") or ""), context.platform_for(**kw),
-                                   kw.get("conversation_history"), kw.get("user_message"))
+    secretary.on_turn_start(session_id, str(kw.get("turn_id") or ""), context.platform_for(**kw),
+                            kw.get("conversation_history"), kw.get("user_message"))
+    notes = reports.pending_notes(session_id)
+    return {"context": notes} if notes else None
 
 
 @_guarded
@@ -88,7 +93,7 @@ def _post_tool_call(tool_name: str = "", args: Optional[dict] = None, result: An
     if worker is not None:
         workers.post_tool_call(worker, tool_name, args, result, **kw)
     elif tool_name == "delegate_task" and _main_session(**kw):
-        workers.record_dispatch(result)
+        reports.record_dispatch(result)
 
 
 @_guarded
@@ -114,7 +119,7 @@ def _subagent_start(**kw: Any) -> None:
 
 @_guarded
 def _subagent_stop(**kw: Any) -> None:
-    workers.on_subagent_stop(**kw)
+    reports.on_subagent_stop(**kw)
 
 
 @_guarded
@@ -147,32 +152,28 @@ def _reset_all() -> None:
     context.reset_all()
 
 
-def _recover_ledger() -> None:
-    for task in ledger.load():
-        workers.queue_note(task["parent"], workers.lost_note(task))
-        logger.warning("proactive-agent: subagent %s was running when Hermes stopped; marked lost", task["id"])
+_HOOKS = {
+    "pre_llm_call": _pre_llm_call,
+    "pre_api_request": _pre_api_request,
+    "pre_tool_call": _pre_tool_call,
+    "post_tool_call": _post_tool_call,
+    "transform_tool_result": _transform_tool_result,
+    "subagent_start": _subagent_start,
+    "subagent_stop": _subagent_stop,
+    "on_session_end": _on_turn_end,
+    "on_session_reset": _on_session_clean,
+    "on_session_finalize": _on_session_clean,
+}
 
 
 def register(ctx: Any) -> None:
     config.set_ctx(ctx)
     try:
-        _recover_ledger()
+        reports.recover_lost()
     except Exception:
         logger.exception("proactive-agent: task ledger unavailable")
     secretary.install_detach_patch()
-    hooks = {
-        "pre_llm_call": _pre_llm_call,
-        "pre_api_request": _pre_api_request,
-        "pre_tool_call": _pre_tool_call,
-        "post_tool_call": _post_tool_call,
-        "transform_tool_result": _transform_tool_result,
-        "subagent_start": _subagent_start,
-        "subagent_stop": _subagent_stop,
-        "on_session_end": _on_turn_end,
-        "on_session_reset": _on_session_clean,
-        "on_session_finalize": _on_session_clean,
-    }
-    for name, fn in hooks.items():
+    for name, fn in _HOOKS.items():
         ctx.register_hook(name, fn)
     try:
         ctx.register_system_prompt_section("proactive-agent.discipline", prompt.render,

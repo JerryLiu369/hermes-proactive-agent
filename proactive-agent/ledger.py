@@ -102,8 +102,7 @@ def load(path: Optional[Path] = None) -> List[dict]:
             _db.execute(statement)
         _db.commit()
         now = time.time()
-        _db.execute("DELETE FROM tasks WHERE started < ?", (now - _KEEP_SECONDS,))
-        _db.execute("DELETE FROM notes WHERE created < ?", (now - _KEEP_SECONDS,))
+        _expire(_db, now)
         _db.commit()
         lost = []
         for t in _select("status = ?", (RUNNING,)):
@@ -153,10 +152,14 @@ def _update(task_id: str, change) -> None:
             _put(found[0])
 
 
-def _prune(parent: str, now: float) -> None:
-    db = _conn()
+def _expire(db: sqlite3.Connection, now: float) -> None:
     db.execute("DELETE FROM tasks WHERE started < ?", (now - _KEEP_SECONDS,))
     db.execute("DELETE FROM notes WHERE created < ?", (now - _KEEP_SECONDS,))
+
+
+def _prune(parent: str, now: float) -> None:
+    db = _conn()
+    _expire(db, now)
     db.execute("DELETE FROM tasks WHERE parent = ? AND status != ? AND id NOT IN (SELECT id FROM tasks "
                "WHERE parent = ? AND status != ? ORDER BY ended DESC LIMIT ?)",
                (parent, RUNNING, parent, RUNNING, _KEEP_FINISHED_PER_PARENT))

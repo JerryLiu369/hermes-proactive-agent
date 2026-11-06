@@ -6,6 +6,7 @@ import json
 import re
 from typing import Any, Optional
 
+
 def message_text(message: Any) -> str:
     if not isinstance(message, dict):
         return ""

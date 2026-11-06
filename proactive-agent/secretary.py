@@ -8,7 +8,7 @@ import threading
 import time
 from typing import Any, Callable, Dict, List, Optional
 
-from . import config, context, handoff, util, workers
+from . import config, context, handoff, util
 
 logger = logging.getLogger("hermes.plugins.proactive_agent")
 
@@ -73,7 +73,7 @@ def zone(session_id: str) -> str:
 
 # ---------------------------------------------------------------- hooks (main agent only)
 
-def on_turn_start(session_id: str, turn_id: str, platform: str, messages: Any, user_message: Any) -> Optional[dict]:
+def on_turn_start(session_id: str, turn_id: str, platform: str, messages: Any, user_message: Any) -> None:
     context.remember_platform(session_id, platform)
     words = _user_messages(messages)
     if isinstance(user_message, str) and user_message.strip() and (not words or words[-1] != user_message):
@@ -81,8 +81,6 @@ def on_turn_start(session_id: str, turn_id: str, platform: str, messages: Any, u
     with _lock:
         _turns[session_id] = _new_turn(turn_id, len(_steers(messages)))
         _user_words[session_id] = words[-_KEEP_USER_MESSAGES:]
-    notes = workers.pop_notes(session_id)
-    return {"context": notes} if notes else None
 
 
 def on_api_request(session_id: str, turn_id: str, messages: Any) -> None:
@@ -121,7 +119,7 @@ def transform_tool_result(session_id: str, tool_name: str, result: Any) -> Optio
         data = util.json_object(result)
         if data is not None and data.get("status") == "yielded_to_background":
             data = dict(data)
-            detach = config.get("terminal_auto_detach_seconds")
+            detach = int(config.get("terminal_auto_detach_seconds"))
             data["note"] = (
                 f"[proactive-agent] Still running: this command took longer than {detach}s, so it moved to the "
                 "background. It has NOT failed. `output` holds what it printed so far. You will be notified "
