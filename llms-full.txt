@@ -5,7 +5,7 @@
 This file is the complete, self-contained description of the project. It is generated and maintained by hand from the same facts as `README.md`; when the two disagree, the source code under `proactive-agent/` is authoritative.
 
 - Repository: https://github.com/JerryLiu369/hermes-proactive-agent
-- Version: 0.1.15 · License: MIT · Language: Python 3.10+ · Runtime dependencies: none
+- Version: 0.1.16 · License: MIT · Language: Python 3.10+ · Runtime dependencies: none
 - Host requirement: Hermes Agent >= 0.22 (tested on v0.22.7)
 - Tests: `uv run --group dev pytest`, lint `uv run --group dev ruff check`
 

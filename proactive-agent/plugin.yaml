@@ -1,5 +1,5 @@
 name: proactive-agent
-version: "0.1.15"
+version: "0.1.16"
 description: "Keeps Hermes chat turns responsive (60s reminder, 120s edit/execute pause, 30s terminal auto-detach), briefs every subagent before it starts, stops subagents that repeat identical results, brings a subagent's open question back to the main agent, repeats each background subagent result until the user has heard it, and records every delegated task in a SQLite ledger that survives gateway restarts."
 author: Jerry Liu
 license: MIT
