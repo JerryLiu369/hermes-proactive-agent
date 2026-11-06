@@ -8,42 +8,53 @@
 
 English | [简体中文](README_zh.md)
 
-A [Hermes Agent](https://hermes-agent.nousresearch.com) plugin that runs your chat agent like a secretary with a team
-of workers.
+## Answer first
 
-In a chat app, an agent that works for ten minutes is an agent you cannot talk to for ten minutes. Hermes already lets
-the main agent hand work to subagents that run in the background. This plugin makes that hand-off work the way a good
-secretary would: the **main agent** stays reachable, decides and reports back; **subagents** do the slow work; and
-every job ends with a result that is checked and remembered.
-
-## Install
+**Hermes Proactive Agent is a plugin for [Hermes Agent](https://hermes-agent.nousresearch.com) that keeps a chat assistant responsive while subagents do the slow work.** It caps every main-agent turn at 60 s (a reminder to answer or delegate) and 120 s (editing and execution paused), moves terminal commands that run past 30 s to the background, returns `delegate_task` briefs shorter than 120 characters, stops a subagent at the fifth identical tool result, and records every delegated task in a SQLite ledger that survives gateway restarts. It makes zero model calls, never posts into your chat, and never blocks a tool.
 
 ```bash
 hermes plugins install JerryLiu369/hermes-proactive-agent/proactive-agent
 hermes plugins enable proactive-agent
 ```
 
-Restart the gateway afterwards; upgrade with `hermes plugins update proactive-agent`. Also recommended: a subagent
-that needs more than about 60 model calls is usually stuck, so lower Hermes' step budget and it reports sooner.
+Restart the gateway afterwards. MIT licensed, Python 3.10+, no runtime dependencies.
 
-```yaml
-delegation:
-  max_iterations: 60
-```
+## The problem it solves
 
-## Why
+In a chat app, an agent that works for ten minutes is an agent you cannot talk to for ten minutes. Hermes already lets the main agent hand work to subagents that run in the background. What it does not do is make that hand-off behave like a good secretary: the **main agent** stays reachable, decides and reports back; **subagents** do the slow work; every job ends with a result that is checked and remembered.
 
-Five things go wrong when a chat agent delegates on its own. The plugin answers each one.
+Five specific failures of ungoverned delegation, and the mechanism that answers each:
 
-| Without the plugin | With it |
+| Failure | Mechanism in this plugin |
 |---|---|
-| The main agent runs builds and long debugging itself, and the chat goes silent | Each turn has a time budget, and long commands move to the background |
-| A subagent starts blind: no conversation, no constraints, no idea what was tried | A thin brief is sent back, and every brief carries your words, memory and earlier work |
-| A stuck subagent repeats the same step until its budget runs out | It is stopped after five identical attempts |
-| "Done" is a self-report | The main agent is told what evidence came back and to check it |
-| Once a subagent ends, or Hermes restarts, what it did is gone | A task ledger keeps every task and briefs the next subagent |
+| The main agent runs builds and long debugging itself, and the chat goes silent | A per-turn time budget: 60 s reminder, 120 s with editing and execution paused |
+| A long terminal command blocks the turn until it exits | Terminal commands running past 30 s move to the background through Hermes' own yield path |
+| A subagent starts blind: no conversation, no constraints, no idea what was tried | Briefs under 120 characters are returned; every accepted brief carries your words, memory and earlier work |
+| A stuck subagent repeats the same step until its budget runs out | Identical tool results are counted; a warning at 3, a hard stop at 5 |
+| "Done" is a self-report and the record disappears when Hermes restarts | Results are checked against reported evidence; a SQLite ledger keeps every task and briefs the next subagent |
 
-## What it does
+## Status quo vs governed
+
+Status quo is a vanilla Hermes Agent with delegation enabled and this plugin absent.
+
+| Dimension | Status quo | Governed by proactive-agent |
+|---|---|---|
+| Turn duration | Unbounded; the chat is silent until the work ends | Soft cap 60 s, hard cap 120 s |
+| Tools after the hard cap | No change | `read_file`, `search_files`, `session_search`, `memory`, skill tools, `todo_list`, `clarify`, `delegate_task`, and `process_manage` (`list`/`poll`/`log`/`kill`) only |
+| Long terminal command | Blocks the turn | Auto-detach at 30 s; the process keeps running and Hermes reports the end |
+| Waiting on a background job | `process_manage(action='wait')` allowed | Refused, because waiting freezes the chat again |
+| Brief quality gate | Any `context` accepted | Under 120 characters is returned once per turn |
+| Write contention | Found by accident | A brief naming a file another subagent is changing is returned once per turn |
+| Subagent starting context | Empty | Last 6 user messages verbatim, `USER.md`, `MEMORY.md`, running subagents and their files, unfinished tasks, working rules, default `output_schema` |
+| Identical-result loop | Hermes warns subagents but does not stop them | Warn at 3, stop at 5, then tool calls are refused and the subagent must report `blocked` |
+| Result verification | "Done" is a self-report | Next turn opens with the evidence, or a warning about missing evidence, unfinished work or a repeat stop |
+| Durability | Gone when the subagent ends or the gateway restarts | SQLite ledger, last 20 finished tasks per chat, up to 7 days |
+| Restart recovery | No signal | The main agent is told which tasks were lost, that side effects are unknown, and which files they touched |
+| Blast radius | N/A | Exceptions are logged and never block a tool |
+| Token cost | N/A | Zero model calls |
+| Scope | N/A | Only `governed_platforms` (default `["weixin"]`) and their subagents; cron and other platforms untouched |
+
+## How it works
 
 ### 1. The chat stays responsive
 
@@ -56,18 +67,15 @@ The main agent may think and investigate, but every turn has a budget.
 | from 120 s | editing and execution pause; reading, `delegate_task` and wrap-up tools remain |
 
 - A message from you mid-turn restarts the clock.
-- Wrap-up tools are `memory`, the skill tools, `todo_list`, `clarify`, and `process_manage` to list, poll, read logs or
-  kill.
-- A terminal command still running after 30 s moves to the background through Hermes' own yield path. It keeps
-  running, Hermes reports when it ends, and the main agent is told it has not failed.
+- Wrap-up tools are `memory`, the skill tools, `todo_list`, `clarify`, and `process_manage` to list, poll, read logs or kill.
+- A terminal command still running after 30 s moves to the background through Hermes' own yield path. It keeps running, Hermes reports when it ends, and the main agent is told it has not failed.
 - Waiting on a background job (`process_manage(action='wait')`) is refused, since it would freeze the chat again.
 
 ### 2. Subagents start informed
 
 The main agent knows the conversation, so it writes the brief. A `delegate_task` comes back once per turn when:
 
-- its `context` is under 120 characters. The note asks for what is known, the exact targets, what must not change,
-  when to stop and what proves success;
+- its `context` is under 120 characters. The note asks for what is known, the exact targets, what must not change, when to stop and what proves success;
 - it names a file another running subagent is changing. The main agent can wait, steer that subagent, or stop it.
 
 A second attempt always goes through. Every accepted task then gets a briefing after the main agent's own context:
@@ -83,45 +91,31 @@ A second attempt always goes through. Every accepted task then gets a briefing a
 
 ### 3. Subagents do not spin
 
-A subagent that runs the same tool with the same arguments and gets the same result is warned at the third time and
-stopped at the fifth. Repeats count over the whole run, not only back to back. Results are compared by their first
-line, with long numbers and hashes masked, so a fresh request id does not make a result new. Once stopped, its tool calls are refused and it must report `blocked`.
+A subagent that runs the same tool with the same arguments and gets the same result is warned at the third time and stopped at the fifth. Repeats count over the whole run, not only back to back. Results are compared by their first line, with long numbers and hashes masked, so a fresh request id does not make a result new. Once stopped, its tool calls are refused and it must report `blocked`.
 
-Hermes' own loop guard also notices repeats, but for subagents it only warns. Their overall step budget stays with
-Hermes (`delegation.max_iterations`).
+Hermes' own loop guard also notices repeats, but for subagents it only warns. Their overall step budget stays with Hermes (`delegation.max_iterations`).
 
 ### 4. Results are checked and remembered
 
-**Every result is reviewed.** When a subagent returns, the main agent's next turn opens with a note: the evidence it
-reported, or a warning that it claimed success without evidence, did not finish, or was stopped for repeating itself.
-In that last case the main agent tells you in one line what got stuck and what it will do instead. A task the main
-agent stopped itself is noted as such, not as a failure.
+**Every result is reviewed.** When a subagent returns, the main agent's next turn opens with a note: the evidence it reported, or a warning that it claimed success without evidence, did not finish, or was stopped for repeating itself. In that last case the main agent tells you in one line what got stuck and what it will do instead. A task the main agent stopped itself is noted as such, not as a failure.
 
-**Every task is recorded.** The task ledger keeps one record per task: goal, status, the files it changed, corrections
-sent with `action='steer'`, its live transcript path, and how it ended (summary, evidence, blockers).
+**Every task is recorded.** The task ledger keeps one record per task: goal, status, the files it changed, corrections sent with `action='steer'`, its live transcript path, and how it ended (summary, evidence, blockers).
 
-**Work carries over.** Hermes cannot resume a subagent once it ends, so the next subagent in the chat is briefed with
-the unfinished task's record instead. If Hermes restarts mid-task, the main agent is told which tasks were lost, that
-their side effects are unknown, and which files they had touched. Notes wait in the ledger until the chat's next turn,
-so a restart never drops them.
+**Work carries over.** Hermes cannot resume a subagent once it ends, so the next subagent in the chat is briefed with the unfinished task's record instead. If Hermes restarts mid-task, the main agent is told which tasks were lost, that their side effects are unknown, and which files they had touched. Notes wait in the ledger until the chat's next turn, so a restart never drops them.
 
-The ledger lives in `<hermes home>/plugin-data/proactive-agent/ledger.db` and keeps each chat's last 20 finished tasks
-for up to 7 days.
+The ledger lives in `<hermes home>/plugin-data/proactive-agent/ledger.db` and keeps each chat's last 20 finished tasks for up to 7 days.
 
 ## Design rules
 
 - **It talks only to the main agent.** It adds notes to the main agent's context and never posts to your chat.
 - **No model calls.** Every check is plain code.
-- **Hermes keeps its own job.** Command approval, stale-file protection, step budgets, loop warnings and delivery
-  of finished results stay with Hermes. The plugin only adds what Hermes leaves open.
+- **Hermes keeps its own job.** Command approval, stale-file protection, step budgets, loop warnings and delivery of finished results stay with Hermes. The plugin only adds what Hermes leaves open.
 - **Never in the way.** A plugin error is logged; it never blocks a tool.
-- **Only where you ask.** Only platforms in `governed_platforms` (default `["weixin"]`) and the subagents they spawn
-  are governed. Other platforms and cron runs are left alone.
+- **Only where you ask.** Only platforms in `governed_platforms` (default `["weixin"]`) and the subagents they spawn are governed. Other platforms and cron runs are left alone.
 
 ## Configuration
 
-Settings go under `plugins.entries.proactive-agent.settings` in `~/.hermes/config.yaml`. Any key can be overridden with
-an environment variable `PROACTIVE_<KEY>`.
+Settings go under `plugins.entries.proactive-agent.settings` in `~/.hermes/config.yaml`. Any key can be overridden with an environment variable `PROACTIVE_<KEY>`.
 
 ```yaml
 plugins:
@@ -131,6 +125,9 @@ plugins:
         governed_platforms: ["weixin"]
         turn_soft_seconds: 60
         turn_hard_seconds: 120
+        terminal_auto_detach_seconds: 30
+        handoff_min_context_chars: 120
+        worker_repeat_limit: 5
 ```
 
 | Key | Default | Meaning |
@@ -142,10 +139,42 @@ plugins:
 | `handoff_min_context_chars` | `120` | A shorter `context` is returned once per turn |
 | `worker_repeat_limit` | `5` | Identical attempts that stop a subagent (warned two earlier) |
 
+Resolution order: environment variable `PROACTIVE_<KEY>`, then plugin settings, then the default. Invalid values are logged and ignored.
+
+## FAQ
+
+**How do I stop a Hermes Agent chat from hanging while it works?**
+Enable the plugin. The main agent is nudged at 60 s to answer or delegate and loses edit and execute tools at 120 s, so no turn can run unbounded while you wait. A message from you mid-turn restarts the clock.
+
+**How do I stop subagents from repeating the same tool call forever?**
+Identical tool, arguments and result are counted over the whole run: a warning at 3, a hard stop at 5, then tool calls are refused so the subagent must report `blocked`. Lowering `delegation.max_iterations` to about 60 catches the remaining cases earlier.
+
+**How do I persist subagent task results across a Hermes gateway restart?**
+Every task and every pending note is written to SQLite at `<hermes home>/plugin-data/proactive-agent/ledger.db`. After a restart the main agent is told which tasks were lost, that side effects are unknown, and which files they had touched; queued notes arrive on the chat's next turn.
+
+**How do I keep a long build from blocking my chat?**
+Any governed foreground terminal command still running after 30 s is detached through Hermes' yield path: it keeps running, the agent is told it has not failed and will be notified at the end. `process_manage(action='wait')` is refused so the agent cannot freeze the chat by waiting.
+
+**Why does my subagent not know what the conversation said?**
+Hermes does not load chat history or memory into subagents. This plugin appends your last messages verbatim plus `USER.md` and `MEMORY.md` to every accepted brief, and refuses briefs under 120 characters once per turn.
+
+**How do I verify a subagent actually finished?**
+Every accepted task carries a default `output_schema` of `status`, `summary`, `evidence`, `blockers`. The main agent's next turn opens with the reported evidence, or explicitly warns about a success claim without evidence, an unfinished task, or a repeat stop.
+
+**Does it make extra model calls or cost tokens?**
+No. It is plain Python rules with zero model calls; it only adds text to the main agent's context.
+
+**Does it affect cron jobs, the CLI or other chat platforms?**
+No. Only platforms in `governed_platforms` (default `["weixin"]`) and their subagents are governed. Cron runs and unlisted platforms are untouched.
+
+**Does it replace Hermes' approval, file protection or loop guard?**
+No. Those stay with Hermes, and the plugin fails open: a plugin error is logged and never blocks a tool.
+
 ## Compatibility
 
 - Hermes Agent 0.22 or later (tested on v0.22.7).
 - Python 3.10 or later.
+- CI runs `ruff check` and `pytest` on Python 3.10 through 3.14.
 
 ## Development
 
@@ -172,6 +201,11 @@ proactive-agent/      the plugin, and all that Hermes installs
 └── plugin.yaml       manifest
 tests/                one file per module, plus end-to-end tests against Hermes
 ```
+
+## Machine-readable docs
+
+- [llms.txt](llms.txt) - compact index for AI agents and answer engines ([raw](https://raw.githubusercontent.com/JerryLiu369/hermes-proactive-agent/main/llms.txt))
+- [llms-full.txt](llms-full.txt) - the whole project in one file ([raw](https://raw.githubusercontent.com/JerryLiu369/hermes-proactive-agent/main/llms-full.txt))
 
 ## License
 

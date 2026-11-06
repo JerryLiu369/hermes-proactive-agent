@@ -1,10 +1,10 @@
 name: proactive-agent
 version: "0.1.15"
-description: "Runs the Hermes chat agent like a secretary with a team of workers: keeps the chat responsive, briefs subagents, stops ones that spin, and checks and records every result in a persistent task ledger."
+description: "Keeps Hermes chat turns responsive (60s reminder, 120s edit/execute pause, 30s terminal auto-detach), briefs every subagent before it starts, stops subagents that repeat identical results, and records every delegated task in a SQLite ledger that survives gateway restarts."
 author: Jerry Liu
 license: MIT
 homepage: https://github.com/JerryLiu369/hermes-proactive-agent
-tags: [delegation, subagents, governance]
+tags: [delegation, subagents, governance, responsiveness, task-ledger, background-jobs]
 requires_hermes: ">=0.22"
 provides_hooks:
   - pre_llm_call

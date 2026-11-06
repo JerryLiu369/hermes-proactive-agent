@@ -145,11 +145,19 @@ uv run --group dev ruff check
 
 ## Docs
 
-- `README.md`, `README_zh.md` and `llms.txt` say the same things and are updated together. They are organised as the
-  five problems, the four promises and the design rules; keep that order.
+- `README.md`, `README_zh.md`, `llms.txt` and `llms-full.txt` say the same things and are updated together. Facts
+  live in the READMEs and `llms-full.txt`; `llms.txt` is the compact index an answer engine reads first, so it carries
+  the same numbers in short answers and then links out.
+- `README.md` and `README_zh.md` follow llmstxt.org-style answer-first order: an answer block under 100 words, then the
+  five problems, the four promises, the design rules, the settings, then the FAQ. Keep that order and keep the two
+  files mirrored section by section.
+- `llms.txt` follows the llmstxt.org v2 shape: H1, one blockquote summary, plain details (citable facts and direct
+  answers, no headings), then `##` sections that are markdown link lists, with `## Optional` last. `llms-full.txt` is
+  the self-contained reference (question index, comparison matrix, mechanism detail, settings, limits, FAQ, citation).
+- Never add a claim to any doc that the code does not back. Every number in the docs must match `config.DEFAULTS`.
 - Write plainly: short sentences, one term per concept, numbers that match the defaults in `config.py`.
-- A changed setting means changing `config.DEFAULTS`, `plugin.yaml`'s `config_schema` and the configuration tables
-  in all three docs.
+- A changed setting means changing `config.DEFAULTS`, `plugin.yaml`'s `config_schema` and the settings tables in
+  `README.md`, `README_zh.md` and `llms-full.txt`.
 
 ## Commits and releases
 
