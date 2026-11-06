@@ -155,3 +155,36 @@ def test_tool_names_the_plugin_relies_on_exist_in_hermes(hermes):
     names = set(plugin.RED_ALLOWED_TOOLS) | {"terminal", "delegate_task", "process_manage", "write_file", "patch"}
     missing = sorted(n for n in names if registry.get_entry(n) is None)
     assert not missing, f"tools renamed or removed in Hermes: {missing}"
+
+
+def test_report_cut_short_by_the_user_reaches_the_next_turn_through_hermes(hermes):
+    import inspect
+    assert "session_key" in inspect.signature(plugins_mod.PluginContext.inject_message).parameters
+
+    _start_turn()
+    plugins_mod.invoke_hook("subagent_start", parent_session_id=SESSION, parent_turn_id="t1",
+                            parent_subagent_id=None, child_session_id="child-r", child_subagent_id="sa-0-r",
+                            child_role="leaf", child_goal="清理磁盘")
+    plugins_mod.invoke_hook("post_tool_call", tool_name="delegate_task", args={}, task_id="main", session_id=SESSION,
+                            turn_id="t1", tool_call_id="c-d", api_request_id="r-d", duration_ms=50, status="ok",
+                            error_type=None, error_message=None,
+                            result='{"status": "dispatched", "mode": "background", "subagent_ids": ["sa-0-r"]}')
+    plugins_mod.invoke_hook("on_session_end", session_id=SESSION, task_id="main", turn_id="t1", completed=True,
+                            failed=False, interrupted=False, turn_exit_reason="text_response(finish_reason=stop)",
+                            model="m", platform="weixin")
+    plugins_mod.invoke_hook("subagent_stop", parent_session_id=SESSION, parent_turn_id="t1",
+                            child_session_id="child-r", child_role="leaf", child_status="completed",
+                            child_summary='{"status": "completed", "summary": "freed 3.4 GiB", "evidence": ["df -h"]}',
+                            tool_call_history=[], duration_ms=5000)
+    _start_turn("t2")
+    redirect = {"role": "user", "content": "返回机制呢？", "api_content": (
+        "[Context from the interrupted assistant response]\n[This response was interrupted by a user correction.]"
+        "\n\n返回机制呢？")}
+    plugins_mod.invoke_hook("pre_api_request", session_id=SESSION, turn_id="t2", task_id="main", platform="weixin",
+                            conversation_history=[redirect], request_messages=[])
+    plugins_mod.invoke_hook("on_session_end", session_id=SESSION, task_id="main", turn_id="t2", completed=True,
+                            failed=False, interrupted=False, turn_exit_reason="text_response(finish_reason=stop)",
+                            model="m", platform="weixin")
+    results = _start_turn("t3")
+    text = "\n".join(str(r.get("context", "")) for r in results if isinstance(r, dict))
+    assert "has not heard" in text and "freed 3.4 GiB" in text

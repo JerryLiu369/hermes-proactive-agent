@@ -12,9 +12,10 @@ keeps four promises, one module each:
    and a result schema.
 3. Subagents do not spin (workers): a subagent that gets the same result from the same step
    again and again is stopped.
-4. Results are checked and remembered (reports, ledger): the main agent is told what to verify
-   when a subagent returns, and a persistent ledger records every task, survives restarts and
-   briefs the next one.
+4. Results are checked, reported and remembered (reports, ledger): the main agent is told what
+   to verify when a subagent returns, a result stays unreported until the user has heard it (a
+   user message that cuts into the report gets it repeated), and a persistent ledger records
+   every task, survives restarts and briefs the next one.
 
 Only platforms listed in ``governed_platforms`` (default: weixin) and the subagents they spawn
 are governed; cron runs are never touched.
@@ -62,9 +63,11 @@ def _pre_llm_call(**kw: Any) -> Optional[dict]:
     session_id = _main_session(**kw)
     if not session_id:
         return None
-    secretary.on_turn_start(session_id, str(kw.get("turn_id") or ""), context.platform_for(**kw),
+    turn_id = str(kw.get("turn_id") or "")
+    secretary.on_turn_start(session_id, turn_id, context.platform_for(**kw),
                             kw.get("conversation_history"), kw.get("user_message"))
-    notes = reports.pending_notes(session_id)
+    turn = secretary.turn_facts(session_id, turn_id)
+    notes = reports.pending_notes(session_id, turn["key"] if turn else turn_id, kw.get("user_message"))
     return {"context": notes} if notes else None
 
 
@@ -72,8 +75,10 @@ def _pre_llm_call(**kw: Any) -> Optional[dict]:
 def _pre_api_request(**kw: Any) -> None:
     session_id = _main_session(**kw)
     if session_id:
+        # conversation_history is the live turn with the user's own words; the request copy has
+        # them rewritten (plugin context appended, redirects wrapped in Hermes' scaffold).
         secretary.on_api_request(session_id, str(kw.get("turn_id") or ""),
-                                 kw.get("request_messages") or kw.get("conversation_history"))
+                                 kw.get("conversation_history") or kw.get("request_messages"))
 
 
 @_guarded
@@ -103,9 +108,12 @@ def _transform_tool_result(tool_name: str = "", args: Optional[dict] = None, res
     if worker is not None:
         return workers.transform_tool_result(worker, tool_name, result)
     session_id = _main_session(**kw)
-    if session_id:
-        return secretary.transform_tool_result(session_id, tool_name, result)
-    return None
+    if not session_id:
+        return None
+    out = secretary.transform_tool_result(session_id, tool_name, result)
+    noted = reports.tool_result_note(session_id, secretary.turn_facts(session_id, str(kw.get("turn_id") or "")),
+                                     result if out is None else out)
+    return out if noted is None else noted
 
 
 def _parent_governed(parent_session: str) -> bool:
@@ -126,9 +134,14 @@ def _subagent_stop(**kw: Any) -> None:
 def _on_turn_end(session_id: str = "", **kw: Any) -> None:
     # Hermes fires on_session_end after every run_conversation, so only per-turn state goes here;
     # workers and pending result notes must outlive the turn.
-    if session_id:
-        secretary.forget(session_id)
-        handoff.forget(session_id)
+    if not session_id:
+        return
+    if _main_session(session_id=session_id, **kw):
+        reports.on_turn_end(session_id, secretary.turn_facts(session_id, str(kw.get("turn_id") or "")),
+                            completed=bool(kw.get("completed")))
+    secretary.forget(session_id)
+    handoff.forget(session_id)
+    reports.forget(session_id)
 
 
 @_guarded
@@ -140,6 +153,7 @@ def _on_session_clean(session_id: str = "", old_session_id: str = "", **kw: Any)
         return
     secretary.forget(ended)
     handoff.forget(ended)
+    reports.forget(ended)
     workers.forget_parent(ended)
     context.forget_session(ended)
 
@@ -148,6 +162,7 @@ def _reset_all() -> None:
     """Drop all in-memory state (tests)."""
     secretary.reset_all()
     handoff.reset_all()
+    reports.reset_all()
     workers.reset_all()
     context.reset_all()
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import json
 import logging
 import threading
@@ -21,36 +22,59 @@ RED_ALLOWED_TOOLS = {
 # process_manage stays only for looking at background jobs or ending them, not for driving them.
 RED_PROCESS_ACTIONS = {"list", "poll", "log", "kill"}
 _KEEP_USER_MESSAGES = 6
+# How Hermes marks a user message that arrived mid-turn: a steer row, or (busy_input_mode
+# "interrupt" while the model is answering) a redirect row whose api_content carries this scaffold.
+_STEER_MARKER = "[OUT-OF-BAND USER MESSAGE"
+_REDIRECT_MARKER = "[This response was interrupted by a user correction.]"
+# User-role rows that machinery wrote, not the user: Hermes' async-delegation wakes and this plugin's own.
+_MACHINE_PREFIXES = ("[ASYNC DELEGATION", "[proactive-agent]")
 
 _lock = threading.Lock()
 _turns: Dict[str, dict] = {}
 _user_words: Dict[str, List[str]] = {}
+_local_turns = itertools.count(1)
 
 
-def _new_turn(turn_id: str, steers: int = 0) -> dict:
-    return {"turn_id": turn_id, "start": time.monotonic(), "steers": steers, "noted": "green"}
+def _new_turn(turn_id: str, seen: int = 0, session_key: str = "") -> dict:
+    return {"turn_id": turn_id, "key": turn_id or f"local-{next(_local_turns)}", "start": time.monotonic(),
+            "seen": seen, "interjections": 0, "noted": "green", "session_key": session_key}
 
 
 def _turn(session_id: str, turn_id: str = "") -> dict:
+    # Only on_turn_start begins a turn: a background review fork shares the session id with
+    # another turn id, and must not reset the live turn.
     st = _turns.get(session_id)
-    if st is None or (turn_id and st["turn_id"] and st["turn_id"] != turn_id):
+    if st is None:
         st = _new_turn(turn_id)
         _turns[session_id] = st
     return st
 
 
-def _steers(messages: Any) -> List[str]:
-    if not isinstance(messages, list):
-        return []
-    return [util.message_text(m) for m in messages if isinstance(m, dict) and (
-        m.get("display_kind") == "steer" or "[OUT-OF-BAND USER MESSAGE" in util.message_text(m))]
+def _interjections(messages: Any) -> List[str]:
+    """The user messages Hermes delivered into a running turn, in order."""
+    found = []
+    for m in messages if isinstance(messages, list) else []:
+        if not isinstance(m, dict):
+            continue
+        text = util.message_text(m)
+        sidecar = m.get("api_content") if isinstance(m.get("api_content"), str) else ""
+        if m.get("display_kind") == "steer" or _STEER_MARKER in text or _STEER_MARKER in sidecar:
+            found.append(text)
+        elif m.get("role") == "user" and (_REDIRECT_MARKER in text or _REDIRECT_MARKER in sidecar):
+            found.append(text)
+    return found
+
+
+def _by_user(text: Any) -> bool:
+    return isinstance(text, str) and bool(text.strip()) and not text.lstrip().startswith(_MACHINE_PREFIXES)
 
 
 def _user_messages(messages: Any) -> List[str]:
     if not isinstance(messages, list):
         return []
-    texts = (util.message_text(m) for m in messages if isinstance(m, dict) and m.get("role") == "user")
-    return [t for t in texts if t.strip()]
+    texts = (util.message_text(m) for m in messages if isinstance(m, dict) and m.get("role") == "user"
+             and m.get("display_kind") != "internal_notification")
+    return [t for t in texts if _by_user(t)]
 
 
 def user_words(session_id: str) -> List[str]:
@@ -73,27 +97,42 @@ def zone(session_id: str) -> str:
 
 # ---------------------------------------------------------------- hooks (main agent only)
 
+def turn_facts(session_id: str, turn_id: str = "") -> Optional[dict]:
+    """The running turn: ``key`` (Hermes' turn id, or a local one), ``interjections`` (user messages
+    delivered into it so far) and the gateway ``session_key``. None for another turn's call."""
+    with _lock:
+        st = _turns.get(session_id)
+        if st is None or (turn_id and st["turn_id"] and st["turn_id"] != turn_id):
+            return None
+        return {"key": st["key"], "interjections": st["interjections"], "session_key": st["session_key"]}
+
+
 def on_turn_start(session_id: str, turn_id: str, platform: str, messages: Any, user_message: Any) -> None:
     context.remember_platform(session_id, platform)
     words = _user_messages(messages)
-    if isinstance(user_message, str) and user_message.strip() and (not words or words[-1] != user_message):
+    if _by_user(user_message) and (not words or words[-1] != user_message):
         words.append(user_message)
     with _lock:
-        _turns[session_id] = _new_turn(turn_id, len(_steers(messages)))
+        _turns[session_id] = _new_turn(turn_id, len(_interjections(messages)),
+                                       context.session_env("HERMES_SESSION_KEY"))
         _user_words[session_id] = words[-_KEEP_USER_MESSAGES:]
 
 
 def on_api_request(session_id: str, turn_id: str, messages: Any) -> None:
-    # Request messages carry Hermes' ephemeral turn context (memory, plugin notes) inside user
-    # messages, so only new steer messages are taken from them as the user's own words.
-    steers = _steers(messages)
+    """A new user message inside the running turn restarts its clock and joins the user's words."""
+    found = _interjections(messages)
     with _lock:
-        st = _turn(session_id, turn_id)
-        if len(steers) > st["steers"]:
-            logger.info("proactive-agent: user steered mid-turn in %s; turn budget reset", session_id)
-            words = _user_words.get(session_id, []) + steers[st["steers"]:]
-            _user_words[session_id] = words[-_KEEP_USER_MESSAGES:]
-            _turns[session_id] = _new_turn(turn_id or st["turn_id"], len(steers))
+        st = _turns.get(session_id)
+        if st is None or (turn_id and st["turn_id"] and st["turn_id"] != turn_id):
+            return
+        st["seen"] = min(st["seen"], len(found))  # compression may have dropped earlier rows
+        new = found[st["seen"]:]
+        if not new:
+            return
+        logger.info("proactive-agent: user wrote mid-turn in %s; turn budget reset", session_id)
+        _user_words[session_id] = (_user_words.get(session_id, []) + new)[-_KEEP_USER_MESSAGES:]
+        st.update(seen=len(found), interjections=st["interjections"] + len(new), start=time.monotonic(),
+                  noted="green")
 
 
 def pre_tool_call(session_id: str, turn_id: str, tool_name: str, args: Optional[dict]) -> Optional[dict]:

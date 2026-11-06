@@ -23,12 +23,14 @@ def _load():
 
 
 class FakeContext:
-    def __init__(self, config=None, post_message=None):
+    def __init__(self, config=None, post_message=None, inject_message=None):
         self.config = config or {}
         self.hooks = {}
         self.prompt_sections = {}
         if post_message is not None:
             self.post_message = post_message
+        if inject_message is not None:
+            self.inject_message = inject_message
 
     def get_config(self, key, default=None):
         return self.config.get(key, default)

@@ -104,3 +104,33 @@ def test_quoted_yield_json_does_not_replace_the_result(plugin, make_ctx):
     start_turn(plugin)
     raw = 'previous run printed {"status": "yielded_to_background", "session_id": "p1"} and then more output'
     assert plugin._transform_tool_result("terminal", {}, raw, session_id="s1", task_id="main") is None
+
+
+def test_redirect_counts_as_a_user_message_mid_turn(plugin, make_ctx):
+    """busy_input_mode 'interrupt' redirects the live turn instead of steering it."""
+    make_ctx()
+    start_turn(plugin, history=[{"role": "user", "content": "please fix the site"}])
+    plugin.secretary._turns["s1"]["start"] -= 200
+    redirect = {"role": "user", "content": "use the staging host",
+                "api_content": "[Context from the interrupted assistant response]\n"
+                               "[This response was interrupted by a user correction.]\n\nuse the staging host"}
+    history = [{"role": "user", "content": "please fix the site"}, redirect]
+    plugin._pre_api_request(session_id="s1", turn_id="t1", conversation_history=history,
+                            request_messages=[{"role": "user", "content": redirect["api_content"]}])
+    assert main_tool(plugin, "terminal", {"command": "ls"}) is None
+    assert plugin.secretary.user_words("s1")[-1] == "use the staging host"
+    plugin._pre_api_request(session_id="s1", turn_id="t1", conversation_history=history)
+    assert plugin.secretary.turn_facts("s1")["interjections"] == 1, "the same row is counted once"
+
+
+def test_a_review_fork_does_not_reset_the_live_turn(plugin, make_ctx):
+    """Hermes' background review shares the session id but runs under its own turn id."""
+    make_ctx()
+    start_turn(plugin)
+    plugin.secretary._turns["s1"]["start"] -= 200
+    old_steer = [{"role": "user", "content": "[OUT-OF-BAND USER MESSAGE] earlier"}]
+    plugin._pre_api_request(session_id="s1", turn_id="review-1", conversation_history=old_steer)
+    main_tool(plugin, "skills_list", {}, turn="review-1")
+    assert main_tool(plugin, "terminal", {"command": "ls"})["action"] == "block"
+    assert plugin.secretary.turn_facts("s1", "t1")["interjections"] == 0
+    assert plugin.secretary.turn_facts("s1", "review-1") is None

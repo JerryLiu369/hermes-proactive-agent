@@ -1,7 +1,7 @@
 [project]
 name = "hermes-proactive-agent"
 version = "0.1.15"
-description = "Hermes Agent plugin that keeps chat turns responsive, briefs and stops subagents, and persists delegated tasks across restarts"
+description = "Hermes Agent plugin that keeps chat turns responsive, briefs and stops subagents, makes sure their results reach the user, and persists delegated tasks across restarts"
 readme = "README.md"
 license = { text = "MIT" }
 authors = [{ name = "Jerry Liu" }]

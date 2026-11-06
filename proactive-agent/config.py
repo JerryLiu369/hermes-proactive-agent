@@ -32,6 +32,11 @@ def set_ctx(ctx: Any) -> None:
     _ctx = ctx
 
 
+def host() -> Optional[Any]:
+    """The plugin context Hermes passed to register(), for host calls such as inject_message."""
+    return _ctx
+
+
 def _coerce(value: Any, default: Any) -> Any:
     if isinstance(default, list):
         if isinstance(value, list):

@@ -1,9 +1,10 @@
 """Task ledger: one row per delegated task, shared by the main agent and its workers.
 
 Only the plugin's hooks write it, and no model is called. It lives in Hermes' plugin-data
-directory, so a gateway restart keeps what was running, which files each task changed and how
-it ended. The main agent reads it through result and restart notes, which wait in the ledger
-until that chat's next turn; workers read it through their handoff briefing.
+directory, so a gateway restart keeps what was running, which files each task changed, how it
+ended and whether the user has heard the result yet. The main agent reads it through result and
+restart notes, which wait in the ledger until that chat's next turn; workers read it through
+their handoff briefing.
 """
 
 from __future__ import annotations
@@ -29,6 +30,8 @@ _KEEP_SECONDS = 7 * 86400.0
 # never arrived is no longer treated as running.
 _RUNNING_HORIZON_S = 6 * 3600.0
 _KEEP_FINISHED_PER_PARENT = 20
+# A result the user has not heard about after a day is history, not news.
+_REPORT_HORIZON_S = 86400.0
 _MAX_FILES = 20
 _MAX_STEERS = 5
 _COLUMNS = ("id", "parent", "child", "status", "started", "ended", "pid")
@@ -211,7 +214,9 @@ def mark_stopped(task_id: str, parent: str) -> None:
 
 
 def finish(task_id: str, status: str, summary: str = "", evidence: Iterable[str] = (),
-           blockers: Iterable[str] = (), files: Iterable[str] = ()) -> None:
+           blockers: Iterable[str] = (), files: Iterable[str] = (), unreported: bool = False) -> None:
+    """Close a task. *unreported* marks a result the user should hear about; it stays marked until
+    a turn of the main agent that saw it ends with a reply nobody interrupted (see reports)."""
     add_files(task_id, files)
     now = time.time()
     with _lock:
@@ -221,9 +226,56 @@ def finish(task_id: str, status: str, summary: str = "", evidence: Iterable[str]
         t = found[0]
         status = (status or "").strip().lower()
         t.update(status=status if status and status != RUNNING else "unknown", ended=now, summary=str(summary or "")[:600],
-                 evidence=[str(e)[:200] for e in evidence][:5], blockers=[str(b)[:200] for b in blockers][:5])
+                 evidence=[str(e)[:200] for e in evidence][:5], blockers=[str(b)[:200] for b in blockers][:5],
+                 unreported=bool(unreported), shown=0, shown_turn="", wakes=0)
         _put(t)
         _prune(t["parent"], now)
+
+
+def mark_background(task_id: str) -> None:
+    """The task was dispatched in the background, so its result reaches the main agent in a later turn
+    of its own instead of as the delegate_task tool result."""
+    def change(t: dict):
+        if t.get("background"):
+            return False
+        t["background"] = True
+        if t["status"] not in (RUNNING, STOPPED, LOST):
+            t.update(unreported=True, shown=0, shown_turn="", wakes=0)  # it ended before the dispatch returned
+    _update(task_id, change)
+
+
+def mark_unreported(task_id: str) -> None:
+    _update(task_id, lambda t: t.update(unreported=True, shown=0, shown_turn="", wakes=0))
+
+
+def show_unreported(parent: str, turn: str) -> List[dict]:
+    """The tasks of *parent* whose result the user has not heard yet, marked as seen by the main agent
+    in *turn*. Each returned record carries ``seen_before``: whether an earlier turn already saw it."""
+    out = []
+    with _lock:
+        for t in _unreported(parent):
+            seen_before = bool(t.get("shown")) and t.get("shown_turn") != turn
+            if t.get("shown_turn") != turn:
+                t.update(shown=int(t.get("shown") or 0) + 1, shown_turn=turn)
+                _put(t)
+            out.append(dict(t, seen_before=seen_before))
+    return out
+
+
+def unreported_in_turn(parent: str, turn: str) -> List[dict]:
+    with _lock:
+        return [t for t in _unreported(parent) if t.get("shown_turn") == turn]
+
+
+def settle(task_ids: Iterable[str]) -> None:
+    """The user has heard these results."""
+    for task_id in task_ids:
+        _update(task_id, lambda t: t.update(unreported=False))
+
+
+def add_wake(task_ids: Iterable[str]) -> None:
+    for task_id in task_ids:
+        _update(task_id, lambda t: t.update(wakes=int(t.get("wakes") or 0) + 1))
 
 
 def add_note(parent: str, text: str) -> None:
@@ -272,6 +324,12 @@ def running(parent: str) -> List[dict]:
     with _lock:
         return _select("parent = ? AND status = ? AND started >= ?",
                        (parent, RUNNING, time.time() - _RUNNING_HORIZON_S), order="started ASC")
+
+
+def _unreported(parent: str) -> List[dict]:
+    rows = _select("parent = ? AND status != ? AND ended >= ?", (parent, RUNNING, time.time() - _REPORT_HORIZON_S),
+                   order="ended ASC")
+    return [t for t in rows if t.get("unreported")]
 
 
 def unfinished(parent: str, within_seconds: float = 86400.0, limit: int = 3) -> List[dict]:

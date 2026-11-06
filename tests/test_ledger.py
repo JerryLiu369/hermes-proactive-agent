@@ -3,7 +3,7 @@
 import json
 import sqlite3
 
-from helpers import GOOD_CONTEXT, main_tool, spawn_worker, start_turn, w_post
+from helpers import GOOD_CONTEXT, end_turn, main_tool, spawn_worker, start_turn, w_post
 
 WRANGLER = "/srv/app/wrangler.toml"
 
@@ -157,6 +157,7 @@ def test_restart_note_waits_in_the_ledger_for_the_chat(plugin, make_ctx, tmp_pat
     make_ctx()  # the gateway loads later: nothing left to mark, the note is still waiting
     note = start_turn(plugin)["context"]
     assert "Hermes restarted" in note and "Rotate the TLS certificate" in note
+    end_turn(plugin)
     assert start_turn(plugin, turn="t2") is None, "the note is delivered once"
 
 
