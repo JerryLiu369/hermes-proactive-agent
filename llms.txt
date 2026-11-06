@@ -30,8 +30,10 @@ Rules throughout: no extra model calls; what Hermes already does (command approv
 - From 60 s in one turn: a one-time reminder to answer or delegate within 1-2 steps.
 - From 120 s: editing and execution tools pause; reading, delegate_task and wrap-up tools remain (memory, todo, clarify, send_message, process_manage list/poll/log/kill).
 - A mid-turn user message (steer) resets the budget.
-- Foreground terminal commands longer than 30 s move to the background via Hermes' yield path and notify on completion.
 - process_manage(action='wait') is refused.
+
+### Long commands (independent of the four stages)
+- Foreground terminal commands longer than 30 s move to the background via Hermes' yield path and notify on completion (terminal_auto_detach_seconds, 0 disables).
 
 ### Handoff (delegate_task)
 - context under 120 characters is returned once per turn with a checklist.

@@ -15,6 +15,9 @@ You are the boss. The **main agent** is the secretary: always reachable, it unde
 reports back. **Subagents** are the workers: they take the slow, long or noisy jobs. The plugin keeps that division
 honest, so the chat never freezes, workers start with what they need, and nothing they do is forgotten.
 
+It also does one small, separate thing: a [long terminal command](#long-commands) moves to the background instead of
+holding the chat.
+
 ## Install
 
 ```bash
@@ -44,8 +47,8 @@ The plugin follows a task through its life and does one small thing at each stag
             └────────── 4. Results and ledger ◄────────┘
 ```
 
-1. **Turn budget.** The secretary may think and investigate, but every turn has a time limit, and long commands run in
-   the background. You always get an answer quickly.
+1. **Turn budget.** The secretary may think and investigate, but every turn has a time limit. You always get an answer
+   quickly.
 2. **Handoff.** The secretary knows the conversation, so it writes the brief. The plugin sends back a brief that is too
    thin, and attaches what a worker cannot know on its own.
 3. **Worker limits.** A worker that keeps repeating the same step is stopped instead of burning its budget.
@@ -72,9 +75,7 @@ Four rules hold throughout:
 
 - A message from you mid-turn resets the clock.
 - Wrap-up tools are `memory`, `todo`, `clarify`, `send_message`, and `process_manage` to list, poll, read logs or kill.
-- A foreground command that runs past 30 s moves to the background through Hermes' own yield path. It keeps running,
-  Hermes reports when it ends, and the secretary is told it has not failed.
-- `process_manage(action='wait')` is refused: waiting on a background job would freeze the chat again.
+- `process_manage(action='wait')` is refused at any time: waiting on a background job would freeze the chat again.
 
 ### 2. Handoff
 
@@ -122,6 +123,12 @@ next turn, so a restart never drops them.
 
 It lives in `<hermes home>/plugin-data/proactive-agent/ledger.db` and keeps each chat's last 20 finished tasks for up to
 7 days.
+
+### Long commands
+
+Independent of the four stages: a foreground terminal command that runs past 30 s moves to the background through
+Hermes' own yield path. It keeps running, Hermes reports when it ends, and the secretary is told it has not failed.
+Set `terminal_auto_detach_seconds: 0` to turn this off.
 
 ### Scope
 
