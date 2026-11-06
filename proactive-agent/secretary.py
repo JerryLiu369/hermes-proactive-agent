@@ -57,11 +57,6 @@ def user_words(session_id: str) -> List[str]:
         return list(_user_words.get(session_id) or [])
 
 
-def language(session_id: str) -> str:
-    words = user_words(session_id)
-    return "zh" if words and util.is_cjk(words[-1]) else "en"
-
-
 def zone(session_id: str) -> str:
     with _lock:
         st = _turns.get(session_id)

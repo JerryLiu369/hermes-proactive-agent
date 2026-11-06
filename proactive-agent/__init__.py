@@ -110,7 +110,7 @@ def _parent_governed(parent_session: str) -> bool:
 
 @_guarded
 def _subagent_start(**kw: Any) -> None:
-    workers.on_subagent_start(_parent_governed, secretary.language, **kw)
+    workers.on_subagent_start(_parent_governed, **kw)
 
 
 @_guarded

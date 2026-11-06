@@ -22,7 +22,7 @@ Roles: the main agent ("secretary") keeps the chat responsive, investigates, dec
 
 One small step per stage of a task: turn budget (secretary) -> handoff (delegate_task) -> worker limits (subagent) -> results and task ledger (back to the secretary).
 
-Rules throughout: no extra model calls; what Hermes already does (command approval, stale-file protection, step budgets, stall detection, completion delivery) stays with Hermes; nothing is injected every turn or posted on a timer; a plugin error never blocks a tool.
+Rules throughout: no extra model calls; what Hermes already does (command approval, stale-file protection, step budgets, stall detection, completion delivery) stays with Hermes; the plugin talks only to the secretary, never to the user's chat; a plugin error never blocks a tool.
 
 ## Features
 
@@ -39,7 +39,7 @@ Rules throughout: no extra model calls; what Hermes already does (command approv
 - Accepted tasks get the user's recent messages verbatim, USER.md and MEMORY.md in full, the running subagents and the files they change, this chat's recent unfinished tasks from the ledger, working rules, and a default output_schema (status, summary, evidence, blockers).
 
 ### Worker limits
-- Same tool, same arguments, same result: a note after 3 repeats, a stop after 5 (the worker must report "blocked"; the user gets an alert).
+- Same tool, same arguments, same result: a note after 3 repeats, a stop after 5 (the worker must report "blocked"; the secretary is told why and tells the user in one line).
 - The step budget is Hermes' delegation.max_iterations.
 
 ### Results and task ledger
@@ -48,7 +48,7 @@ Rules throughout: no extra model calls; what Hermes already does (command approv
 - Task ledger (SQLite in <hermes home>/plugin-data/proactive-agent/ledger.db, written by hooks only): goal, status, changed files, steers, live transcript path, summary, evidence, blockers. Last 20 finished tasks per chat, up to 7 days.
 - Hermes does not resume a finished or restarted subagent; the next worker is briefed with the unfinished task's record, and after a restart the secretary is told which tasks were lost.
 - action='stop' marks the task stopped at once; running records with no end expire after 6 hours; result and restart notes are stored in the ledger until the chat's next turn.
-- The only plugin chat message is the alert when a worker is stopped for repeating itself (ctx.post_message).
+- The plugin never posts to the user's chat; it only adds notes for the secretary.
 
 Only platforms in governed_platforms (default ["weixin"]) are affected. Cron runs and subagents of ungoverned sessions are untouched.
 

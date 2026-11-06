@@ -57,7 +57,7 @@ Four rules hold throughout:
 - **No extra model calls.** Every check is plain code.
 - **Hermes keeps its own job.** Command approval, stale-file protection, step budgets, stall detection and completion
   delivery stay with Hermes.
-- **Quiet by default.** Nothing is injected into every turn and nothing is posted on a timer.
+- **Quiet by default.** The plugin talks only to the secretary, never to your chat, and only when something happened.
 - **Never in the way.** A plugin error is logged; it never blocks a tool.
 
 ## Features
@@ -98,8 +98,8 @@ A second attempt always goes through. Every accepted task then gets a briefing a
 ### 3. Worker limits
 
 When a worker runs the same tool with the same arguments and gets the same result, it is warned at the third time and
-stopped at the fifth. A stopped worker's tool calls are refused, it must report `blocked`, and you get a one-line
-alert in the chat. This is the only message the plugin posts itself.
+stopped at the fifth. A stopped worker's tool calls are refused and it must report `blocked`. The secretary then
+hears why it was stopped and tells you in one line what got stuck and what it will do instead.
 
 ### 4. Results and task ledger
 
@@ -154,8 +154,7 @@ plugins:
 
 ## Compatibility
 
-- Hermes Agent 0.22 or later (tested on v0.22.7). Without `ctx.post_message` the stuck alert is skipped; everything
-  else works.
+- Hermes Agent 0.22 or later (tested on v0.22.7).
 - Python 3.10 or later.
 
 ## Development
@@ -173,7 +172,7 @@ proactive-agent/      the plugin, and all that Hermes installs
 ├── __init__.py       registers the hooks
 ├── secretary.py      turn budget, background detach
 ├── handoff.py        delegate_task checks and briefing
-├── workers.py        repeat stop, result notes, stuck alert
+├── workers.py        repeat stop, result notes
 ├── ledger.py         persistent task ledger
 ├── context.py        who is calling: secretary, worker or cron
 ├── prompt.py         system prompt section

@@ -1,4 +1,4 @@
-"""Workers: repeat stop, result notes and the stuck alert."""
+"""Workers: repeat stop and result notes for the main agent."""
 
 import json
 import threading
@@ -16,14 +16,7 @@ def test_worker_only_governed_under_governed_parent(plugin, make_ctx):
 
 def test_worker_reminded_then_stopped_on_repeated_step(plugin, make_ctx):
     posted = []
-    alerted = threading.Event()
-
-    def post(text):
-        posted.append(text)
-        alerted.set()
-        return SimpleNamespace(ok=True)
-
-    make_ctx(post_message=post)
+    make_ctx(post_message=lambda text: posted.append(text) or SimpleNamespace(ok=True))
     start_turn(plugin, user="又 522 了")
     worker = spawn_worker(plugin)
     curl = {"command": "curl -sI https://app.example.com/ping"}
@@ -40,7 +33,13 @@ def test_worker_reminded_then_stopped_on_repeated_step(plugin, make_ctx):
     assert "STOP" in note
     blocked = w_tool(plugin, "terminal", {"command": "ls"}, api="r9")
     assert blocked["action"] == "block" and "final report" in blocked["message"]
-    assert alerted.wait(2) and posted == ["后台子任务卡住了，已叫停：Fix the 522 on app.example.com。主助手会接着处理。"]
+
+    plugin._subagent_stop(parent_session_id="s1", child_session_id="child-1", child_status="completed",
+                          child_summary=json.dumps({"status": "blocked", "summary": "522 persists"}),
+                          tool_call_history=[], duration_ms=60000)
+    note = start_turn(plugin, turn="t2")["context"]
+    assert "The plugin stopped it" in note and "Tell the user in one line" in note, "the secretary handles it"
+    assert posted == [], "nothing goes to the user's chat directly"
 
 
 def test_different_steps_failing_alike_are_not_repeats(plugin, make_ctx):

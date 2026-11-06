@@ -6,13 +6,6 @@ import json
 import re
 from typing import Any, Optional
 
-_CJK = re.compile(r"[\u3400-\u9fff]")
-
-
-def is_cjk(text: str) -> bool:
-    return bool(_CJK.search(text or ""))
-
-
 def message_text(message: Any) -> str:
     if not isinstance(message, dict):
         return ""

@@ -1,4 +1,4 @@
-"""Delegated workers: stop on repeated steps, result notes and the stuck alert.
+"""Delegated workers: stop on repeated steps and result notes for the main agent.
 
 A worker is governed only when the main agent that spawned it is governed. Runtime counters
 live here; what each task is, which files it changed and how it ended goes to the ledger.
@@ -7,7 +7,6 @@ live here; what each task is, which files it changed and how it ended goes to th
 from __future__ import annotations
 
 import collections
-import contextvars
 import logging
 import threading
 import time
@@ -59,7 +58,7 @@ def _prune(now: float) -> None:
         _by_session.pop(_workers.pop(wid).get("session_id") or "", None)
 
 
-def on_subagent_start(is_parent_governed: Callable[[str], bool], language_of: Callable[[str], str], **kw: Any) -> None:
+def on_subagent_start(is_parent_governed: Callable[[str], bool], **kw: Any) -> None:
     parent_session = kw.get("parent_session_id") or ""
     child_id = kw.get("child_subagent_id") or ""
     if not child_id:
@@ -75,7 +74,6 @@ def on_subagent_start(is_parent_governed: Callable[[str], bool], language_of: Ca
         "session_id": kw.get("child_session_id") or "",
         "parent_session": owner,
         "goal": str(kw.get("child_goal") or ""),
-        "lang": parent_worker["lang"] if parent_worker else language_of(owner),
         "spawn": now,
         "last_activity": now,
         "last_call": "",
@@ -86,8 +84,6 @@ def on_subagent_start(is_parent_governed: Callable[[str], bool], language_of: Ca
         "stop_noted": False,
         "done": False,
         "stopped_by_parent": False,
-        # Captured on the parent's thread so the stuck alert reaches the user's chat later.
-        "post_context": contextvars.copy_context(),
     }
     with _lock:
         _prune(now)
@@ -167,11 +163,6 @@ def post_tool_call(w: dict, tool_name: str, args: Optional[dict], result: Any, *
                                  f"Change approach or report the blocker; at {limit} repeats you will be stopped.")
     if stopped:
         logger.warning("proactive-agent: stopping worker %s: %s", w["id"], stopped)
-        if w["lang"] == "zh":
-            _post(w, f"后台子任务卡住了，已叫停：{util.short(w['goal'], 40)}。主助手会接着处理。")
-        else:
-            _post(w, f"A background task got stuck and was stopped: {util.short(w['goal'], 40)}. "
-                     "The assistant will follow up.")
 
 
 def transform_tool_result(w: dict, tool_name: str, result: Any) -> Optional[str]:
@@ -260,7 +251,8 @@ def on_subagent_stop(**kw: Any) -> None:
              f"(status: {final}, {len(w['rounds'])} tool rounds, {minutes:.1f} min)."]
     if w["stop_reason"]:
         lines.append(f"- The plugin stopped it: {w['stop_reason']}. Treat it as blocked and decide the next step "
-                     "yourself; do not re-dispatch the same plan.")
+                     "yourself; do not re-dispatch the same plan. Tell the user in one line what got stuck and what "
+                     "you will do instead.")
     elif final == ledger.STOPPED:
         record = ledger.get(w["id"]) or {}
         changed = record.get("files") or []
@@ -293,26 +285,6 @@ def queue_note(parent_session: str, note: str) -> None:
 
 def pop_notes(parent_session: str) -> str:
     return "\n\n".join(ledger.pop_notes(parent_session))
-
-
-# ---------------------------------------------------------------- chat alert
-
-def _post(w: dict, text: str) -> None:
-    ctx = config.ctx()
-    poster = getattr(ctx, "post_message", None) if ctx is not None else None
-    captured = w.get("post_context")
-    if poster is None or captured is None:
-        return
-
-    def _send() -> None:
-        try:
-            handle = captured.copy().run(poster, text)
-            if getattr(handle, "ok", True) is False:
-                logger.debug("proactive-agent: chat alert refused: %s", getattr(handle, "error", ""))
-        except Exception:
-            logger.debug("proactive-agent: chat alert failed", exc_info=True)
-
-    threading.Thread(target=_send, name="proactive-agent-post", daemon=True).start()
 
 
 # ---------------------------------------------------------------- cleanup
