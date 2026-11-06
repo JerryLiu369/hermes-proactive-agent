@@ -20,7 +20,9 @@ The plugin lives in the repository's proactive-agent/ directory. Recommended Her
 
 Roles: the main agent ("secretary") keeps the chat responsive, investigates, decides and writes the handoffs; subagents ("workers") do the slow execution.
 
-One simple step per stage of a task: turn budget (secretary) -> handoff (delegate_task) -> worker limits (subagent) -> results and task ledger (back to the secretary). Safety checks Hermes already does (denying subagents' dangerous commands, refusing stale file overwrites) are left to Hermes. No extra model calls are made.
+One small step per stage of a task: turn budget (secretary) -> handoff (delegate_task) -> worker limits (subagent) -> results and task ledger (back to the secretary).
+
+Rules throughout: no extra model calls; what Hermes already does (command approval, stale-file protection, step budgets, stall detection, completion delivery) stays with Hermes; nothing is injected every turn or posted on a timer; a plugin error never blocks a tool.
 
 ## Features
 
