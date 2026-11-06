@@ -127,7 +127,12 @@ the `hermes-agent` checkout.
   `hermes_cli/plugins_injection.py`) starts an internal turn in an existing gateway session
   (`gateway/run_plugin_injection.py`). It needs `plugins.entries.<plugin id>.allow_gateway_injection: true` and, for
   a messaging chat, the `session_key`; otherwise it returns `False` and Hermes logs why. A busy session queues it.
-- A reply that is exactly `[SILENT]` (or `NO_REPLY`) to an internal turn is not delivered (`gateway/response_filters.py`).
+- A reply that is exactly `[SILENT]` (or `NO_REPLY`) is dropped only on a machinery turn (an internal event such as
+  an `inject_message` turn, or `reply_expected` false; `gateway/response_filters.py::silence_allowed`). On a user
+  turn Hermes logs "silence marker rejected on a user turn" and sends `gateway.errors.unexpected_silence` instead
+  (`gateway/run_turn_persistence.py`). So the plugin suggests `[SILENT]` only in its own wake turn. Hermes never
+  merges a queued internal event with a user message (`gateway/run_busy.py::_queue_or_replace_pending_event`), and
+  each turn of a queued chain is judged by its own kind (`gateway/run_turn.py`).
 - `plugins.plugin_storage.plugin_db(name, file)` opens the ledger's SQLite file under `plugin-data/`.
 
 **Already in Hermes (do not rebuild)**
