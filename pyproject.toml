@@ -1,7 +1,7 @@
 [project]
 name = "hermes-proactive-agent"
 version = "0.1.16"
-description = "Hermes Agent plugin that keeps chat turns responsive, briefs and stops subagents, makes sure their results reach the user, and persists delegated tasks across restarts"
+description = "Hermes Agent plugin that keeps chat turns responsive, briefs subagents, stops loops and brings back decisions, verifies and delivers results, and persists tasks in a SQLite ledger"
 readme = "README.md"
 license = { text = "MIT" }
 authors = [{ name = "Jerry Liu" }]
@@ -10,18 +10,18 @@ dependencies = []
 keywords = [
     "hermes",
     "hermes-agent",
-    "plugin",
+    "hermes-plugin",
+    "proactive-agent",
     "ai-agent",
-    "agent",
-    "agent-orchestration",
-    "subagent",
+    "chat-agent",
+    "subagents",
     "delegation",
     "multi-agent",
+    "agent-orchestration",
+    "agent-governance",
     "task-ledger",
     "background-jobs",
-    "agent-governance",
-    "chat-agent",
-    "llm",
+    "human-in-the-loop",
     "llms-txt",
 ]
 classifiers = [
