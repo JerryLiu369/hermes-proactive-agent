@@ -86,10 +86,12 @@ the `hermes-agent` checkout.
 
 **Who is calling**
 
-- Subagent: task id `sa-<n>-<hex>`, platform `"subagent"` (`tools/delegate_tool.py`), and
-  `agent.delegation_context.is_delegated_child_context()`.
-- Cron: task id `cron:<job>:<run>`, session `cron_<job>_<time>` (`cron/scheduler.py`), the contextvars
-  `cron.execution_identity.current_cron_execution()` and `gateway.session_cron.current_execution()`, and a truthy
+- Subagent: task id `sa-<n>-<hex>` (`tools/delegate_tool.py`), or `subagent-<n>-<hex>` when no subagent id was
+  minted (`tools/delegate_tool_child_run.py`), and platform `"subagent"`. Every hook the plugin routes on carries
+  one of the two. `agent.delegation_context` is not a documented plugin module, so the plugin does not import it.
+- Cron: task id `cron:<job>:<run>`, session `cron_<job>_<time>` (`cron/scheduler.py`), the contextvar
+  `cron.execution_identity.current_cron_execution()` (documented for plugins; also `ctx.current_cron_execution()`),
+  which the gateway's cron owner re-binds around its run (`gateway/session_cron.py::_run_identified`), and a truthy
   `HERMES_CRON_SESSION`.
 - Session facts such as `HERMES_SESSION_ID`, `HERMES_SESSION_PLATFORM` and `HERMES_SESSION_KEY` (the gateway route
   key, `agent:<profile>:<platform>:...`) are contextvars read with `gateway.session_context.get_session_env`; the

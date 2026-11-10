@@ -2,7 +2,6 @@
 
 import sys
 import threading
-from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -89,11 +88,9 @@ def test_detach_disarmed_when_the_command_raises(plugin, make_ctx, interrupt):
 
 def test_detach_skipped_for_children(plugin, make_ctx, interrupt):
     ctx = make_ctx()
-    child_ctx = SimpleNamespace(is_delegated_child_context=lambda: True)
     start_turn(plugin)
-    with patch.dict(sys.modules, {"agent": MagicMock(), "agent.delegation_context": child_ctx}):
-        _run(ctx)
     _run(ctx, task_id="sa-0-abc", session="child-1")
+    _run(ctx, task_id="subagent-0-abc", session="child-2")
     assert _Timer.made == []
 
 

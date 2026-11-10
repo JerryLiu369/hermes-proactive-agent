@@ -70,16 +70,11 @@ def _platform_is(name: str, **kw: Any) -> bool:
 
 
 def _cron_running() -> bool:
-    """Hermes binds the cron run executing now in a contextvar (two of them: the scheduler's and the gateway's)."""
+    """Hermes binds the cron run executing now in a contextvar; the gateway's cron owner re-binds the
+    same one around its run."""
     try:
         from cron.execution_identity import current_cron_execution
-        if current_cron_execution() is not None:
-            return True
-    except Exception:
-        pass
-    try:
-        from gateway.session_cron import current_execution
-        return current_execution() is not None
+        return current_cron_execution() is not None
     except Exception:
         return False
 
@@ -97,14 +92,9 @@ def is_cron(**kw: Any) -> bool:
 
 
 def is_child(**kw: Any) -> bool:
-    """A delegated subagent: Hermes gives it a ``sa-<n>-<hex>`` task id and the "subagent" platform."""
-    if str(kw.get("task_id") or "").startswith("sa-") or _platform_is("subagent", **kw):
-        return True
-    try:
-        from agent.delegation_context import is_delegated_child_context
-        return bool(is_delegated_child_context())
-    except Exception:
-        return False
+    """A delegated subagent: Hermes gives it a ``sa-<n>-<hex>`` task id (``subagent-<n>-<hex>`` when no
+    subagent id was minted) and the "subagent" platform."""
+    return str(kw.get("task_id") or "").startswith(("sa-", "subagent-")) or _platform_is("subagent", **kw)
 
 
 def is_governed_main(**kw: Any) -> bool:
