@@ -157,6 +157,18 @@ No. Only platforms listed in `governed_platforms` (and the subagents spawned fro
 **Does it replace Hermes' command approvals or loop guard?**
 No. Both continue working as usual. When Hermes' approval blocks a subagent command, the plugin simply instructs the subagent not to look for a workaround and to bring the question back to the main agent.
 
+**How do I stop a chat from freezing during a long command or a multi-step job?**
+Install and enable `proactive-agent`. At 60 seconds the main agent is reminded to reply or hand the remaining work to a subagent; at 120 seconds it loses the tools that edit files and run commands for the rest of the turn, though reading, searching and delegating still work. A terminal command still running after 30 seconds moves to the background, and waiting on a background job is refused, so a long build cannot hold the chat.
+
+**Why does a `delegate_task` subagent ignore `MEMORY.md` and what we just said?**
+Hermes spawns subagents with no chat history and does not load their user or memory files, so there is nothing for them to read. The plugin appends a briefing to every accepted task: your last 6 messages word for word, `USER.md` and `MEMORY.md`, the other running subagents and the files they are changing, this chat's recent unfinished tasks, a few working rules, and how to report.
+
+**What does a subagent do when it reaches a choice that is not its to make, or when its command is refused?**
+It cannot ask you: Hermes gives subagents no `clarify` tool and cannot resume one that has ended. So it stops and reports `status: needs_decision` with one `question` and the `options`, and a step refused by approval or a hook is reported the same way, after a note telling it not to retry or work around the refusal. The main agent answers what the chat or memory settles, asks you in one short message when the call really is yours, then sends a new subagent with the answer.
+
+**What happens if I write something just as a background subagent finishes?**
+Hermes folds your message into the turn that is reporting the result, and the main agent tends to answer only you. The plugin keeps the result marked `unreported` until a turn that showed it ends with a reply you did not interrupt: the next tool result carries a reminder, or the plugin wakes the main agent once through Hermes' message injection (which needs `allow_gateway_injection: true`) for a short follow-up or `[SILENT]`, and failing both, your next message carries the reminder.
+
 ## Compatibility
 
 - **Hermes Agent** 0.22 or later (verified against v0.22.7).
