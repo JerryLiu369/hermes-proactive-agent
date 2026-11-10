@@ -111,7 +111,9 @@ the `hermes-agent` checkout.
   follow-up is a new subagent. Hermes has no channel for a subagent to ask the user or its parent anything, and the
   `delegate_task` description tells the parent "subagents cannot ask questions" (`tools/delegate_tool.py`), which
   is why the prompt section says a `needs_decision` report brings the question back.
-- `output_schema` (`tools/delegation_output_schema.py`): checked with `jsonschema` when the task is spawned (an invalid
+- The plugin sets no `output_schema`: since v0.23 Hermes no longer depends on `jsonschema`, and without it Hermes only
+  checks that the answer parses as JSON. The report format is asked for in the briefing and read leniently by
+  `reports._report`. For reference, `output_schema` (`tools/delegation_output_schema.py`): checked with `jsonschema` when the task is spawned (an invalid
   schema fails the whole call) and appended to the child's `context` as an "OUTPUT CONTRACT". The final answer is
   validated with jsonschema, so an enum is enforced (`needs_decision` must be in it); on failure the child gets one
   correction turn, then its raw text is passed on with `schema_valid: false`. `child_status` stays `completed`

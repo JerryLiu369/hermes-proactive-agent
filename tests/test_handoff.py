@@ -22,7 +22,8 @@ def test_thin_handoff_returned_once_then_briefed(plugin, make_ctx):
     assert "别自己改 edgetunnel" in task["context"] and "帮我修一下" in task["context"]
     assert "DNS 是代理状态" not in task["context"], "only the user's own words are attached"
     assert "final report in" not in task["context"]
-    assert task["output_schema"]["required"] == ["status", "summary"]
+    assert "## How to report" in task["context"]
+    assert "output_schema" not in task, "no schema: Hermes would need jsonschema to check it"
 
 
 def test_steer_joins_user_words_but_injected_context_does_not(plugin, make_ctx):
@@ -50,7 +51,7 @@ def test_handoff_keeps_brief_and_attaches_memory(plugin, make_ctx, tmp_path):
     assert task["context"].startswith(GOOD_CONTEXT)
     assert "Never deploy with --env production" in task["context"] and "END-OF-MEMORY" in task["context"]
     assert "Prefers short answers" in task["context"]
-    assert task["output_schema"] == {"type": "object"}
+    assert task["output_schema"] == {"type": "object"}, "a schema the main agent set is left alone"
 
 
 def test_single_goal_shape(plugin, make_ctx):
@@ -72,11 +73,9 @@ def test_briefing_tells_the_worker_to_bring_a_decision_back(plugin, make_ctx):
     make_ctx()
     start_turn(plugin)
     res = main_tool(plugin, "delegate_task", {"goal": "Fix", "context": GOOD_CONTEXT})
-    context, schema = res["args"]["context"], res["args"]["output_schema"]
+    context = res["args"]["context"]
     assert "You cannot ask the user" in context and "Do not guess" in context
     assert "do not retry it or reach the same result another way" in context
     assert "A refusal that says the user denied it may be automatic" in context
-    assert "needs_decision" in schema["properties"]["status"]["enum"]
-    assert {"question", "options"} <= set(schema["properties"])
-    assert schema["if"]["properties"]["status"] == {"const": "needs_decision"}
-    assert schema["then"] == {"required": ["question"]}, "Hermes makes a needs_decision report carry its question"
+    assert '"needs_decision"' in context and '"question" and "options"' in context
+    assert "output_schema" not in res["args"]

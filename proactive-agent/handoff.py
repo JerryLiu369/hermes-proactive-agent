@@ -1,40 +1,19 @@
 """delegate_task gate. A brief that is too short goes back to the main agent once per turn, and so
 does one that names a file another running subagent is changing. Every accepted brief gets the
-user's own words, memory, the chat's task ledger, working rules and a result schema. The rules and
-the schema's needs_decision status are how a subagent, which cannot ask the user, brings a
+user's own words, memory, the chat's task ledger, working rules and how to report. The rules and
+the report's needs_decision status are how a subagent, which cannot ask the user, brings a
 question back to the main agent instead of guessing or working around a refusal."""
 
 from __future__ import annotations
 
-import copy
 import re
 import threading
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 
 from . import config, ledger, reports, util, workers
 
 BRIEFING_MARKER = "=== Handoff briefing (attached by proactive-agent) ==="
-
-DEFAULT_OUTPUT_SCHEMA: Dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "status": {"type": "string", "enum": list(reports.REPORT_STATUSES)},
-        "summary": {"type": "string", "description": "What was done and the verified end state."},
-        "evidence": {"type": "array", "items": {"type": "string"},
-                     "description": "Checkable proof: URL + status code, command + exit code, file path, service state."},
-        "blockers": {"type": "array", "items": {"type": "string"}},
-        "question": {"type": "string",
-                     "description": "With needs_decision: the one question to decide, with the facts needed to answer it."},
-        "options": {"type": "array", "items": {"type": "string"},
-                    "description": "With needs_decision: the choices, each with what it would mean."},
-    },
-    "required": ["status", "summary"],
-    # Hermes validates the final answer against this schema, so a needs_decision report without a
-    # question gets a correction turn.
-    "if": {"properties": {"status": {"const": reports.DECISION}}, "required": ["status"]},
-    "then": {"required": ["question"]},
-}
 
 _RULES = (
     "- Do only the goal above. Never delete, stub out or rewrite working code or config just to make a check pass.\n"
@@ -48,6 +27,18 @@ _RULES = (
     "- Risky changes (SSH, firewall, DNS, deletes) only with a rollback path; otherwise report \"needs_decision\".\n"
     "- Do not edit a file another running subagent is changing; report it as a blocker instead.\n"
     "- Before reporting completed, check the real end state and list it as evidence."
+)
+
+# Asked for, not enforced: no output_schema is set, so Hermes needs no jsonschema and never sends a
+# correction turn. reports reads the JSON when it is there and leaves prose to the main agent.
+_REPORT = (
+    "End with one JSON object as your final answer:\n"
+    "- \"status\": " + " | ".join(f'\"{s}\"' for s in reports.REPORT_STATUSES) + "\n"
+    "- \"summary\": what was done and the verified end state\n"
+    "- \"evidence\": checkable proof (URL + status code, command + exit code, file path, service state)\n"
+    "- \"blockers\": what stopped you, if anything\n"
+    "- \"question\" and \"options\": with needs_decision, the one question to decide (with the facts needed to "
+    "answer it) and the choices, each with what it would mean"
 )
 
 _lock = threading.Lock()
@@ -135,6 +126,7 @@ def _briefing(user_words: List[str], parent: str, running: List[dict]) -> str:
         if section:
             parts.append(section)
     parts.append("## Working rules\n" + _RULES)
+    parts.append("## How to report\n" + _REPORT)
     return "\n\n".join(parts)
 
 
@@ -209,8 +201,7 @@ def gate(session_id: str, turn_id: str, args: Optional[dict], user_words: List[s
 
     single_goal = not isinstance(args.get("tasks"), list)
     if single_goal:
-        tasks = [{"goal": args.get("goal"), "context": args.get("context"),
-                  "output_schema": args.get("output_schema")}] if args.get("goal") else []
+        tasks = [{"goal": args.get("goal"), "context": args.get("context")}] if args.get("goal") else []
     else:
         tasks = [dict(t) for t in args["tasks"] if isinstance(t, dict)]
     if not tasks or any(BRIEFING_MARKER in str(t.get("context") or "") for t in tasks):
@@ -232,9 +223,7 @@ def gate(session_id: str, turn_id: str, args: Optional[dict], user_words: List[s
     for t in tasks:
         own = str(t.get("context") or "").strip()
         t["context"] = f"{own}\n\n{briefing}" if own else briefing
-        if not t.get("output_schema"):
-            t["output_schema"] = copy.deepcopy(DEFAULT_OUTPUT_SCHEMA)
 
     if single_goal:
-        return {"action": "modify", "args": {"context": tasks[0]["context"], "output_schema": tasks[0]["output_schema"]}}
+        return {"action": "modify", "args": {"context": tasks[0]["context"]}}
     return {"action": "modify", "args": {"tasks": tasks}}

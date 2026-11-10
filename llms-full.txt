@@ -82,7 +82,7 @@ hermes plugins list           # proactive-agent should appear as enabled
 | Blocking on a background process | `process_manage(action='wait')` allowed | Refused immediately so waiting cannot freeze the chat |
 | Brief quality gate | `delegate_task` accepts any `context` | `context` shorter than 120 characters is returned once per turn with instructions on what to add |
 | File write contention across subagents | Undetected | A brief naming a file another running subagent is modifying is returned once per turn |
-| Subagent starting context | Empty (`skip_memory=True`, no chat history) | Appended briefing: last 6 user messages verbatim, `USER.md`, `MEMORY.md`, running subagents and their files, recent unfinished tasks, working rules, default `output_schema` |
+| Subagent starting context | Empty (`skip_memory=True`, no chat history) | Appended briefing: last 6 user messages verbatim, `USER.md`, `MEMORY.md`, running subagents and their files, recent unfinished tasks, working rules, how to report |
 | Repeated identical tool outcomes | Hermes warns subagents but never stops them | Cumulative counter across the whole run: warn on 3rd identical outcome, hard stop on 5th, refuse further tools, require `blocked` report |
 | Outcome matching for repeats | Consecutive tool calls | Whole-run history matched by tool name, arguments, and first result line with long numbers and hashes masked |
 | Decisions outside a subagent's scope | No `clarify` tool and no resume; subagent guesses or aborts | Subagent stops with `needs_decision`, `question`, and `options`; main agent answers from chat/memory or asks the user in one message, then spawns a follow-up subagent |
@@ -136,7 +136,7 @@ Every accepted task has a structured handoff briefing appended after the main ag
 | Other subagents running now | Lists active sibling goals, elapsed minutes, and files they are modifying |
 | Earlier unfinished work in this chat | Up to 3 recent non-completed tasks (within 24 h): status, summary, blockers, open question, `steer` corrections, modified files, and live transcript path |
 | Working rules | Stay in scope; stop after the same failure twice; report `needs_decision` instead of guessing; never work around a refused command; require a rollback path for risky changes; do not edit another worker's files; verify the real end state |
-| Default `output_schema` | Enforces `status` (`completed`, `partial`, `blocked`, `needs_decision`, `failed`), `summary`, `evidence`, `blockers`, and `question` (required when `status == "needs_decision"`) plus `options`, unless the caller provided a custom schema |
+| How to report | Asks for a final JSON object with `status` (`completed`, `partial`, `blocked`, `needs_decision`, `failed`), `summary`, `evidence`, `blockers`, plus `question` and `options` for a decision. Not enforced: no `output_schema` is set (one the caller set is kept), so Hermes needs no `jsonschema` and sends no correction turn |
 
 ### 4. Subagents do not spin or guess (`workers.py`, `handoff.py`, `reports.py`)
 
@@ -145,7 +145,7 @@ Every accepted task has a structured handoff briefing appended after the main ag
 - At the **3rd** identical outcome (`limit - 2`), a warning note is attached to the tool result telling the worker to change approach or report the blocker.
 - At the **5th** identical outcome (`limit`), `stop_reason` is set and a `STOP` note is attached. Any subsequent `pre_tool_call` from that worker is blocked, forcing it to conclude with status `blocked`.
 
-**Structured decisions and refused commands:** Subagents have no `clarify` tool and cannot be resumed once they finish. When a subagent encounters an unresolved choice that belongs to the main agent or user, its working rules and `DEFAULT_OUTPUT_SCHEMA` instruct it to stop and report `status: "needs_decision"` with `question` and `options`. Hermes validates the final output against the JSON schema and grants one correction turn if `question` is omitted.
+**Structured decisions and refused commands:** Subagents have no `clarify` tool and cannot be resumed once they finish. When a subagent encounters an unresolved choice that belongs to the main agent or user, its working rules and report format instruct it to stop and report `status: "needs_decision"` with `question` and `options`. `reports._report` reads the answer when it is a JSON object or holds a fenced JSON block; prose that names `needs_decision` still counts as a decision without a question, and the main agent is told to read the summary.
 
 When Hermes' command approval refuses a subagent call (returning an error starting with `BLOCKED`) or leaves a terminal call in `status: "pending_approval"`, `workers.transform_tool_result` attaches an immediate note instructing the worker not to retry, rephrase, or work around the refusal, and to report `needs_decision` if the step is required. If a shell hook or plugin blocks a call in `pre_tool_call` (`error_type == "plugin_block"`), Hermes skips `transform_tool_result`, so `workers.post_tool_call` queues the same note for the worker's next tool result. The note also explains that a "user denied" message may be automatic (`delegation.subagent_auto_approve: false` in CLI mode).
 
@@ -220,7 +220,7 @@ Install and enable `proactive-agent`. The main agent receives a reminder at 60 s
 Any governed foreground terminal command still running after 30 s is automatically detached to the background through Hermes' yield mechanism. The command keeps running, the main agent is told it has not failed, and Hermes notifies the chat when it completes. `process_manage(action='wait')` is refused so the agent cannot block on it.
 
 **Why does my subagent not know what we discussed in chat, and how does the plugin fix it?**
-Hermes spawns subagents with `skip_memory=True` and no chat history. The plugin gates `delegate_task` briefs shorter than 120 characters once per turn and appends the user's last 6 messages verbatim, `USER.md`, `MEMORY.md`, active sibling subagents, recent unfinished tasks, working rules, and a structured `output_schema`.
+Hermes spawns subagents with `skip_memory=True` and no chat history. The plugin gates `delegate_task` briefs shorter than 120 characters once per turn and appends the user's last 6 messages verbatim, `USER.md`, `MEMORY.md`, active sibling subagents, recent unfinished tasks, working rules, and how to report.
 
 **How do I stop a subagent from repeating the same failing tool call until its budget runs out?**
 The plugin counts identical `(tool, args, normalized_first_line)` outcomes across the whole subagent run, warns on the 3rd repeat, and stops the subagent on the 5th, refusing further tool calls so it must report `blocked`. Pairing this with `delegation.max_iterations: 60` catches non-identical wandering loops as well.
@@ -229,7 +229,7 @@ The plugin counts identical `(tool, args, normalized_first_line)` outcomes acros
 Subagents cannot call `clarify` or be resumed. Instead, when a subagent hits a decision outside its authority, or when Hermes' approval or a hook refuses a command it needs, it stops and reports `status: "needs_decision"` with a `question` and `options` (and is explicitly told on the spot not to work around a refusal). The main agent answers the question itself when the chat or memory settles it, or asks the user in one short message, then dispatches a new subagent briefed with the answer and the earlier task's record.
 
 **How do I verify a subagent actually finished the job?**
-Every accepted task receives a default `output_schema` requiring `status`, `summary`, `evidence`, and `blockers`. When the subagent stops, the main agent's next turn opens with the reported evidence or an explicit warning if evidence is missing, the task is incomplete, or the worker was stopped for looping.
+Every accepted task is asked to end with a JSON report holding `status`, `summary`, `evidence`, and `blockers`. When the subagent stops, the main agent's next turn opens with the reported evidence or an explicit warning if evidence is missing, the task is incomplete, or the worker was stopped for looping.
 
 **What happens when the user sends a message right as a background subagent result arrives?**
 The background result stays marked `unreported` until a turn that showed it finishes with an uninterrupted reply. If the main agent calls a tool after the user's message, that tool result reminds it to answer the user and report the finished task together; if it replies without calling a tool, the plugin wakes it via `ctx.inject_message` (requires `allow_gateway_injection: true`) for a brief follow-up or `[SILENT]`; otherwise the reminder rides on the user's next message.

@@ -80,7 +80,7 @@ def test_handoff_gate_rewrites_args_through_hermes(hermes):
     task = modified["tasks"][0]
     assert task["context"].startswith(CONTEXT)
     assert "Handoff briefing" in task["context"] and "帮我修一下 522" in task["context"]
-    assert task["output_schema"]["required"] == ["status", "summary"]
+    assert "output_schema" not in task
 
 
 def test_single_goal_handoff_keeps_the_goal_through_hermes(hermes):
@@ -200,22 +200,6 @@ def _spawn_e2e_worker():
     plugins_mod.invoke_hook("subagent_start", parent_session_id=SESSION, parent_turn_id="t1",
                             parent_subagent_id=None, child_session_id="child-e2e",
                             child_subagent_id="sa-0-e2e", child_role="leaf", child_goal="清理缓存")
-
-
-def test_hermes_enforces_the_question_of_a_needs_decision_report(hermes):
-    from tools.delegation_output_schema import coerce_output_schema, validate_output
-
-    _start_turn()
-    _, modified = _pre_tool("delegate_task", {"tasks": [{"goal": "修复 522", "context": CONTEXT}]})
-    schema, err = coerce_output_schema(modified["tasks"][0]["output_schema"])
-    assert err is None, err
-    asks = {"status": "needs_decision", "summary": "两种修法", "question": "改 worker 路由还是关掉 DNS 代理？",
-            "options": ["改路由：不停机，要重新部署", "关代理：立即生效，暴露源站 IP"]}
-    assert validate_output(json.dumps(asks, ensure_ascii=False), schema) == (True, [])
-    valid, errors = validate_output(json.dumps({"status": "needs_decision", "summary": "两种修法"}), schema)
-    assert not valid and any("question" in e for e in errors), errors
-    done = {"status": "completed", "summary": "ok", "evidence": ["HTTP/2 200"]}
-    assert validate_output(json.dumps(done), schema) == (True, [])
 
 
 def test_hermes_approval_refusals_reach_the_worker_as_a_note(hermes):

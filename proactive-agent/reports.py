@@ -19,6 +19,7 @@ the user's next message after the user heard the question, it is reminded once.
 from __future__ import annotations
 
 import logging
+import re
 import threading
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -40,7 +41,7 @@ _lock = threading.Lock()
 # session -> (turn key, interjections already answered by a reminder in that turn)
 _reminded: Dict[str, Tuple[str, int]] = {}
 
-# The status values of the default output schema, and other words workers use for the same outcomes.
+# The status values the briefing asks for, and other words workers use for the same outcomes.
 DECISION = "needs_decision"
 REPORT_STATUSES = ("completed", "partial", "blocked", DECISION, "failed")
 _DONE_STATUSES = ("completed", "complete", "success", "done")
@@ -65,11 +66,21 @@ def record_dispatch(result: Any) -> None:
                 ledger.set_transcript(sid, path)
 
 
+_FENCE = re.compile(r"```(?:json)?\s*\n(.*?)```", re.DOTALL)
+_DECISION_WORD = re.compile(r"\bneeds_decision\b")
+
+
 def _report(summary: Any) -> dict:
-    """The worker's structured report: a summary that is itself a JSON object with a status or a summary.
-    Plain text that merely quotes some JSON is not a report."""
-    data = util.json_object(summary)
-    return data if data is not None and ("status" in data or "summary" in data) else {}
+    """The worker's report: its answer when that is a JSON object with a status or a summary, else the
+    last fenced JSON block in it. Prose that names needs_decision still counts as one, without a question
+    (the main agent reads the summary). Other prose that merely quotes some JSON is not a report."""
+    text = summary if isinstance(summary, str) else ""
+    candidates = [summary] + [m for m in reversed(_FENCE.findall(text))]
+    for candidate in candidates:
+        data = util.json_object(candidate)
+        if data is not None and ("status" in data or "summary" in data):
+            return data
+    return {"status": DECISION} if _DECISION_WORD.search(text) else {}
 
 
 def _outcome(report: dict, child_status: Any) -> str:

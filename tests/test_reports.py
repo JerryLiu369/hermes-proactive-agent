@@ -281,7 +281,8 @@ QUESTION = {"status": "needs_decision", "summary": "Two ways to fix the 522: the
 
 def _asks(plugin, child="child-1", report=None):
     plugin._subagent_stop(parent_session_id="s1", child_session_id=child, child_status="completed",
-                          child_summary=json.dumps(report or QUESTION), tool_call_history=[], duration_ms=90000)
+                          child_summary=report if isinstance(report, str) else json.dumps(report or QUESTION),
+                          tool_call_history=[], duration_ms=90000)
 
 
 def _background_question(plugin):
@@ -403,3 +404,20 @@ def test_a_question_is_kept_only_for_a_decision(plugin, make_ctx):
     _asks(plugin, report={"status": "blocked", "summary": "no token", "question": "Can you add a token?"})
     task = plugin.ledger.get("sa-0-abc")
     assert task["status"] == "blocked" and task["question"] == "" and not task["awaiting"]
+
+
+def test_a_report_in_prose_or_a_fenced_block(plugin, make_ctx):
+    """No output_schema is set, so a worker may wrap its JSON in prose or skip it."""
+    make_ctx()
+    start_turn(plugin)
+    spawn_worker(plugin)
+    _asks(plugin, report="Checked both paths.\n\n```json\n" + json.dumps(QUESTION) + "\n```\n")
+    task = plugin.ledger.get("sa-0-abc")
+    assert task["status"] == "needs_decision" and task["question"] == QUESTION["question"]
+    spawn_worker(plugin, sub_id="sa-1", child_session="child-2")
+    _asks(plugin, child="child-2", report="Status: needs_decision. Route or proxy? The user has to pick.")
+    task = plugin.ledger.get("sa-1")
+    assert task["status"] == "needs_decision" and task["summary"].startswith("Status: needs_decision")
+    spawn_worker(plugin, sub_id="sa-2", child_session="child-3")
+    _asks(plugin, child="child-3", report='Done. The config now reads {"status": "on"}.')
+    assert plugin.ledger.get("sa-2")["status"] == "completed", "prose quoting JSON is not a report"
