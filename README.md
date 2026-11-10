@@ -68,7 +68,7 @@ Because a subagent cannot see the chat history or memory, the main agent has to 
 A second attempt in the same turn always passes. Every accepted task then gets a structured briefing appended after the main agent's own instructions:
 
 - **Your last 6 messages**, word for word, so constraints like "don't touch X" arrive intact.
-- **`USER.md` and `MEMORY.md`**, which Hermes skips when spawning subagents.
+- **`USER.md` and `MEMORY.md`**, which Hermes skips when spawning subagents. They are copied in full, so whatever they hold about you, personal details included, is visible to every governed subagent.
 - **Other running subagents** in this chat and the files they are currently changing.
 - **Recent unfinished tasks** from this chat (what they found, what blocked them, any question they asked, mid-run `steer` corrections, files they modified, and their full transcript path), so a follow-up worker picks up where the earlier one left off.
 - **Working rules**: stay in scope, stop after the same step fails twice, bring back choices instead of guessing, never work around a refused command, require a rollback path for risky changes, leave other workers' files alone, and verify the real end state before reporting success.

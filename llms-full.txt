@@ -132,7 +132,7 @@ Every accepted task has a structured handoff briefing appended after the main ag
 | Briefing section | Purpose |
 |---|---|
 | The user's last 6 messages, verbatim | Preserves exact user wording and negative constraints such as "don't touch X" |
-| `USER.md` and `MEMORY.md` | Supplies user preferences and environment facts that Hermes skips for subagents |
+| `USER.md` and `MEMORY.md` | Supplies user preferences and environment facts that Hermes skips for subagents. Copied in full, so any personal details they hold reach every governed subagent |
 | Other subagents running now | Lists active sibling goals, elapsed minutes, and files they are modifying |
 | Earlier unfinished work in this chat | Up to 3 recent non-completed tasks (within 24 h): status, summary, blockers, open question, `steer` corrections, modified files, and live transcript path |
 | Working rules | Stay in scope; stop after the same failure twice; report `needs_decision` instead of guessing; never work around a refused command; require a rollback path for risky changes; do not edit another worker's files; verify the real end state |
@@ -209,6 +209,7 @@ plugins:
 - **Test matrix:** `ruff check` and `pytest` on Python 3.10, 3.11, 3.12, 3.13, and 3.14; `tests/test_hermes_e2e.py` exercises the real Hermes plugin loader when `hermes_cli` is available.
 - **No subagent resume in Hermes:** Hermes cannot resume a finished subagent session. Continuity is provided by briefing the next subagent in the same chat with the unfinished task's ledger record.
 - **Step budget ownership:** Total subagent iteration limits remain controlled by Hermes' `delegation.max_iterations`.
+- **Data it reads:** its own config keys, Hermes session flags (platform, cron), the turn's conversation history passed to its hooks, and `<hermes home>/memories/USER.md` and `MEMORY.md`, which are copied in full into every governed subagent brief. It makes no network calls.
 - **Process-local vs durable state:** Active turn timers and running-worker repeat counters live in memory per gateway process; task records, queued notes, open questions, and unreported-result flags persist in SQLite across restarts.
 
 ## FAQ
