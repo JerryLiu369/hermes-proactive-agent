@@ -227,74 +227,48 @@ def reset_all() -> None:
 
 # ---------------------------------------------------------------- background detach
 
-_patched = False
-_patch_lock = threading.Lock()
+def arm_detach(args: Optional[dict]) -> Optional[Callable[[], None]]:
+    """Called from the tool_execution middleware around a governed terminal call. Hermes runs that
+    middleware on the thread that then waits for the command, and the wait polls that thread id
+    for a yield. After the delay the timer asks it to yield through Hermes' own path (the one a
+    mid-turn user message takes): the process keeps running in the background. Returns the
+    function to call once the command has returned."""
+    detach = float(config.get("terminal_auto_detach_seconds"))
+    if detach <= 0 or (args or {}).get("background"):
+        return None
+    try:
+        from tools.interrupt import consume_yield, request_yield
+    except ImportError:
+        return None
+    tid = threading.get_ident()
+    state = {"done": False, "fired": False}
+    state_lock = threading.Lock()
 
-
-def _governed_tool_thread() -> bool:
-    """Called on the tool thread itself, where Hermes' session contextvars are bound."""
-    if context.is_child() or context.is_cron():
-        return False
-    session_id = context.session_env("HERMES_SESSION_ID")
-    platform = context.platform_for(session_id=session_id)
-    return bool(platform) and platform in config.governed_platforms()
-
-
-def install_detach_patch() -> None:
-    """Wrap BaseEnvironment._wait_for_process so long foreground commands yield to the
-    background through Hermes' own yield path (the process keeps running)."""
-    global _patched
-    with _patch_lock:
-        if _patched:
-            return
-        try:
-            from tools.environments.base import BaseEnvironment
-            from tools.interrupt import request_yield
-        except ImportError:
-            logger.warning("proactive-agent: terminal backend not importable; background detach disabled")
-            return
-        original: Callable = BaseEnvironment._wait_for_process
-
-        def _wait_for_process(self, proc, timeout: int = 120, *, bounded_capture: bool = False,
-                              watch_interrupt_tid: Optional[int] = None, output=None,
-                              yield_handler: Optional[Callable] = None) -> dict:
-            call = dict(timeout=timeout, bounded_capture=bounded_capture, watch_interrupt_tid=watch_interrupt_tid,
-                        output=output, yield_handler=yield_handler)
-            detach = float(config.get("terminal_auto_detach_seconds"))
-            if yield_handler is None or watch_interrupt_tid is None or detach <= 0 or not _governed_tool_thread():
-                return original(self, proc, **call)
-            state = {"done": False, "fired": False}
-            state_lock = threading.Lock()
-
-            def _fire() -> None:
-                with state_lock:
-                    if state["done"] or (getattr(proc, "poll", None) and proc.poll() is not None):
-                        return
-                    state["fired"] = True
-                    try:
-                        request_yield(watch_interrupt_tid)
-                    except Exception as e:
-                        logger.warning("proactive-agent: request_yield failed: %s", e)
-
-            timer = threading.Timer(detach, _fire)
-            timer.daemon = True
-            timer.start()
+    def _fire() -> None:
+        with state_lock:
+            if state["done"]:
+                return
+            state["fired"] = True
             try:
-                return original(self, proc, **call)
-            finally:
-                timer.cancel()
-                with state_lock:
-                    state["done"] = True
-                    fired = state["fired"]
-                if fired:
-                    # Our yield may land after the process already exited; never leave it pending
-                    # for the next command on this thread. A user's own yield is left alone.
-                    try:
-                        from tools.interrupt import consume_yield
-                        consume_yield(watch_interrupt_tid)
-                    except Exception:
-                        pass
+                request_yield(tid)
+            except Exception as e:
+                logger.warning("proactive-agent: request_yield failed: %s", e)
 
-        BaseEnvironment._wait_for_process = _wait_for_process
-        _patched = True
-        logger.info("proactive-agent: background detach installed")
+    timer = threading.Timer(detach, _fire)
+    timer.daemon = True
+    timer.start()
+
+    def disarm() -> None:
+        timer.cancel()
+        with state_lock:
+            state["done"] = True
+            fired = state["fired"]
+        if fired:
+            # Our yield may land after the command already exited (or on a backend that cannot
+            # yield); never leave it pending for the next command on this thread.
+            try:
+                consume_yield(tid)
+            except Exception:
+                pass
+
+    return disarm

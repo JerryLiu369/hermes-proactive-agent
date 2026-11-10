@@ -120,11 +120,11 @@ def test_worker_limits_through_hermes(hermes):
     assert row == (SESSION, "blocked"), "the ledger lives in Hermes' plugin-data directory"
 
 
-def test_background_detach_with_real_wait_loop(hermes, monkeypatch):
+def test_background_detach_with_real_wait_loop(hermes):
+    """The tool_execution middleware arms the timer on the tool thread; Hermes' own wait loop then yields."""
     from tools.environments.base import BaseEnvironment
 
     _start_turn()
-    monkeypatch.setenv("HERMES_SESSION_ID", SESSION)
     yielded = {}
 
     def yield_handler(proc, output_so_far):
@@ -136,15 +136,28 @@ def test_background_detach_with_real_wait_loop(hermes, monkeypatch):
     env_cls = type("_E2EEnv", (BaseEnvironment,), {})
     env_cls.__abstractmethods__ = frozenset()
     env = object.__new__(env_cls)
+    from hermes_cli.middleware import run_tool_execution_middleware
+
+    def run(args):
+        return BaseEnvironment._wait_for_process(env, proc, timeout=60, watch_interrupt_tid=threading.get_ident(),
+                                                 yield_handler=yield_handler)
     started = time.monotonic()
     try:
-        result = BaseEnvironment._wait_for_process(env, proc, timeout=60, watch_interrupt_tid=threading.get_ident(),
-                                                   yield_handler=yield_handler)
+        result = run_tool_execution_middleware("terminal", {"command": "sleep 8"}, run, session_id=SESSION,
+                                               task_id="main", turn_id="t1", tool_call_id="call-detach")
     finally:
         proc.kill()
         proc.wait()
     assert result.get("yielded_session_id") == "proc_e2e"
     assert time.monotonic() - started < 6, "yield should fire after ~1s, not wait for the process"
+    from tools.interrupt import is_thread_yield_requested
+    assert not is_thread_yield_requested(threading.get_ident())
+
+
+def test_plugin_passes_the_catalog_core_override_check(hermes):
+    from pathlib import Path
+    from hermes_cli.plugin_validate_core_override import core_override_findings
+    assert core_override_findings(Path(PLUGIN_DIR)) == []
 
 
 def test_tool_names_the_plugin_relies_on_exist_in_hermes(hermes):
@@ -218,3 +231,24 @@ def test_hermes_approval_refusals_reach_the_worker_as_a_note(hermes):
                                       error_message=None, tool_call_id=f"c-{command}", **_child_ids())
         note = json.loads(next(r for r in out if isinstance(r, str)))["proactive_agent_note"]
         assert expected in note and "needs_decision" in note
+
+
+def test_real_terminal_tool_yields_through_the_middleware(hermes):
+    """The thread the middleware runs on is the one Hermes' terminal tool waits on."""
+    import json as _json
+    from hermes_cli.middleware import run_tool_execution_middleware
+    from tools.terminal_tool import terminal_tool
+
+    _start_turn()
+    args = {"command": "echo working; sleep 8", "timeout": 60}
+    started = time.monotonic()
+    out = run_tool_execution_middleware("terminal", args, lambda a: terminal_tool(task_id="e2e-term", **a),
+                                        session_id=SESSION, task_id="main", turn_id="t1", tool_call_id="call-term")
+    result = _json.loads(out)
+    try:
+        assert result.get("status") == "yielded_to_background", result
+        assert time.monotonic() - started < 6
+    finally:
+        from tools.process_registry import process_registry
+        if result.get("session_id"):
+            process_registry.kill_process(result["session_id"])

@@ -77,7 +77,7 @@ hermes plugins list           # proactive-agent should appear as enabled
 |---|---|---|
 | Main-agent turn duration | Unbounded; the chat goes silent until the turn finishes | Soft reminder at 60 s; hard pause on edit/execute tools at 120 s; resets when the user writes mid-turn |
 | Tools available after 120 s | Unchanged | `read_file`, `search_files`, `session_search`, `vision_analyze`, `memory`, `skill_view`, `skills_list`, `skill_manage`, `todo_list`, `clarify`, `delegate_task`, and `process_manage` (`list`/`poll`/`log`/`kill`) |
-| Long foreground terminal command | Blocks the turn until exit or timeout | Auto-detached to the background at 30 s via `BaseEnvironment._wait_for_process` + `tools.interrupt.request_yield`; process keeps running |
+| Long foreground terminal command | Blocks the turn until exit or timeout | Auto-detached to the background at 30 s via a `tool_execution` middleware + `tools.interrupt.request_yield`; process keeps running |
 | Signal when a command is detached | Raw `yielded_to_background` payload | Explicit note that the command is still running in the background, has not failed, and will notify when done |
 | Blocking on a background process | `process_manage(action='wait')` allowed | Refused immediately so waiting cannot freeze the chat |
 | Brief quality gate | `delegate_task` accepts any `context` | `context` shorter than 120 characters is returned once per turn with instructions on what to add |
@@ -114,9 +114,9 @@ The main agent may investigate and decide directly, but each turn has a time bud
 
 ### 2. Long commands move to the background (`secretary.py`)
 
-Instead of killing slow commands or wrapping them in shell hacks, the plugin hooks into Hermes' native process-yield path. It wraps `BaseEnvironment._wait_for_process` and, only when called on a governed main-agent tool thread, starts a timer for `terminal_auto_detach_seconds` (default `30 s`). When the timer fires while the process is still running, it calls `tools.interrupt.request_yield(watch_interrupt_tid)`. Hermes detaches the running process to the background and returns `status: "yielded_to_background"`.
+Instead of killing slow commands or wrapping them in shell hacks, the plugin uses Hermes' native process-yield path, the same one a mid-turn user message takes. It registers a `tool_execution` middleware, which Hermes runs on the tool thread around each tool call. For a governed main-agent `terminal` call that is not already `background`, it starts a timer for `terminal_auto_detach_seconds` (default `30 s`). When the timer fires while the command is still running, it calls `tools.interrupt.request_yield` for that thread. Hermes hands the running process to its background registry and returns `status: "yielded_to_background"`. Detach works on Hermes' local terminal backend with the default `plugins.isolation: in_process`; on other backends, or when plugins run in a separate plugin-host process (`plugins.isolation: host`), the command keeps running in the foreground. The plugin never patches Hermes code, so it passes the plugin catalog's `no core override` admission check.
 
-`secretary.transform_tool_result` then attaches a clear `note` field to the JSON tool result explaining that the command ran longer than 30 s, moved to the background, has **not** failed, holds its partial stdout in `output`, and will notify the agent automatically when it finishes. Any late yield signal is cleaned up via `consume_yield` in a `finally` block so subsequent commands on the same thread are never affected.
+`secretary.transform_tool_result` then attaches a clear `note` field to the JSON tool result explaining that the command ran longer than 30 s, moved to the background, has **not** failed, holds its partial stdout in `output`, and will notify the agent automatically when it finishes. When the call returns, the timer is cancelled and a yield it requested that nobody took is cleared with `consume_yield`, so later commands on the same thread are never affected.
 
 In addition, `process_manage(action='wait')` is blocked in `pre_tool_call` because synchronous waiting would freeze the chat turn again.
 

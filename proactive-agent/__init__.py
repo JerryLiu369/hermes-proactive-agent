@@ -122,6 +122,21 @@ def _post_tool_call(tool_name: str = "", args: Optional[dict] = None, result: An
         reports.record_dispatch(result)
 
 
+def _tool_execution(tool_name: str = "", args: Optional[dict] = None, next_call: Any = None, **kw: Any) -> Any:
+    """tool_execution middleware: Hermes calls it on the tool thread around the whole call."""
+    disarm = None
+    try:
+        if tool_name == "terminal" and _main_session(**kw):
+            disarm = secretary.arm_detach(args)
+    except Exception:
+        logger.exception("proactive-agent: background detach failed; running the command as is")
+    try:
+        return next_call(args)
+    finally:
+        if disarm is not None:
+            disarm()
+
+
 @_guarded
 def _transform_tool_result(tool_name: str = "", args: Optional[dict] = None, result: Any = None,
                            **kw: Any) -> Optional[str]:
@@ -210,9 +225,12 @@ def register(ctx: Any) -> None:
         reports.recover_lost()
     except Exception:
         logger.exception("proactive-agent: task ledger unavailable")
-    secretary.install_detach_patch()
     for name, fn in _HOOKS.items():
         ctx.register_hook(name, fn)
+    try:
+        ctx.register_middleware("tool_execution", _tool_execution)
+    except Exception as e:
+        logger.warning("proactive-agent: tool_execution middleware unavailable; background detach disabled: %s", e)
     try:
         ctx.register_system_prompt_section("proactive-agent.discipline", prompt.render,
                                            position="after_memory", max_chars=2000)

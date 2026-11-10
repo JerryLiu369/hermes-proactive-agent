@@ -26,6 +26,7 @@ class FakeContext:
     def __init__(self, config=None, post_message=None, inject_message=None):
         self.config = config or {}
         self.hooks = {}
+        self.middleware = {}
         self.prompt_sections = {}
         if post_message is not None:
             self.post_message = post_message
@@ -37,6 +38,9 @@ class FakeContext:
 
     def register_hook(self, name, fn, **kwargs):
         self.hooks[name] = fn
+
+    def register_middleware(self, kind, fn):
+        self.middleware[kind] = fn
 
     def register_system_prompt_section(self, name, renderer, position="after_memory", max_chars=2000):
         self.prompt_sections[name] = {"renderer": renderer, "position": position, "max_chars": max_chars}

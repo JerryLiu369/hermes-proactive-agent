@@ -19,6 +19,8 @@ provides_hooks:
   - on_session_end
   - on_session_reset
   - on_session_finalize
+provides_middleware:
+  - tool_execution
 config_schema:
   governed_platforms:
     type: list

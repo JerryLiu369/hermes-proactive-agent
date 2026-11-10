@@ -56,7 +56,7 @@ Every turn of the main agent has a time budget:
 - **When you write mid-turn**, the clock resets so the agent has fresh time to handle your new input.
 - **Context compression does not count.** When Hermes compresses the conversation inside a turn, the clock stops until the summary is done, so a long compression cannot push the agent into the 120-second pause on its own.
 
-Long commands cannot hold a turn hostage either. Any foreground terminal command still running after **30 seconds** is moved to the background through Hermes' own yield mechanism. The process keeps running, Hermes notifies the main agent when it finishes, and a note tells the main agent that the command is still running rather than failed. Calling `process_manage(action='wait')` is refused so the main agent cannot freeze the chat by blocking on a background job.
+Long commands cannot hold a turn hostage either. Any foreground terminal command still running after **30 seconds** is moved to the background through Hermes' own yield mechanism (on Hermes' local terminal backend, the only one that can hand a running process over). The process keeps running, Hermes notifies the main agent when it finishes, and a note tells the main agent that the command is still running rather than failed. Calling `process_manage(action='wait')` is refused so the main agent cannot freeze the chat by blocking on a background job.
 
 ### Subagents start informed
 
@@ -114,6 +114,7 @@ Finally, every delegated task is saved in a SQLite ledger at `<hermes home>/plug
 - **Nothing runs on a timer.** There are no periodic heartbeats or progress messages. Every note is triggered by a concrete event (a turn starts, a tool returns, a subagent finishes, or a turn ends with a result still unreported) and is delivered once.
 - **No model calls.** Every check is deterministic Python code with zero token cost of its own.
 - **Hermes keeps its own jobs.** Command approvals, stale-file protection, total step budgets, loop warnings, and delivering background results to the main agent all stay with Hermes. The plugin only fills the gaps Hermes leaves open.
+- **Public interfaces only.** The plugin works through Hermes' hooks, middleware and plugin APIs. It never patches Hermes' own code, so it passes the plugin catalog's admission check and does not collide with other plugins.
 - **Never get in the way.** Every hook is wrapped in a guard: if the plugin ever raises an unexpected error, it logs the failure and lets the tool call proceed.
 - **Act only where asked.** Only platforms listed in `governed_platforms` (default `["weixin"]`) and the subagents they spawn are governed. Cron jobs, the CLI, and other platforms are untouched.
 
@@ -172,6 +173,7 @@ Hermes folds your message into the turn that is reporting the result, and the ma
 ## Compatibility
 
 - **Hermes Agent** 0.22 or later (verified against v0.22.7).
+- Moving long commands to the background needs Hermes' default `plugins.isolation: in_process`. With `host`, commands simply stay in the foreground.
 - **Python** 3.10 or later, with zero runtime dependencies.
 - **CI** runs `ruff check` and `pytest` across Python 3.10 through 3.14.
 

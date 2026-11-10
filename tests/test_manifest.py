@@ -16,10 +16,12 @@ def test_versions_and_manifest_match_code(plugin):
     with open(os.path.join(REPO_ROOT, "pyproject.toml"), encoding="utf-8") as f:
         pyproject_version = re.search(r'^version = "([^"]+)"', f.read(), re.MULTILINE).group(1)
     assert manifest["version"] == plugin.__version__ == pyproject_version
-    registered = {}
+    registered, middleware = {}, {}
     plugin.register(SimpleNamespace(register_hook=lambda n, fn: registered.setdefault(n, fn),
+                                    register_middleware=lambda k, fn: middleware.setdefault(k, fn),
                                     register_system_prompt_section=lambda *a, **k: None, get_config=lambda k, d=None: d))
     assert set(manifest["provides_hooks"]) == set(registered)
+    assert set(manifest["provides_middleware"]) == set(middleware)
     schema = manifest["config_schema"]
     assert set(schema) == set(plugin.config.DEFAULTS)
     for key, default in plugin.config.DEFAULTS.items():

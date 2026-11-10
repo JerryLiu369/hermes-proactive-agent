@@ -36,6 +36,8 @@ These are decisions the maintainer made. Do not change them without being asked.
 - **No model calls.** Every check is plain code.
 - **Hermes keeps its own job.** Before adding anything, check whether Hermes already does it (see "Already in
   Hermes" below). The plugin only fills gaps Hermes leaves open.
+- **Public surfaces only.** Extend Hermes through hooks, middleware and `ctx.*` APIs. Never assign, wrap or patch a
+  Hermes function, method or module attribute: the plugin catalog refuses it (`no core override`).
 - **Never in the way.** Every hook is wrapped in `_guarded`: a plugin error is logged and the call proceeds.
 - **Only where asked.** Only platforms in `governed_platforms` (default `["weixin"]`) and the subagents they spawn are
   governed. Cron runs and other platforms are untouched.
@@ -148,9 +150,27 @@ the `hermes-agent` checkout.
   is the one `pre_llm_call` gets (`agent/turn_context.py` takes `_relay_pending_turn_id`). The compression summary
   call is `aux_task="compression"`. Since v0.23 `pre_llm_call` runs before turn-start compaction
   (`agent/turn_context.py`), and compaction also runs mid-turn (post-tool and pre-API), so it falls inside a turn.
-- Background detach wraps `tools.environments.base.BaseEnvironment._wait_for_process(self, proc, timeout, *,
-  bounded_capture, watch_interrupt_tid, output, yield_handler)` and calls `tools.interrupt.request_yield` /
-  `consume_yield`. The terminal result then has `status: "yielded_to_background"` (`tools/terminal_tool.py`).
+- `ctx.register_middleware(kind, fn)` (`hermes_cli/plugins_context.py`, kinds in `hermes_cli/middleware.py`).
+  `tool_execution` middleware gets `tool_name, args, next_call` plus `task_id, session_id, tool_call_id, turn_id,
+  api_request_id, conversation_id` (`agent/inline_tool_executors.py::tool_hook_ids`); `next_call(args)` is
+  single-use. It runs synchronously on the tool-worker thread and wraps the whole call, `pre_tool_call` included
+  (`agent/tool_executor.py::_run_agent_tool_execution_middleware`). A foreground `env.execute` takes that same
+  thread's id as `watch_interrupt_tid` (`tools/environments/base.py`), and `_wait_for_process` takes a pending
+  `tools.interrupt.request_yield(tid)` through `yield_handler` (local backend only), returning
+  `status: "yielded_to_background"` (`tools/terminal_tool.py`). Background detach relies on all of this. If another
+  plugin's middleware runs `next_call` on a different thread (`agent/terminal_approval_batch.py::bind_prepared_dispatch`
+  allows it), the ids differ and detach is a no-op for that call.
+- `plugins.isolation` (`hermes_cli/plugin_isolation.py`, v0.23): `in_process` (default) or `host`, which loads
+  third-party plugins in a separate plugin-host process that reaches Hermes only through `ctx`. In `host` mode
+  `tools.interrupt` is the host's own copy, so background detach does nothing there (the command stays in the
+  foreground); contextvar-based checks in `context.py` lose their signal too.
+- Hooks do **not** run on the tool thread: `pre_tool_call` and the bounded hooks run on a daemon worker under
+  `plugins.hook_callback_timeout` (`hermes_cli/plugins_dispatch.py::_run_hook_callback_bounded`), so
+  `threading.get_ident()` in a hook is not the tool's thread.
+- Catalog admission (`plugin-catalog/README.md` rule 9, `hermes plugins validate`): the `no core override` check
+  (`hermes_cli/plugin_validate_core_override.py`) fails a plugin that assigns, wraps or patches any Hermes
+  attribute. Imports of private core modules only warn. `provides_middleware` in `plugin.yaml` must match
+  `register_middleware` calls.
 - `ctx.register_system_prompt_section(id, fn, *, position, max_chars)`: `fn` receives read-only session info, and the
   rendered text is frozen per session.
 - `ctx.get_config(key)` reads `plugins.entries.proactive-agent.settings.<key>`.
@@ -203,7 +223,7 @@ uv run --group dev ruff check
 - `tests/test_hermes_e2e.py` loads the plugin through Hermes' own plugin loader and is skipped when `hermes_cli` is
   not importable. Run it against a real Hermes checkout before a release:
   `PYTHONPATH=<deps with pytest and pyyaml>:<hermes-agent checkout> <hermes venv python> -m pytest -p no:cacheprovider tests`.
-- `tests/test_manifest.py` enforces that `plugin.yaml` lists every registered hook, that its `config_schema` matches
+- `tests/test_manifest.py` enforces that `plugin.yaml` lists every registered hook and middleware, that its `config_schema` matches
   `config.DEFAULTS`, and that the three version strings agree.
 
 ## Docs
