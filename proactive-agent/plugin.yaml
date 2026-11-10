@@ -9,6 +9,8 @@ requires_hermes: ">=0.22"
 provides_hooks:
   - pre_llm_call
   - pre_api_request
+  - pre_auxiliary_call
+  - post_auxiliary_call
   - pre_tool_call
   - post_tool_call
   - transform_tool_result

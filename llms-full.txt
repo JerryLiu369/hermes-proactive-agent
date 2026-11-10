@@ -76,7 +76,7 @@ hermes plugins list           # proactive-agent should appear as enabled
 | Dimension | Status quo | Governed by proactive-agent |
 |---|---|---|
 | Main-agent turn duration | Unbounded; the chat goes silent until the turn finishes | Soft reminder at 60 s; hard pause on edit/execute tools at 120 s; resets when the user writes mid-turn |
-| Tools available after 120 s | Unchanged | `read_file`, `search_files`, `session_search`, `memory`, `skill_view`, `skills_list`, `skill_manage`, `todo_list`, `clarify`, `delegate_task`, and `process_manage` (`list`/`poll`/`log`/`kill`) |
+| Tools available after 120 s | Unchanged | `read_file`, `search_files`, `session_search`, `vision_analyze`, `memory`, `skill_view`, `skills_list`, `skill_manage`, `todo_list`, `clarify`, `delegate_task`, and `process_manage` (`list`/`poll`/`log`/`kill`) |
 | Long foreground terminal command | Blocks the turn until exit or timeout | Auto-detached to the background at 30 s via `BaseEnvironment._wait_for_process` + `tools.interrupt.request_yield`; process keeps running |
 | Signal when a command is detached | Raw `yielded_to_background` payload | Explicit note that the command is still running in the background, has not failed, and will notify when done |
 | Blocking on a background process | `process_manage(action='wait')` allowed | Refused immediately so waiting cannot freeze the chat |
@@ -108,7 +108,8 @@ The main agent may investigate and decide directly, but each turn has a time bud
 | `red` | `turn_hard_seconds` = `120 s` | Editing and execution tools are refused for the rest of the turn; reading, `delegate_task`, and wrap-up tools remain available |
 
 - **Mid-turn user messages reset the clock.** When the user writes while a turn is running, Hermes delivers the message either as a steer (`[OUT-OF-BAND USER MESSAGE` or `display_kind: "steer"`) or as an active-turn redirect (`[This response was interrupted by a user correction.]`). On `pre_api_request`, `secretary.on_api_request` detects new interjections, adds them to the stored user messages, and resets the turn timer back to `green`.
-- **Allowed tools in the red zone:** `read_file`, `search_files`, `session_search`, `delegate_task`, `memory`, `skill_view`, `skills_list`, `skill_manage`, `todo_list`, `clarify`, and `process_manage` limited to actions `list`, `poll`, `log`, and `kill`.
+- **Context compression is not counted.** Hermes fires `pre_auxiliary_call` and `post_auxiliary_call` around each auxiliary model call with the parent turn's `session_id` and `turn_id`. For `aux_task == "compression"` in the running turn, `secretary.on_compression` stops the clock at the first call and moves the turn start forward by the time spent when the last one returns. Other auxiliary calls (vision, titles) and calls from another turn (such as the background review) keep the clock running.
+- **Allowed tools in the red zone:** `read_file`, `search_files`, `session_search`, `vision_analyze`, `delegate_task`, `memory`, `skill_view`, `skills_list`, `skill_manage`, `todo_list`, `clarify`, and `process_manage` limited to actions `list`, `poll`, `log`, and `kill`.
 - **Single notification per zone:** Each zone transition is announced at most once per turn so tool results are never spammed.
 
 ### 2. Long commands move to the background (`secretary.py`)

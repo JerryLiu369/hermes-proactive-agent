@@ -13,10 +13,10 @@ from . import config, context, handoff, util
 
 logger = logging.getLogger("hermes.plugins.proactive_agent")
 
-# Still available once the turn budget is spent: reading, delegating and wrapping up (memory, skills,
-# the todo list, a question to the user). Names are Hermes' registered tool names.
+# Still available once the turn budget is spent: reading (files and images), delegating and wrapping up
+# (memory, skills, the todo list, a question to the user). Names are Hermes' registered tool names.
 RED_ALLOWED_TOOLS = {
-    "delegate_task", "process_manage", "read_file", "search_files", "session_search", "memory",
+    "delegate_task", "process_manage", "read_file", "search_files", "session_search", "vision_analyze", "memory",
     "skill_view", "skills_list", "skill_manage", "todo_list", "clarify",
 }
 # process_manage stays only for looking at background jobs or ending them, not for driving them.
@@ -37,7 +37,8 @@ _local_turns = itertools.count(1)
 
 def _new_turn(turn_id: str, seen: int = 0, session_key: str = "") -> dict:
     return {"turn_id": turn_id, "key": turn_id or f"local-{next(_local_turns)}", "start": time.monotonic(),
-            "seen": seen, "interjections": 0, "noted": "green", "session_key": session_key}
+            "seen": seen, "interjections": 0, "noted": "green", "session_key": session_key,
+            "compressing": 0, "compress_since": 0.0}
 
 
 def _turn(session_id: str, turn_id: str = "") -> dict:
@@ -83,12 +84,19 @@ def user_words(session_id: str) -> List[str]:
         return list(_user_words.get(session_id) or [])
 
 
+def _elapsed(st: dict) -> float:
+    """Seconds the turn has run, not counting context compression in progress (finished
+    compression is already taken off by moving ``start`` forward)."""
+    now = st["compress_since"] if st["compressing"] else time.monotonic()
+    return max(0.0, now - st["start"])
+
+
 def zone(session_id: str) -> str:
     with _lock:
         st = _turns.get(session_id)
         if st is None:
             return "green"
-        elapsed = time.monotonic() - st["start"]
+        elapsed = _elapsed(st)
     if elapsed >= float(config.get("turn_hard_seconds")):
         return "red"
     if elapsed >= float(config.get("turn_soft_seconds")):
@@ -132,8 +140,27 @@ def on_api_request(session_id: str, turn_id: str, messages: Any) -> None:
             return
         logger.info("proactive-agent: user wrote mid-turn in %s; turn budget reset", session_id)
         _user_words[session_id] = (_user_words.get(session_id, []) + new)[-_KEEP_USER_MESSAGES:]
-        st.update(seen=len(found), interjections=st["interjections"] + len(new), start=time.monotonic(),
-                  noted="green")
+        now = time.monotonic()
+        st.update(seen=len(found), interjections=st["interjections"] + len(new), start=now, noted="green")
+        if st["compressing"]:
+            st["compress_since"] = now
+
+
+def on_compression(session_id: str, turn_id: str, started: bool) -> None:
+    """Context compression is Hermes' own work, not the agent's, so its time is kept off the turn
+    budget. Calls are counted because a chunked summary may run several at once."""
+    with _lock:
+        st = _turns.get(session_id)
+        if st is None or not turn_id or st["turn_id"] != turn_id:
+            return
+        if started:
+            if not st["compressing"]:
+                st["compress_since"] = time.monotonic()
+            st["compressing"] += 1
+        elif st["compressing"]:
+            st["compressing"] -= 1
+            if not st["compressing"]:
+                st["start"] += time.monotonic() - st["compress_since"]
 
 
 def pre_tool_call(session_id: str, turn_id: str, tool_name: str, args: Optional[dict]) -> Optional[dict]:
@@ -175,7 +202,7 @@ def transform_tool_result(session_id: str, tool_name: str, result: Any) -> Optio
         if st is None or st["noted"] == current:
             return None
         st["noted"] = current
-        elapsed = int(time.monotonic() - st["start"])
+        elapsed = int(_elapsed(st))
     if current == "red":
         note = (f"[proactive-agent] This turn has run for {elapsed}s. Editing and execution tools are now paused. "
                 "Answer the user, or delegate the rest.")

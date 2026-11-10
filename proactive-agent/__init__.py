@@ -84,6 +84,24 @@ def _pre_api_request(**kw: Any) -> None:
                                  kw.get("conversation_history") or kw.get("request_messages"))
 
 
+def _compression(started: bool, **kw: Any) -> None:
+    if str(kw.get("aux_task") or "") != "compression":
+        return
+    session_id = _main_session(**kw)
+    if session_id:
+        secretary.on_compression(session_id, str(kw.get("turn_id") or ""), started)
+
+
+@_guarded
+def _pre_auxiliary_call(**kw: Any) -> None:
+    _compression(True, **kw)
+
+
+@_guarded
+def _post_auxiliary_call(**kw: Any) -> None:
+    _compression(False, **kw)
+
+
 @_guarded
 def _pre_tool_call(tool_name: str = "", args: Optional[dict] = None, **kw: Any) -> Optional[dict]:
     worker = _worker_for(**kw)
@@ -173,6 +191,8 @@ def _reset_all() -> None:
 _HOOKS = {
     "pre_llm_call": _pre_llm_call,
     "pre_api_request": _pre_api_request,
+    "pre_auxiliary_call": _pre_auxiliary_call,
+    "post_auxiliary_call": _post_auxiliary_call,
     "pre_tool_call": _pre_tool_call,
     "post_tool_call": _post_tool_call,
     "transform_tool_result": _transform_tool_result,

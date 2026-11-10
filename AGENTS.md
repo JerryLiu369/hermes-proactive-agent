@@ -100,7 +100,8 @@ the `hermes-agent` checkout.
 
 - Registered names used here: `delegate_task` (actions `spawn`, `list`, `steer`, `stop`), `process_manage`
   (including `wait`, `list`, `poll`, `log`, `kill`), `terminal`, `read_file`, `write_file`, `patch`,
-  `search_files`, `session_search`, `memory`, `skill_view`, `skills_list`, `skill_manage`, `todo_list`, `clarify`.
+  `search_files`, `session_search`, `vision_analyze` (`tools/vision_tools.py`), `memory`, `skill_view`, `skills_list`,
+  `skill_manage`, `todo_list`, `clarify`.
   `send_message` and `todo` are not registered for the main agent. `tests/test_hermes_e2e.py` checks
   `secretary.RED_ALLOWED_TOOLS` against the live registry.
 - The `delegate_task` dispatch result has `subagent_ids` and `live_transcripts` (`tools/delegate_tool_dispatch.py`).
@@ -139,6 +140,12 @@ the `hermes-agent` checkout.
 
 **Other extension points**
 
+- `pre_auxiliary_call` / `post_auxiliary_call` (`agent/auxiliary_hooks.py`, v0.23): fired once per provider attempt of
+  every auxiliary model call (compression, vision, titles, ...), `post` also on error. Both carry `aux_task` and the
+  parent turn's `session_id, task_id, turn_id, platform` from `agent.relay_runtime.current_turn()`; that `turn_id`
+  is the one `pre_llm_call` gets (`agent/turn_context.py` takes `_relay_pending_turn_id`). The compression summary
+  call is `aux_task="compression"`. Since v0.23 `pre_llm_call` runs before turn-start compaction
+  (`agent/turn_context.py`), and compaction also runs mid-turn (post-tool and pre-API), so it falls inside a turn.
 - Background detach wraps `tools.environments.base.BaseEnvironment._wait_for_process(self, proc, timeout, *,
   bounded_capture, watch_interrupt_tid, output, yield_handler)` and calls `tools.interrupt.request_yield` /
   `consume_yield`. The terminal result then has `status: "yielded_to_background"` (`tools/terminal_tool.py`).

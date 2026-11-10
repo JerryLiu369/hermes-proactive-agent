@@ -93,7 +93,7 @@ def test_red_zone_keeps_only_reading_and_wrap_up(plugin, make_ctx):
         assert main_tool(plugin, "process_manage", {"action": action}) is None, action
     for action in ("write", "submit"):
         assert main_tool(plugin, "process_manage", {"action": action})["action"] == "block", action
-    for allowed in ("skill_manage", "todo_list", "clarify", "memory", "session_search"):
+    for allowed in ("skill_manage", "todo_list", "clarify", "memory", "session_search", "vision_analyze"):
         assert main_tool(plugin, allowed, {}) is None, allowed
     for paused in ("write_file", "patch", "terminal", "execute_code"):
         assert main_tool(plugin, paused, {})["action"] == "block", paused
@@ -134,3 +134,37 @@ def test_a_review_fork_does_not_reset_the_live_turn(plugin, make_ctx):
     assert main_tool(plugin, "terminal", {"command": "ls"})["action"] == "block"
     assert plugin.secretary.turn_facts("s1", "t1")["interjections"] == 0
     assert plugin.secretary.turn_facts("s1", "review-1") is None
+
+
+def _aux(plugin, hook, task="compression", turn="t1", session="s1", platform="weixin"):
+    # Hermes' auxiliary-call payload: the parent turn's identity plus aux_task (agent/auxiliary_hooks.py).
+    getattr(plugin, hook)(session_id=session, task_id="main", turn_id=turn, platform=platform, aux_task=task,
+                          model="m", provider="p", started_at=0.0)
+
+
+def test_context_compression_is_kept_off_the_turn_budget(plugin, make_ctx):
+    make_ctx()
+    start_turn(plugin)
+    _aux(plugin, "_pre_auxiliary_call")
+    # 50s of work, then a summary call that took 100s
+    plugin.secretary._turns["s1"]["start"] -= 150
+    plugin.secretary._turns["s1"]["compress_since"] -= 100
+    assert main_tool(plugin, "terminal", {"command": "ls"}) is None, "compressing now does not count"
+    _aux(plugin, "_post_auxiliary_call")
+    assert plugin.secretary.zone("s1") == "green"
+    assert main_tool(plugin, "terminal", {"command": "ls"}) is None
+    plugin.secretary._turns["s1"]["start"] -= 75
+    assert main_tool(plugin, "patch", {"path": "/x"})["action"] == "block", "the agent's own time still counts"
+
+
+def test_other_auxiliary_calls_and_turns_keep_the_clock(plugin, make_ctx):
+    make_ctx()
+    start_turn(plugin)
+    plugin.secretary._turns["s1"]["start"] -= 130
+    for kw in ({"task": "vision"}, {"turn": "review-1"}, {"platform": "subagent"}):
+        _aux(plugin, "_pre_auxiliary_call", **kw)
+        plugin.secretary._turns["s1"]["compress_since"] -= 100
+        _aux(plugin, "_post_auxiliary_call", **kw)
+        assert main_tool(plugin, "patch", {"path": "/x"})["action"] == "block", kw
+    _aux(plugin, "_post_auxiliary_call")  # an unmatched end changes nothing
+    assert main_tool(plugin, "patch", {"path": "/x"})["action"] == "block"

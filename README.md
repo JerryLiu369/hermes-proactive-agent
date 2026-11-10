@@ -52,8 +52,9 @@ The next four sections explain how the plugin solves each of these problems.
 Every turn of the main agent has a time budget:
 
 - **At 60 seconds**, the main agent gets a single reminder to answer you or hand the remaining work to `delegate_task` within a step or two.
-- **At 120 seconds**, editing files and running commands are paused for the rest of the turn. The main agent can still read files, search, delegate tasks, and wrap up using `memory`, the skill tools, `todo_list`, `clarify`, or `process_manage` (`list`, `poll`, `log`, `kill`).
+- **At 120 seconds**, editing files and running commands are paused for the rest of the turn. The main agent can still read files, look at images (`vision_analyze`), search, delegate tasks, and wrap up using `memory`, the skill tools, `todo_list`, `clarify`, or `process_manage` (`list`, `poll`, `log`, `kill`).
 - **When you write mid-turn**, the clock resets so the agent has fresh time to handle your new input.
+- **Context compression does not count.** When Hermes compresses the conversation inside a turn, the clock stops until the summary is done, so a long compression cannot push the agent into the 120-second pause on its own.
 
 Long commands cannot hold a turn hostage either. Any foreground terminal command still running after **30 seconds** is moved to the background through Hermes' own yield mechanism. The process keeps running, Hermes notifies the main agent when it finishes, and a note tells the main agent that the command is still running rather than failed. Calling `process_manage(action='wait')` is refused so the main agent cannot freeze the chat by blocking on a background job.
 
