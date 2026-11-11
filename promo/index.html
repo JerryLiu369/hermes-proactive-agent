@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Proactive Agent Promo</title>
+<style>
+@font-face { font-family: "JB Mono"; src: url(fonts/jbmono-400.woff2) format("woff2"); font-weight: 400; }
+@font-face { font-family: "JB Mono"; src: url(fonts/jbmono-700.woff2) format("woff2"); font-weight: 700; }
+:root {
+  --paper: #F2EEE5; --paper2: #E8E2D5; --card: #FBF9F4; --ink: #17171B; --ink2: #4A4740; --muted: #8C867A;
+  --line: #D8D1C2; --amber: #C98516; --amber-l: #F3E2BF; --red: #C8412A; --red-l: #F2D3CA; --green: #2E7D4F;
+  --green-l: #D6E8D9; --blue: #2F5DA8; --blue-l: #D8E1F0; --term: #1C1C21;
+  --serif: "Noto Serif CJK SC", serif; --sans: "Noto Sans CJK SC", sans-serif;
+  --mono: "JB Mono", "Noto Sans Mono CJK SC", monospace;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { width: 1920px; height: 1080px; overflow: hidden; background: var(--paper); }
+html.v, html.v body { width: 1080px; height: 1920px; }
+body { font-family: var(--sans); color: var(--ink); -webkit-font-smoothing: antialiased; }
+#stage { position: absolute; inset: 0; overflow: hidden; background: var(--paper); }
+#grain { position: absolute; inset: 0; opacity: .5; pointer-events: none; z-index: 50;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='240' height='240'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 .3  0 0 0 0 .27  0 0 0 0 .2  0 0 0 .09 0'/></filter><rect width='240' height='240' filter='url(%23n)'/></svg>"); }
+#vignette { position: absolute; inset: 0; pointer-events: none; z-index: 51;
+  background: radial-gradient(ellipse 75% 70% at 50% 46%, transparent 55%, rgba(80,64,40,.13) 100%); }
+.scene { position: absolute; inset: 0; will-change: opacity, transform; color: var(--ink); }
+/* night: the problem half of the story, before the plugin arrives */
+.scene.night { --paper: #131316; --paper2: #24242A; --card: #1D1D22; --ink: #F2EEE5; --ink2: #B9B3A7; --muted: #807B72;
+  --line: #36363D; --bubble: #28282E; --red: #E55A41; --amber: #E2A33B; }
+.scene.night .bg { position: absolute; inset: 0; background: radial-gradient(ellipse 80% 75% at 50% 42%, #1F1F25 0%, #0E0E11 100%); }
+.scene.night .card { box-shadow: 0 26px 60px -26px rgba(0,0,0,.8); }
+#stage.nc #mark { color: #F2EEE5; } #stage.nc #mark i { background: #F2EEE5; } #stage.nc #repo { color: #B9B3A7; }
+#stage.nc #caption .box { background: rgba(16,16,19,.78); } #stage.nc #caption .zh { color: #F2EEE5; } #stage.nc #caption .en { color: #B9B3A7; }
+.abs { position: absolute; }
+.serif { font-family: var(--serif); }
+.mono { font-family: var(--mono); }
+
+/* chrome */
+#topl { position: absolute; left: 64px; top: 44px; z-index: 40; display: flex; align-items: center; gap: 26px; }
+#mark { display: flex; align-items: center; gap: 14px; font: 700 23px var(--sans); color: var(--ink); letter-spacing: .01em; }
+#repo { position: absolute; right: 64px; top: 50px; z-index: 40; font: 500 21px var(--mono); color: var(--ink2); }
+#repo b { color: var(--amber); margin-right: 8px; }
+#mark i { width: 14px; height: 14px; background: var(--ink); border-radius: 3px; display: block; }
+#chapters { display: flex; gap: 10px; align-items: center; }
+#chapters .seg { font: 700 20px var(--mono); color: var(--muted); padding: 6px 12px; border-radius: 999px;
+  border: 1.5px solid var(--line); }
+#chapters .seg.on { color: var(--paper); background: var(--ink); border-color: var(--ink); }
+#caption { position: absolute; left: 0; right: 0; top: 908px; z-index: 45; text-align: center; white-space: pre; }
+#caption .box { display: inline-block; padding: 8px 28px 10px; border-radius: 14px; background: rgba(242,238,229,.88); }
+#caption .zh { font: 500 40px/1.38 var(--sans); color: var(--ink); letter-spacing: .02em; }
+/* pwid: Noto CJK draws ’ “ ” full-width by default, which splits English words */
+#caption .en { font: 400 26px/1.4 var(--sans); color: var(--ink2); margin-top: 2px; font-feature-settings: "pwid"; }
+
+/* vertical cut: chrome on two rows, captions larger and wrapped, clear of the platform UI at the bottom */
+html.v #topl { left: 40px; top: 196px; } html.v #repo { left: 42px; right: auto; top: 244px; font-size: 19px; }
+html.v #caption { top: 1376px; white-space: normal; padding: 0 36px; }
+html.v #caption .box { max-width: 1008px; padding: 10px 26px 12px; }
+html.v #caption .zh { font-size: 46px; text-wrap: balance; } #caption .pg { margin: 0 .16em; } #caption .ph { display: inline-block; white-space: nowrap; } html.v #caption .en { font-size: 27px; text-wrap: balance; margin-top: 6px; }
+
+/* cards and chat */
+.card { position: absolute; background: var(--card); border: 1.5px solid var(--line); border-radius: 22px;
+  box-shadow: 0 1px 0 rgba(0,0,0,.02), 0 18px 40px -24px rgba(60,48,30,.35); }
+.chat { overflow: hidden; display: flex; flex-direction: column; }
+.chat .hd { height: 92px; flex: none; border-bottom: 1.5px solid var(--line); display: flex; align-items: center;
+  gap: 18px; padding: 0 28px; }
+.chat .av { width: 52px; height: 52px; border-radius: 50%; background: var(--ink); position: relative; flex: none; }
+.chat .av::after { content: ""; position: absolute; left: 17px; top: 17px; width: 18px; height: 18px; border-radius: 50%;
+  background: var(--paper); }
+.chat .nm { font: 700 30px var(--sans); }
+.chat .st { font: 400 21px var(--sans); color: var(--muted); display: flex; align-items: center; gap: 8px; }
+.chat .st b { width: 10px; height: 10px; border-radius: 50%; background: var(--green); display: inline-block; }
+.chat .bd { flex: 1; padding: 26px 26px; display: flex; flex-direction: column; gap: 16px; }
+.msg { max-width: 82%; font: 400 27px/1.5 var(--sans); padding: 14px 22px; border-radius: 24px; transform-origin: 0 100%; }
+.msg.u { align-self: flex-end; background: var(--ink); color: var(--paper); border-bottom-right-radius: 8px;
+  transform-origin: 100% 100%; }
+.msg.a { align-self: flex-start; background: var(--bubble, #fff); border: 1.5px solid var(--line); border-bottom-left-radius: 8px; }
+.msg.sys { align-self: center; max-width: 100%; font: 500 20px var(--mono); color: var(--ink2); background: var(--paper2);
+  padding: 8px 18px; border-radius: 999px; transform-origin: 50% 50%; }
+.typing { align-self: flex-start; display: flex; gap: 9px; padding: 20px 24px; background: var(--bubble, #fff); border: 1.5px solid var(--line);
+  border-radius: 24px; border-bottom-left-radius: 8px; }
+.typing i { width: 12px; height: 12px; border-radius: 50%; background: var(--muted); display: block; }
+.chip { display: inline-block; font: 500 22px var(--mono); padding: 8px 16px; border-radius: 999px;
+  border: 1.5px solid var(--ink); color: var(--ink); white-space: nowrap; }
+.pill { display: inline-block; font: 700 20px var(--mono); padding: 5px 14px; border-radius: 999px; white-space: nowrap; }
+
+/* chapter layout */
+.chap-num { position: absolute; left: 112px; top: 150px; font: 700 210px/1 var(--serif); color: #DED6C6; }
+.chap-title { position: absolute; left: 120px; top: 410px; font: 700 76px/1.28 var(--serif); color: var(--ink); }
+.chap-title div { display: block; }
+.chap-file { position: absolute; left: 122px; top: 700px; font: 500 24px/1.6 var(--mono); color: var(--muted);
+  padding-top: 18px; border-top: 2px solid var(--ink); }
+.note { position: absolute; background: var(--card); border: 1.5px solid var(--line); border-radius: 18px;
+  padding: 22px 28px 24px 34px; overflow: hidden; }
+.note::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 8px; background: var(--c, var(--ink)); }
+.note h4 { font: 700 30px/1.4 var(--sans); color: var(--ink); margin-bottom: 10px; display: flex; align-items: center; gap: 14px; }
+.note p { font: 400 22px/1.5 var(--mono); color: var(--ink2); }
+.term { position: absolute; background: var(--term); border-radius: 18px; color: #EDE8DD; overflow: hidden;
+  box-shadow: 0 24px 50px -26px rgba(20,16,10,.55); }
+.term .tb { height: 50px; display: flex; align-items: center; gap: 9px; padding: 0 20px; background: #26262C; }
+.term .tb i { width: 13px; height: 13px; border-radius: 50%; background: #4A4A52; display: block; }
+.term .tb span { margin-left: auto; font: 500 21px var(--mono); color: #A9A398; }
+.term pre { font: 400 24px/1.65 var(--mono); padding: 22px 28px; white-space: pre-wrap; }
+.k { color: #8FB8E8; } .s { color: #B9D59A; } .r { color: #F09A86; } .y { color: #E8C27A; } .dim { color: #8A857C; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="topl"><div id="mark"><i></i>Hermes Proactive Agent</div><div id="chapters"></div></div>
+  <div id="repo"><b>★</b>github.com/JerryLiu369/hermes-proactive-agent</div>
+  <div id="caption"></div>
+  <div id="grain"></div>
+  <div id="vignette"></div>
+</div>
+<script>window.__errors=[];addEventListener("error",e=>__errors.push(String(e.message)+" @"+e.lineno));</script>
+<script src="build/timeline.js"></script>
+<script src="scenes.js"></script>
+</body>
+</html>

@@ -1,0 +1,134 @@
+1
+00:00:02,000 --> 00:00:04,614
+你在聊天里，交给助手一件慢活
+You hand your assistant a slow job in chat.
+
+2
+00:00:04,674 --> 00:00:08,854
+它说“好的”，然后，就再也没有声音了
+It says “Sure”… and then goes silent.
+
+3
+00:00:10,554 --> 00:00:13,104
+派出去的子代理，两眼一抹黑
+Subagents set off knowing nothing;
+
+4
+00:00:13,064 --> 00:00:15,106
+卡住了，就原地打转
+when they get stuck, they go in circles;
+
+5
+00:00:15,066 --> 00:00:17,186
+说“做完了”，全凭自报
+“Done” is only their word for it;
+
+6
+00:00:17,146 --> 00:00:19,686
+结果撞上你的新消息，就漏报了
+a result that lands with your new message never reaches you;
+
+7
+00:00:19,646 --> 00:00:22,688
+网关一重启，前因后果，全都丢了
+and a gateway restart wipes out the whole story.
+
+8
+00:00:23,888 --> 00:00:29,300
+Hermes Proactive Agent，让聊天里的助手，像一位靠谱的秘书那样做事
+Hermes Proactive Agent makes your chat assistant work like a reliable secretary:
+
+9
+00:00:29,360 --> 00:00:33,348
+慢活交给后台的子代理，它自己，随时在线
+slow work goes to background subagents, and the assistant stays reachable.
+
+10
+00:00:35,048 --> 00:00:37,296
+每一轮对话，都有时间预算
+Every turn has a time budget.
+
+11
+00:00:37,356 --> 00:00:41,812
+满六十秒，提醒助手先回复你，或者把剩下的活派出去
+At 60 seconds, the assistant is reminded to answer you or hand off the rest;
+
+12
+00:00:41,872 --> 00:00:45,428
+满一百二十秒，这一轮就暂停改文件、跑命令
+at 120 seconds, editing files and running commands pause for that turn.
+
+13
+00:00:45,488 --> 00:00:50,690
+终端命令跑满三十秒，自动转入后台，仍在运行，并非失败
+A terminal command still running after 30 seconds moves to the background: still running, not failed.
+
+14
+00:00:52,290 --> 00:00:56,642
+派活之前，插件先把关，交代太单薄，退回一次
+Before a handoff, the plugin checks it: a thin brief is sent back once.
+
+15
+00:00:56,822 --> 00:00:59,816
+放行的任务，自动附上一份背景材料
+Every handoff that goes through gets a briefing attached:
+
+16
+00:00:59,996 --> 00:01:06,468
+你最近六条消息的原话、你的记忆文件、正在运行的其他子代理、上一个没做完的任务记录
+your last six messages word for word, your memory files, other running subagents, the record of unfinished work,
+
+17
+00:01:06,648 --> 00:01:09,506
+还有做事规矩，和统一的回报格式
+plus working rules and one report format.
+
+18
+00:01:11,306 --> 00:01:16,234
+同一个步骤，拿到同样的结果，第三次警告，第五次叫停
+Same step, same result: a warning the 3rd time, a stop the 5th.
+
+19
+00:01:16,294 --> 00:01:20,656
+遇到不该它拍板的选择，它不瞎猜，带着问题和选项回来
+Facing a choice that isn’t its to make, it doesn’t guess: it comes back with a question and options.
+
+20
+00:01:20,716 --> 00:01:24,582
+能定的，助手自己定，该你拿主意的，助手来问你
+The assistant settles what it can, and asks you what only you can decide.
+
+21
+00:01:26,782 --> 00:01:30,676
+子代理说完成了？助手先看证据，再向你报喜
+A subagent says it’s done? The assistant checks the evidence before telling you.
+
+22
+00:01:30,736 --> 00:01:36,514
+后台结果撞上你的新消息，会一直标着“尚未告知”，直到真正转达给你
+A result that collides with your new message stays marked “unreported” until it really reaches you.
+
+23
+00:01:36,574 --> 00:01:42,840
+每个任务都记进 SQLite 账本，网关重启了，也知道哪些任务中断、动过哪些文件
+Every task goes into a SQLite ledger; after a gateway restart, it knows what was cut off and which files it touched.
+
+24
+00:01:44,740 --> 00:01:50,026
+还是开头那件慢活。这一次，活交给后台的子代理，助手一直在线
+The same slow job as before. This time the work goes to background subagents and the assistant stays reachable;
+
+25
+00:01:50,086 --> 00:01:52,366
+结果核实过，才交到你手上
+the result reaches you only after it has been checked.
+
+26
+00:01:54,066 --> 00:02:00,164
+这一切，都由普通代码完成，零模型调用，只走公开接口，只跟助手说话
+All of it is plain code: no model calls, public interfaces only, and it talks only to the assistant.
+
+27
+00:02:01,264 --> 00:02:07,170
+两行命令装上它。在 GitHub 搜索 Hermes Proactive Agent，让你的助手，随时在线
+Two commands to install. Search “Hermes Proactive Agent” on GitHub, and keep your assistant reachable.
