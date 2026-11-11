@@ -12,6 +12,8 @@
 
 插件专为在聊天软件里使用 Hermes 而写。它完全由普通 Python 代码运行，自己不调用任何模型，也从不直接往聊天窗口发消息；你看到的每一句回复，依然都出自助手。
 
+https://github.com/user-attachments/assets/79962a88-455b-46db-a42a-15582839d73d
+
 ## 安装
 
 ```bash
