@@ -8,7 +8,7 @@ import pytest
 
 from helpers import PLUGIN_DIR
 
-PACKAGE = "proactive_agent_under_test"
+PACKAGE = "super_agent_under_test"
 
 
 def _load():

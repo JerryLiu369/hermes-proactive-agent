@@ -1,134 +1,167 @@
-# Hermes Proactive Agent
+# Hermes Super Agent
 
-[![Release](https://img.shields.io/github/v/release/JerryLiu369/hermes-proactive-agent?label=release)](https://github.com/JerryLiu369/hermes-proactive-agent/releases)
-[![CI](https://github.com/JerryLiu369/hermes-proactive-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/JerryLiu369/hermes-proactive-agent/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/JerryLiu369/hermes-super-agent?label=release)](https://github.com/JerryLiu369/hermes-super-agent/releases)
+[![CI](https://github.com/JerryLiu369/hermes-super-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/JerryLiu369/hermes-super-agent/actions/workflows/ci.yml)
 [![Hermes Plugin](https://img.shields.io/badge/Hermes-plugin-blue.svg)](https://hermes-agent.nousresearch.com)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
 
 [English](README.md) | 简体中文
 
-[Hermes Agent](https://hermes-agent.nousresearch.com) 的插件，让聊天里的**助手**像一位靠谱的秘书那样做事：把耗时的慢活交给后台的**子代理**去跑，自己随时在线响应；每件活做完，结果都会先核实、确实转达给你，并记入账本留档。
+Hermes Super Agent 是专为 [Hermes Agent](https://hermes-agent.nousresearch.com) 设计的 **Lead–Worker Super Agent** 架构协作插件。
 
-插件专为在聊天软件里使用 Hermes 而写。它完全由普通 Python 代码运行，自己不调用任何模型，也从不直接往聊天窗口发消息；你看到的每一句回复，依然都出自助手。
+在传统的单代理聊天架构中，主会话往往在执行繁重任务时陷入漫长沉默，或者派发出无上下文、容易死循环且随意遗漏产物的子代理。本插件确立了清晰的职责解耦机制：
 
-https://github.com/user-attachments/assets/79962a88-455b-46db-a42a-15582839d73d
+- **Lead Agent（主会话主控代理）：** 持续驻留聊天交互通道，理解用户意图，制定执行计划，勘察前置事实，决策或上报关键分歧，并在向用户汇报前核实交付物实证。
+- **Worker Subagents（后台工人子代理）：** 在后台异步执行耗时冗长、工具输出庞大或需要多步试错的工作（代码构建、测试套件跑测、开放式网络调研、批量重构）。Worker 获得包含会话上下文、用户与环境记忆、并行任务状态及操作边界的完整交接简报，受到工具死循环熔断与越权盲猜拦截的严格约束，且所有执行轨迹统一持久化于 SQLite 任务台账。
 
-## 安装
+本插件基于 Hermes 原生钩子与中间件以确定性纯 Python 逻辑运行，自身不发起任何模型推理调用，不消耗额外 Token，且绝不越过主控代理向用户通道私自发送消息。用户与代理之间的交互始终由 Lead Agent 统一主导。
+
+---
+
+## 安装与快速启动
+
+通过 Hermes CLI 安装并启用插件：
 
 ```bash
-hermes plugins install JerryLiu369/hermes-proactive-agent/proactive-agent
-hermes plugins enable proactive-agent
+hermes plugins install JerryLiu369/hermes-super-agent/super-agent
+hermes plugins enable super-agent
 ```
 
-建议在 `~/.hermes/config.yaml` 中顺手加上下面两项可选配置，改完后重启网关：
+在 `~/.hermes/config.yaml` 中配置推荐宿主参数（推荐 `delegation.max_iterations: 90` 约束子代理步数上限，修改后需重启 Hermes 网关）：
 
 ```yaml
 delegation:
-  max_iterations: 90                # 需要更多步数的子代理，多半已经卡住了
+  max_iterations: 90                # 建议子代理最大迭代轮数
 plugins:
   entries:
-    proactive-agent:
-      allow_gateway_injection: true # 允许插件唤醒助手，把被你新消息打断的汇报补上
+    super-agent:
+      allow_gateway_injection: true # 允许在后台汇报被用户打断时唤醒 Lead Agent 补发
 ```
 
-不开 `allow_gateway_injection` 也不影响日常使用，被你打断的汇报会等你发下一条消息时再一并补上。如果安装时用了别的插件名，请把配置里的 `proactive-agent` 换成 `hermes plugins list` 显示的实际名称。
+配置 `allow_gateway_injection: true` 后，当后台 Worker 完成汇报时若恰好被用户并发发送的新消息冲淡，插件可通过 Hermes 内部网关消息注入队列唤醒 Lead Agent 补全交付汇报。若不配置该项，未汇报结果将在用户下一次发言时顺带附带。
 
-## 为什么要做这个
+---
 
-Hermes 本身就能把任务派给子代理在后台执行。但真正在聊天软件里用起来，常会遇到这六件糟心事：
+## 从 `hermes-proactive-agent` (0.1.x) 升级
 
-- **聊天动不动冷场。** 助手自己跑起构建，或者一头扎进长链路排查，聊天窗口里十分钟没有半点回音。
-- **子代理出发时两眼一抹黑。** 子代理看不到聊天记录也没有记忆，你交代过什么、之前试过什么、哪些东西千万不能碰，它一概不知。
-- **卡住的子代理要么死循环，要么乱猜。** 同一个报错的命令翻来覆去地跑，直到把步数耗光；或者遇到不该由它拍板的分岔路口，自己随便猜一个往下走。
-- **所谓“做完了”全凭自报。** 子代理说搞定了，助手就原话转告，没有证据也没有核验。
-- **刚好赶上你发消息，结果就漏报了。** 后台结果刚送回来，你恰好发来一条新消息；助手只顾着回你这句话，刚才做完的任务就再没人提起。
-- **任务一结束或网关一重启，前因后果全丢。** 子代理退场后，或者 Hermes 网关重启后，它刚才查到了什么、动过哪些文件，全都无从查起。
+Hermes Super Agent v0.2.0 是 `hermes-proactive-agent` 的直接架构演进版。升级现有环境的步骤如下：
 
-接下来的四节，按顺序说明插件如何逐一解决这些问题。
+1. **安装并启用新插件：**
+   ```bash
+   hermes plugins install JerryLiu369/hermes-super-agent/super-agent
+   hermes plugins enable super-agent
+   # 可选：停用旧版本
+   hermes plugins disable proactive-agent
+   ```
+2. **迁移 `~/.hermes/config.yaml` 配置项：**
+   将配置键从 `plugins.entries.proactive-agent` 重命名为 `plugins.entries.super-agent`：
+   ```yaml
+   plugins:
+     entries:
+       super-agent:
+         allow_gateway_injection: true
+         settings:
+           governed_platforms: ["weixin"]
+   ```
+3. **可选迁移历史任务台账：**
+   如需继承 v0.1.x 的历史任务记录：
+   ```bash
+   mkdir -p ~/.hermes/plugin-data/super-agent
+   cp ~/.hermes/plugin-data/proactive-agent/ledger.db ~/.hermes/plugin-data/super-agent/ledger.db
+   ```
+4. **环境变量兼容说明：**
+   插件优先读取 `SUPER_AGENT_<KEY>` 环境变量，同时保留对 `PROACTIVE_<KEY>` 的全量向下兼容回退支持。
 
-## 它做了什么
+---
 
-### 聊天始终保持响应
+## 解决的核心问题
 
-助手的每一轮对话都有时间预算：
+在即时通信通道（如微信）中使用原生代理委托协作时，普遍存在以下六类问题：
 
-- **满 60 秒时**，助手会收到一次提醒：在一两步之内先回复你，或者把剩下的慢活通过 `delegate_task` 派给子代理。
-- **满 120 秒后**，当前这一轮暂停修改文件和执行命令。助手仍然可以读文件、看图（`vision_analyze`）、搜索、派发任务，或使用收尾工具：`memory`、技能类工具、`todo_list`、`clarify`，以及用 `process_manage` 查看（`list`）、轮询（`poll`）、读日志（`log`）或终止（`kill`）后台任务。
-- **你在一轮中途发来新消息时**，计时立即归零重算，给助手留出处理新消息的时间。
-- **上下文压缩不计时。** Hermes 在一轮中途压缩对话时，计时会暂停到摘要生成完毕，不会因为一次漫长的压缩就让助手直接进入 120 秒的暂停。
+1. **主通道长时间失声卡死：** 主代理在主会话中直接执行大型构建、脚本排障或多步文件写入，导致会话无响应长达数十分钟。
+2. **子代理缺乏上下文与记忆：** 原生派发的子代理是无状态全新会话，既看不到近期聊天记录，也未加载 `USER.md` 与 `MEMORY.md`，极易违反用户预设的操作禁区。
+3. **工具报错无限死循环与擅自臆测：** 子代理反复执行相同错误命令直至步数耗尽；遇到架构分支或权限拦截时，不向主代理上报，而是擅自做出非授权假设。
+4. **交付物未经核查直接采信：** 子代理返回口头“已完成”而无具体实证，主代理不加校验直接转述给用户。
+5. **用户插话导致后台产物吞没：** 后台子代理完成交付时，若用户恰好发送了新问题，主代理往往仅回答新问题，导致刚刚出炉的任务产物被彻底遗忘。
+6. **网关重启丢失任务状态：** 原生子代理任务仅驻留内存，网关意外退出或重启后，正在修改的文件、中间指令和未汇报产物全部丢失。
 
-耗时命令同样不会拖住聊天。前台终端命令运行满 **30 秒**仍未结束时，插件会借助 Hermes 自带的让出机制（yield）将它转入后台（限 Hermes 的本地终端后端，只有它能把运行中的进程交给后台）：进程照常运行，结束时由 Hermes 通知助手，同时插件会明确告知助手“命令仍在后台运行，并非执行失败”。此外，插件会拒绝 `process_manage(action='wait')`，防止助手在原地干等后台任务而再次卡死聊天。
+---
 
-### 子代理出发前心里有数
+## 核心机制
 
-子代理看不到聊天上下文，也没有记忆，全靠助手在派活时写好任务交代（`context`）。插件会在 `delegate_task` 发出前做一次把关；遇到下面两种情况，**每轮会退回一次**并说明原因：
+### 1. Lead Agent 响应性保障
 
-- 任务交代不足 **120 个字符**，插件会提示助手补齐已知信息、具体目标路径或地址、禁止改动的部分、何时停手，以及怎样才算完成；
-- 任务里点名要改某个文件，而另一个正在运行的子代理已经在改它，避免两个子代理互相覆盖。
+Lead Agent 所在的主会话受到确定性时间预算治理：
 
-同一轮里的第二次提交一律放行。凡是放行的任务，插件都会在助手写的交代后面自动附上一份背景材料：
+- **60 秒软预算提醒 (`turn_soft_seconds: 60`)：** 主代理收到阶段性提醒，指导其在 1 到 2 步内输出已有结论或调用 `delegate_task` 将重任务转交后台。
+- **120 秒硬预算暂停 (`turn_hard_seconds: 120`)：** 暂停文件编辑、文件写入与终端执行等修改类工具调用。只读与总控类工具保持开放：文件读取、图片分析 (`vision_analyze`)、搜索、`delegate_task`、`memory`、`todo_list`、`clarify`、技能工具与进程查询 (`process_manage` 的 `list`、`poll`、`log`、`kill`)。
+- **中途插话重置计时：** 当用户在回合中途发送新指令时，本轮计时器自动重置，保障代理有完整时间理解新需求。
+- **压缩过程暂停计时：** Hermes 触发会话上下文自动压缩时不计入回合耗时。
+- **30 秒终端自动转入后台 (`terminal_auto_detach_seconds: 30`)：** 前台终端命令执行超过 30 秒时，通过 Hermes 原生 yield 机制自动转为后台进程执行，Hermes 记录 PID 并在结束时通知主代理。禁止主代理调用 `process_manage(action='wait')` 阻塞主通道。
+- **系统提示词注入：** 针对受管会话在 `after_memory` 位置注册 `super-agent.discipline` 提示词段落，约束 Lead Agent 的调度原则。
 
-- **你最近 6 条消息的原话**，像“别动 X”这类叮嘱能一字不差地传给子代理。
-- **`USER.md` 和 `MEMORY.md`**，补上 Hermes 默认不给子代理加载的用户与环境记忆。这两个文件会原样整份附上，里面记着的关于你的信息（包括个人信息），受管的子代理都看得到。
-- **当前正在运行的其他子代理**，以及它们正在修改的文件列表。
-- **当前对话里最近未完成的任务记录**（查到了什么、卡在哪里、提过什么问题、收到过哪些 `steer` 纠正、改过哪些文件、完整日志路径在哪），让接手的子代理直接接着往下做，不必从头再探一遍路。
-- **几条做事规矩**：只做分内的事；同样的错连犯两次就停；遇到不该自己定的事带回来问，不瞎猜；命令被拦截时不绕路硬闯；高风险改动必须留有回滚路径；不碰别的子代理正在改的文件；报完成之前先核实真实状态。
-- **回报方式**：最后交一个 JSON 对象，包含 `status`（`completed`、`partial`、`blocked`、`needs_decision` 或 `failed`）、`summary`、`evidence` 和 `blockers`，需要拍板时再附上 `question` 和 `options`。这只是要求，不做强制校验：插件不设置 `output_schema`，所以 Hermes 不需要 `jsonschema`，也不会让子代理返工重写。插件能读到 JSON 就按 JSON 处理（放在代码块里也行）；纯文字回报里只要写了 `needs_decision`，照样算作需要拍板；其他情况交给助手自己读。如果任务本身指定了 `output_schema`，则原样保留。
+### 2. Worker Subagent 门禁与交接简报
 
-### 子代理不空转、不瞎猜
+子代理默认不继承主会话上下文。插件通过门禁校验与结构化上下文注入保证交付质量：
 
-Hermes 能发现子代理在重复调用工具，但对子代理只提醒、不制止。插件会在子代理的整个运行周期内累计计数（不限于连续重复），并按结果的第一行做比对；长数字和哈希会先抹平，因此就算每次请求 ID 或时间戳不同，只要报错一样就记为同一次重复。当子代理用同一个工具、同样的参数，拿到同样的结果时：
+- **委托门禁检查：** 校验 `delegate_task` 调用。若任务描述不足 120 字符 (`handoff_min_context_chars: 120`)，插件在同回合内返回一次提示，要求补充已知事实、目标路径、不可变更约束、终止条件与验证方式；若同回合再次提交则予以放行。
+- **文件写入冲突防护：** 若新派发任务试图修改另一个活跃子代理正在编辑的文件，该调用在同回合内被拦截一次，防止并发写冲突。
+- **全量上下文交接装配：** 通过门禁的任务在启动时自动装配包含以下信息的交接包：
+  - 最近 6 条用户原话，保留即时上下文与否定性约束。
+  - 全量 `USER.md` 与 `MEMORY.md` 内容（原生子代理不加载此类记忆）。
+  - 当前会话中正在并发运行的 Worker 列表及其目标文件。
+  - 本会话近期未完成任务档案（已知事实、阻碍点、待决问题、修改文件、日志路径）。
+  - 确定性执行纪律：严格限定工作范围、同一错误重试两次即止、遇阻升级而非臆测、高危操作需有回滚方案、交付必须包含 checkable 实证。
+  - 标准化 JSON 汇报格式规范。
 
-- **第 3 次**：收到警告，要求换思路或直接上报阻碍；
-- **第 5 次**：直接叫停，后续工具调用一律拒绝，子代理只能以 `blocked` 状态交卷。
+### 3. 循环熔断与决策升级
 
-总步数上限则继续由 Hermes 的 `delegation.max_iterations` 把控。
+- **输出归一化比对：** 插件持续监控子代理全生命周期的工具调用结果，屏蔽输出中的可变 ID、时间戳与内存地址后进行哈希归一化比对。
+- **多步循环熔断 (`worker_repeat_limit: 5`)：**
+  - **第 3 次相同输出：** 向子代理注入明确警告，要求调整策略或记录阻碍。
+  - **第 5 次相同输出：** 强制终止子代理。后续工具调用均被拒绝，强制要求以 `blocked` 状态收尾。整体步数仍受 Hermes `delegation.max_iterations` 约束（建议设为 90）。
+- **决策升级机制 (`needs_decision`)：** 子代理无权直接与用户沟通（Hermes 不向子代理开放 `clarify` 工具）。当遇到多选架构权衡、生产变更、不可逆操作或产生费用的分支，或者遭遇 Hermes 命令审批拦截与安全规则拦截时：
+  - 子代理立即停止盲猜，以 `needs_decision` 状态返回明确的 `question`（待决问题）与 `options`（备选方案）。
+  - 若属于审批拒绝，插件即刻注入指令禁止子代理绕道规避。
+  - Lead Agent 接收到此上报。若已有上下文或可查事实足以决断，由 Lead Agent 直接定夺；若属于用户意图或偏好，Lead Agent 组织简练提示向用户发起确认，并在获得答复后派发新 Worker 承接任务。
 
-子代理也没法直接向你提问：Hermes 没有给它开放 `clarify` 工具，而且子代理一旦结束就无法恢复。为了不让它瞎猜或硬闯，遇到以下两种情况时，子代理会停下来并以 `needs_decision` 状态回报，附上明确的问题（`question`）和可选项（`options`）：
+### 4. 交付实证核查、防漏报保障与任务台账
 
-- **遇到不该由它拍板的选择**：比如两套方案都走得通、要改动生产环境、涉及花钱或删数据、或者做高风险操作却没有回滚手段，而任务交代里又没写明怎么办。如果它漏写了问题，插件会提醒助手去读它的总结。
-- **某一步被命令审批或 hook 拦下**，或者卡在一个当前运行里没人能批的审批上。子代理会当场收到提示（若是被 hook 拦下，提示会附在它的下一个工具结果上）：不要重试、不要改写命令、更不要换条路去达到同样的效果；如果任务非它不可，就以 `needs_decision` 把问题带回来。由于某些配置下 Hermes 会自动拒绝子代理的危险命令并显示“用户已拒绝”，提示里也会说明这可能是系统自动拦截，未必是你本人点了拒绝。
+- **交付物实证核验：** 当子代理报告结束时，Lead Agent 下一回合开头会注入实证核验提示：
+  - 若状态为 `completed`，列出其提供的实证线索，要求 Lead Agent 抽检确认后再向用户反馈。
+  - 若缺少实证或因循环被系统拦截，注入警告提示，防止虚假交付。
+- **防漏报状态机机制：** 当后台子代理完成交付与用户发送新消息发生竞态时：
+  - 该任务结果被标为 `unreported`（待汇报）。
+  - 若 Lead Agent 在混合回合中调用了工具，工具返回值末尾附带提示，督促其在当前回复中一并汇报该任务结果。
+  - 若 Lead Agent 未调用工具直接回复，插件通过 `ctx.inject_message` 触发单次唤醒（每个任务最多尝试 2 次），让代理补发汇报或输出 `[SILENT]`。
+  - 若未开启注入或唤醒被中断，未汇报结果将在用户下一条消息到达时附带。超过 24 小时的旧结果自动转为归档。
+- **持久化 SQLite 任务台账：** 所有任务状态记录保存在 `<hermes home>/plugin-data/super-agent/ledger.db` 中。记录字段包含任务 ID、父会话、子会话、目标、运行状态（`running`、`completed`、`partial`、`blocked`、`needs_decision`、`failed`、`lost`、`stopped`）、修改文件、引导指令、完整轨迹路径与汇报状态。
+- **网关崩溃恢复：** 网关重启时，先前的活跃子代理被自动标记为 `lost`。Lead Agent 在下一次交互时收到中断报告与曾被修改的文件列表，避免基于过时假定继续执行。台账按每个父会话保留最近 20 条已完成记录，最长保留 7 天。
 
-当 `needs_decision` 回报送到助手手里时，助手看得到完整对话和记忆：如果答案在前面的聊天、记忆或它能直接查到的事实里已经很清楚，助手会自己拍板；如果确实需要你拿主意（个人偏好、风险取舍、花钱、被拒的危险命令），它会发一条简短的消息把选项列给你。无论哪种方式，拿到答案后助手都会带着决定和前一个任务的记录，重新派一个子代理接着做。要是你已经看到了问题，而到你发下一条消息时助手还没派活跟进，插件会在那条消息里提醒助手一次。
-
-### 结果有核实、有交代、有记录
-
-子代理一结束，助手的下一轮对话开头就会收到一条核验说明：
-
-- 子代理报 `completed` 且附有证据时，列出这些证据，提醒助手在向你报喜前先抽查真实状态；
-- 子代理空口说完成却没给证据、没做完，或因原地打转被插件叫停时，直接标出警告；如果是因重复被叫停，还会要求助手用一句话告诉你卡在了哪里、接下来准备怎么办；
-- 助手自己用 `action='stop'` 主动喊停的任务，会注明是主动停止，不作失败处理。
-
-后台子代理的结果会通过单独的一轮内部唤醒交给助手。如果这轮汇报还在跑的时候你刚好发来新消息，Hermes 会把你的消息并进同一轮，助手往往只顾着回答你的新问题，把刚才跑完的结果忘在一边。为了防止漏报，插件会一直把后台结果标记为**尚未告知你**（`unreported`），直到展示过该结果的那一轮以一次未被你打断的回复顺利结束：
-
-- **如果你发消息后助手又调用了工具**，工具返回时会附带提醒：回答你的问题，并在同一条回复里把后台结果一并汇报；
-- **如果助手没再调工具就直接回复了你**，插件会通过 Hermes 的消息注入机制再唤醒助手一次（排在当前轮次之后，绝不插队打断），让它补发一条简短的结果说明；如果上一条回复里其实已经讲过了，助手只需回复 `[SILENT]` 即可静默结束；
-- **如果那一轮被 Hermes 直接中断，或未开启唤醒权限**，提醒会自动挂在你发出的下一条消息上。
-
-这期间你每多插进来一条消息，都会触发一次新的提醒，连发几条消息也不会把结果冲掉。每个结果最多触发 **2 次**唤醒，超过 **24 小时**的旧结果不再追报。
-
-最后，每一个派出的任务都会写入 `<hermes home>/plugin-data/proactive-agent/ledger.db` 的 SQLite 账本：记录任务目标与状态、改过的文件、中途通过 `action='steer'` 发出的纠正、实时日志路径、结项详情（摘要、证据、阻碍、待定问题与选项），以及结果是否已经同步给你。因为 Hermes 不能恢复已结束的子代理，同一个对话里派出的下一个子代理会自动在背景材料里拿到前序未完成任务的记录。如果 Hermes 网关在子代理运行中途重启，插件会把这些任务标记为丢失，并在下一轮明确告诉助手哪些任务中断了、它们动过哪些文件、副作用尚不明确，提醒助手先核实现场再决定是否重派。待发送的提示和尚未告知你的结果也保存在账本中，重启不会丢失。账本为每个对话保留最近 **20 个**已结束的任务，最长保留 **7 天**。
+---
 
 ## 设计原则
 
-- **只跟助手说话。** 插件只在助手的上下文里附加说明；为了补齐被你打断的汇报，也只是发一条内部消息唤醒助手。它从不直接往你的聊天里发消息，跟你说什么完全由助手决定。
-- **不搞定时播报。** 没有进度条，也没有定时心跳。每一条提示都由具体的事件触发（一轮开始、工具返回、子代理结束、或一轮结束时仍有结果未告知你），并且只投递一次。
-- **零模型调用。** 所有检查都是确定性的普通代码，本身不消耗任何 token。
-- **Hermes 的职责仍归 Hermes。** 危险命令审批、过期文件保护、总步数上限、循环提醒，以及把子代理结果送回助手，都继续由 Hermes 负责。插件只补齐它留下的空白。
-- **只走公开接口。** 插件只通过 Hermes 的钩子、中间件和插件 API 工作，从不改写 Hermes 自身的代码，因此能通过插件目录的准入检查，也不会和其他插件互相冲突。
-- **绝不添乱。** 所有钩子都有异常保护：万一插件自己出错，只记一行日志，绝不阻断正常的工具调用。
-- **只在你指定的地方生效。** 只有 `governed_platforms`（默认 `["weixin"]`）里列出的平台，以及从这些平台派出的子代理才受插件管理。定时任务、命令行和其他平台一概不碰。
+- **主控统一代理：** 插件仅通过注入上下文提示和网关内部唤醒与 Lead Agent 交互，绝不直接向用户通信通道发送消息。
+- **事件驱动与确定性：** 无常驻后台轮询线程或定时心跳循环。所有控制逻辑均由原生事件（回合开始、工具执行前后、子代理启停）即时触发。
+- **零模型调用开销：** 规则校验、死循环检测、门禁过滤与交接包拼装完全由 Python 原生代码计算完成，不产生额外 Token 费用。
+- **宿主职责解耦：** 命令审批、沙箱隔离、最大迭代轮数与工具执行底层完全交由 Hermes 原生体系负责，插件专注于协作编排治理。
+- **基于公共标准接口：** 完全通过 Hermes 官方公开钩子 (`pre_llm_call`, `pre_api_request`, `pre_auxiliary_call`, `post_auxiliary_call`, `pre_tool_call`, `post_tool_call`, `transform_tool_result`, `subagent_start`, `subagent_stop`, `on_session_end`, `on_session_reset`, `on_session_finalize`) 与 `tool_execution` 中间件实现。
+- **故障隔离与放行保障：** 所有钩子逻辑均包含全量异常保护，若内部逻辑发生未预期错误，记录日志后放行工具执行，绝不中断宿主功能。
+- **白名单精准受管：** 仅针对 `governed_platforms`（默认：`["weixin"]`）及其派生的子代理进行治理。CLI 会话、定时任务及未配置平台保持完全原生行为。
 
-## 配置
+---
 
-配置项写在 `~/.hermes/config.yaml` 的 `plugins.entries.proactive-agent.settings` 下：
+## 配置参考
+
+配置位于 `~/.hermes/config.yaml` 的 `plugins.entries.super-agent.settings` 下：
 
 ```yaml
 plugins:
   entries:
-    proactive-agent:
-      allow_gateway_injection: true   # Hermes 宿主权限，详见“安装”一节
+    super-agent:
+      allow_gateway_injection: true   # Hermes 宿主权限
       settings:
         governed_platforms: ["weixin"]
         turn_soft_seconds: 60
@@ -138,75 +171,93 @@ plugins:
         worker_repeat_limit: 5
 ```
 
-| 配置项 | 默认值 | 作用 |
-|---|---|---|
-| `governed_platforms` | `["weixin"]` | 受插件管理的聊天平台（含从这些平台派出的子代理） |
-| `turn_soft_seconds` | `60` | 单轮运行满多少秒时，提醒助手尽快回复或派活 |
-| `turn_hard_seconds` | `120` | 单轮运行满多少秒后，在本轮剩余时间内暂停修改文件和跑命令 |
-| `terminal_auto_detach_seconds` | `30` | 前台终端命令运行超过多少秒后自动转入后台（填 `0` 关闭） |
-| `handoff_min_context_chars` | `120` | `delegate_task` 中 `context` 的最短字符数，不足时每轮退回一次 |
-| `worker_repeat_limit` | `5` | 子代理重复相同步骤并拿到相同结果满几次后叫停（提前两次先提醒） |
+| 参数项 | 类型 | 默认值 | 作用说明 |
+|---|---|---|---|
+| `governed_platforms` | 列表 | `["weixin"]` | 纳入 Lead Agent 与 Worker Subagent 协作治理的通道平台列表 |
+| `turn_soft_seconds` | 数值 | `60.0` | 单回合软上限秒数，达到后提醒 Lead Agent 及时回复或派发子代理 |
+| `turn_hard_seconds` | 数值 | `120.0` | 单回合硬上限秒数，达到后暂停文件修改与终端执行等动作 |
+| `terminal_auto_detach_seconds` | 整数 | `30` | 前台终端命令自动转入后台的超时阈值（`0` 表示不转入后台） |
+| `handoff_min_context_chars` | 整数 | `120` | `delegate_task` 的 `context` 参数初次门禁校验的最低字符数 |
+| `worker_repeat_limit` | 整数 | `5` | 判定子代理陷入重复循环并强制终止的阈值（第 3 次触发警告） |
 
-所有配置项都可以通过同名环境变量 `PROACTIVE_<配置名大写>` 覆盖（例如 `PROACTIVE_TURN_SOFT_SECONDS=45`），环境变量优先级高于配置文件。填入无效值时只会记录一条日志并自动忽略。
+### 环境变量覆盖
+
+所有配置项均支持通过环境变量动态覆盖。优先匹配 `SUPER_AGENT_<KEY>`，其次回退匹配 `PROACTIVE_<KEY>`，再匹配 `config.yaml`，最后采用代码默认值：
+
+```bash
+export SUPER_AGENT_TURN_SOFT_SECONDS=45
+export SUPER_AGENT_WORKER_REPEAT_LIMIT=4
+```
+
+---
 
 ## 常见问题
 
-**会多花 token 吗？**
-插件自己不调用任何模型，只是在助手上下文和子代理背景材料里附上几段简短说明。为了补上被你打断的汇报而唤醒助手时，相当于助手多跑一轮简短回复，开销和你自己多发一条消息差不多。
+**插件会增加模型 Token 消耗吗？**  
+不会。插件自身不包含任何 LLM 提示词与模型调用。其注入的内容仅为极短的上下文提示段落，以及给 `delegate_task` 附带的背景简报。触发唤醒补发汇报的回合仅消耗单次简短回复的标准 Token。
 
-**会影响定时任务、命令行（CLI）或其他聊天平台吗？**
-不会。只有列在 `governed_platforms` 里的平台及其派出的子代理受插件管理，定时任务和其他平台完全按原样运行。
+**CLI 终端会话、定时任务或其他通道会受影响吗？**  
+不会。未声明在 `governed_platforms` 中的平台不受任何干预。CLI 会话和 Cron 任务保持完全原生执行。
 
-**它会取代 Hermes 自带的命令审批或循环检测吗？**
-不会，这两项机制照常工作。当 Hermes 的审批拦下子代理的命令时，插件只是及时提醒子代理不要绕路硬试，而是把问题带回来交给助手处理。
+**会与 Hermes 原生命令审批或循环检测冲突吗？**  
+不会。Hermes 原生的审批流、权限控制与步数上限正常运转。当审批拒绝子代理命令时，插件会拦截其绕道盲猜行为，并将其结构化为 `needs_decision` 上报给 Lead Agent。
 
-**怎么让聊天在长命令或多步任务进行时不卡死？**
-装上并启用 `proactive-agent`。满 60 秒时助手会收到一次提醒：先回复你，或者把剩下的活派给子代理；满 120 秒后，本轮不再允许改文件和跑命令，但读文件、搜索、派活照常。终端命令跑满 30 秒会自动转入后台，插件也会拒绝助手原地等后台任务，所以一次长时间的构建拖不住聊天。
+**如何避免聊天界面长任务卡死？**  
+在 60 秒时提醒 Lead Agent，在 120 秒时暂停耗时写操作；前台终端命令运行超过 30 秒自动转入后台，同时拒绝主会话通过 `process_manage(action='wait')` 进行阻塞等待。
 
-**`delegate_task` 派出的子代理为什么不知道 `MEMORY.md` 和刚说过的话？**
-Hermes 派子代理时不带聊天记录，也不给它加载用户和记忆文件，子代理本身看不到这些。凡是放行的任务，插件都会在后面附一份背景材料：你最近 6 条消息的原话、`USER.md` 和 `MEMORY.md`、正在运行的其他子代理及其正在改的文件、本对话最近的未完成任务、几条做事规矩，以及回报方式。
+**原生子代理为什么缺乏上下文，插件如何补齐？**  
+Hermes 默认以无状态环境派发子代理。插件通过拦截 `delegate_task`，要求任务描述具备必要参数，并自动附带近 6 条用户原话、完整 `USER.md` 与 `MEMORY.md`、并行任务文件及标准操作规范。
 
-**子代理遇到该由你拍板的选择，或者命令被拦下时怎么办？**
-它没法直接问你：Hermes 没给子代理开放 `clarify` 工具，子代理一旦结束也无法恢复。所以它会停下来，以 `needs_decision` 状态回报，附上一个明确的问题和可选项；某一步被审批或 hook 拦下时同样如此，并且会当场收到提示：不要重试，也不要绕路。助手能根据聊天或记忆定的就自己定，确实要你拿主意的就发一条简短消息把选项列给你，然后带着答案重新派一个子代理。
+**子代理遇到决策分歧或权限拒绝时如何处理？**  
+子代理无权调用 `clarify` 与用户对话。遇到多方案抉择或操作拒绝时，子代理以 `needs_decision` 状态返回待决问题与选项。Lead Agent 依据已知事实仲裁或向用户发起一次简要确认，再启动新 Worker 执行。
 
-**我在后台子代理刚跑完的时候发消息，会发生什么？**
-Hermes 会把你的消息并进那轮汇报里，助手往往只顾回答你，把刚跑完的结果忘在一边。插件会一直把结果标成 `unreported`，直到展示过它的那一轮以一次没被你打断的回复结束：助手若又调了工具，工具返回时会提醒它一并汇报；若它没调工具就直接回复了，插件会通过 Hermes 的消息注入再唤醒它一次（需要开启 `allow_gateway_injection: true`），补一句简短说明或回 `[SILENT]`；两种情况都不成立时，提醒会挂在你下一条消息上。
+**用户插话导致后台任务汇报被忽略怎么办？**  
+Hermes 会将新消息并入汇报回合，常导致代理遗漏已完成的后台任务。插件将此类任务标记为 `unreported`，通过后续工具执行追加提醒，或在空闲时借助网关注入唤醒 Lead Agent 完成交付。
 
-## 兼容性
+---
 
-- **Hermes Agent** 0.22 及以上（已在 v0.22.7 上验证）。
-- 长命令转后台需要 Hermes 保持默认的 `plugins.isolation: in_process`；设为 `host` 时，命令只会照常在前台运行。
-- **Python** 3.10 及以上，零运行时依赖。
-- **CI** 在 Python 3.10 至 3.14 上运行 `ruff check` 与 `pytest`。
+## 仓库结构
 
-## 开发
+```text
+super-agent/          实际安装的插件目录（Hermes 加载路径）
+├── secretary.py      回合时间预算管理、30 秒终端自动后台化、用户插话处理
+├── handoff.py        门禁校验、上下文交接简报装配、操作规范提示
+├── workers.py        子代理运行注册表、重复调用监控与熔断、拒绝指令拦截
+├── reports.py        交付实证核查、待决问题上报、未汇报结果状态机、崩溃恢复
+├── ledger.py         SQLite 任务台账与持久化通知队列
+├── prompt.py         Lead Agent 系统提示词段落 (super-agent.discipline)
+├── context.py        调用方角色判断（受管 Lead Agent、Worker 子代理、Cron）
+├── config.py         配置项解析与环境变量覆盖
+├── util.py           文本处理、JSON 序列化与函数签名工具
+├── __init__.py       钩子与中间件注册入口
+└── plugin.yaml       插件清单与配置架构定义
+tests/                单元测试与端到端测试套件
+```
+
+---
+
+## 兼容性与本地开发
+
+- **Hermes Agent：** 版本 >= 0.22（已在 v0.22.7 完整验证）。
+- **进程隔离支持：** 终端自动后台化特性要求使用默认的 `plugins.isolation: in_process`。在 `host` 模式下命令保持前台执行。
+- **Python：** 3.10 及以上版本，无需任何外部第三方运行时依赖。
+- **自动化测试：** CI 工作流针对 Python 3.10 至 3.14 进行 `ruff check` 与 `pytest` 全量测试。
+
+本地执行测试套件：
 
 ```bash
 uv run --group dev pytest
 uv run --group dev ruff check
 ```
 
-当环境中可以导入 `hermes_cli` 时，`tests/test_hermes_e2e.py` 会通过真实的 Hermes 插件加载器运行端到端测试；否则会自动跳过。
+---
 
-```text
-proactive-agent/      插件安装目录（Hermes 唯一会复制的目录）
-├── secretary.py      单轮时间预算、30 秒长命令转后台、中途新消息处理
-├── handoff.py        派活任务把关、背景材料拼接、做事规矩与回报方式
-├── workers.py        运行中子代理登记、重复步骤叫停、命令被拒时的提示
-├── reports.py        结果核验说明、待拍板问题、未送达结果追报、重启后恢复
-├── ledger.py         SQLite 任务账本与持久化提示队列
-├── prompt.py         受管助手的系统提示词片段
-├── context.py        调用方身份识别（受管助手、子代理或定时任务）
-├── config.py         配置读取与默认值
-├── util.py           文本、JSON 与调用签名辅助函数
-├── __init__.py       钩子注册与路由
-└── plugin.yaml       Hermes 插件清单与配置定义
-tests/                按模块对应的单元测试，以及基于真实 Hermes 的端到端测试
-```
+## 面向 AI 代理的技术索引
 
-## 给 AI 读的文档
+针对 AI 编码代理与自动化工具的参考文件：
+- [llms.txt](llms.txt)：高信息密度的架构规范与技术摘要。
 
-[llms.txt](llms.txt) 是面向 AI 代理和答案引擎的精简索引，[llms-full.txt](llms-full.txt) 则在单个文件中收录了完整的项目技术参考。
+---
 
 ## 许可证
 

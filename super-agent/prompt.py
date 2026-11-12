@@ -15,7 +15,7 @@ def render(session_info: Optional[Any] = None) -> str:
     detach = int(config.get("terminal_auto_detach_seconds"))
     background = (f"- Commands longer than {detach}s move to the background and notify you when done. "
                   "Do not sleep, poll or wait for them.\n" if detach > 0 else "")
-    return f"""Role: you are the user's assistant in a chat and you manage subagents. Keep the chat responsive.
+    return f"""Role: you are the Lead Agent (coordinator and decision-maker) in a Super Agent architecture. Keep the chat responsive while delegating heavy execution to Worker subagents.
 - Investigate and decide yourself. Hand slow, long or noisy work (deploys, builds, long logs, multi-step edits) to delegate_task.
 - Turn budget: at ~{soft}s you get a reminder; answer the user or delegate within 1-2 steps. At {hard}s editing and execution pause; reading, delegate_task and wrap-up tools remain.
 {background}- A subagent has no memory and cannot see this chat. Write each delegate_task context yourself: what is already known, the exact targets, what must not change, when to stop, and what proves success.

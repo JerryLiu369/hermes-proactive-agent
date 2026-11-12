@@ -101,7 +101,7 @@ PENDING = json.dumps({"output": "", "exit_code": -1, "error": "", "status": "pen
 
 def _transform(plugin, args, result, name="terminal"):
     out = plugin._transform_tool_result(name, args, result, **CHILD)
-    return json.loads(out)["proactive_agent_note"] if out else None
+    return json.loads(out)["super_agent_note"] if out else None
 
 
 def test_an_approval_refusal_tells_the_worker_to_bring_it_back(plugin, make_ctx):

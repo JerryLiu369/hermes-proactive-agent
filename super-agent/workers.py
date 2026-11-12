@@ -15,7 +15,7 @@ from typing import Any, Callable, Dict, Optional
 
 from . import config, ledger, util
 
-logger = logging.getLogger("hermes.plugins.proactive_agent")
+logger = logging.getLogger("hermes.plugins.super_agent")
 
 _lock = threading.RLock()
 _workers: Dict[str, dict] = {}
@@ -124,7 +124,7 @@ def reset_all() -> None:
 
 # ---------------------------------------------------------------- refused steps
 
-_REFUSED = ("[proactive-agent] {what} Do not retry it, rephrase it or reach the same result another way. If the goal "
+_REFUSED = ("[super-agent] {what} Do not retry it, rephrase it or reach the same result another way. If the goal "
             "needs it, stop now and report status \"needs_decision\": what was refused, why it is needed, and the "
             "options. The main agent decides or asks the user. A refusal that says the user denied it may be automatic.")
 
@@ -160,7 +160,7 @@ def _joined(*notes: Optional[str]) -> Optional[str]:
 # ---------------------------------------------------------------- repeat stop
 
 def _stop_message(w: dict) -> str:
-    return (f"[proactive-agent] STOP: {w['stop_reason']}. Do not call more tools. Write your final report now: "
+    return (f"[super-agent] STOP: {w['stop_reason']}. Do not call more tools. Write your final report now: "
             "status \"blocked\", what you tried, the exact blocker, and what you need from the main agent or the user.")
 
 
@@ -181,7 +181,7 @@ def post_tool_call(w: dict, tool_name: str, args: Optional[dict], result: Any, *
         # A hook or plugin refused the call. Hermes runs no transform_tool_result for a blocked
         # call, so the note rides on the worker's next tool result. The plugin's own STOP is not news.
         message = str(kw.get("error_message") or "")
-        if not message.startswith("[proactive-agent]") and _first_refusal(w, tool_name, args):
+        if not message.startswith(("[super-agent]", "[proactive-agent]")) and _first_refusal(w, tool_name, args):
             note = _REFUSED.format(what=f"Your earlier call {util.describe_call(tool_name, args)} was refused by a hook "
                                         f"or plugin rule (\"{util.short(message, 160)}\") and did not run.")
             with _lock:
@@ -207,10 +207,10 @@ def post_tool_call(w: dict, tool_name: str, args: Optional[dict], result: Any, *
             w["stop_reason"] = stopped = f"ran the same step {count} times with the same result: {step}"
         elif count == warn_at:
             w["pending_note"] = _joined(
-                w["pending_note"], f"[proactive-agent] You ran the same step {count} times with the same result: {step}. "
+                w["pending_note"], f"[super-agent] You ran the same step {count} times with the same result: {step}. "
                                    f"Change approach or report the blocker; at {limit} repeats you will be stopped.")
     if stopped:
-        logger.warning("proactive-agent: stopping worker %s: %s", w["id"], stopped)
+        logger.warning("super-agent: stopping worker %s: %s", w["id"], stopped)
 
 
 def transform_tool_result(w: dict, tool_name: str, args: Optional[dict], result: Any) -> Optional[str]:

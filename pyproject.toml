@@ -1,7 +1,7 @@
 [project]
-name = "hermes-proactive-agent"
-version = "0.1.17"
-description = "Hermes Agent plugin that keeps chat turns responsive, briefs subagents, stops loops and brings back decisions, verifies and delivers results, and persists tasks in a SQLite ledger"
+name = "hermes-super-agent"
+version = "0.2.0"
+description = "Hermes Agent plugin implementing Lead–Worker Super Agent orchestration: responsive chat coordinator, subagent briefing, anti-loop guards, decision escalation, and persistent SQLite task ledger"
 readme = "README.md"
 license = { text = "MIT" }
 authors = [{ name = "Jerry Liu" }]
@@ -11,7 +11,8 @@ keywords = [
     "hermes",
     "hermes-agent",
     "hermes-plugin",
-    "proactive-agent",
+    "super-agent",
+    "lead-worker",
     "ai-agent",
     "chat-agent",
     "subagents",
@@ -32,11 +33,11 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/JerryLiu369/hermes-proactive-agent"
-Documentation = "https://github.com/JerryLiu369/hermes-proactive-agent#readme"
-LLMs = "https://raw.githubusercontent.com/JerryLiu369/hermes-proactive-agent/main/llms.txt"
-Issues = "https://github.com/JerryLiu369/hermes-proactive-agent/issues"
-Releases = "https://github.com/JerryLiu369/hermes-proactive-agent/releases"
+Homepage = "https://github.com/JerryLiu369/hermes-super-agent"
+Documentation = "https://github.com/JerryLiu369/hermes-super-agent#readme"
+LLMs = "https://raw.githubusercontent.com/JerryLiu369/hermes-super-agent/main/llms.txt"
+Issues = "https://github.com/JerryLiu369/hermes-super-agent/issues"
+Releases = "https://github.com/JerryLiu369/hermes-super-agent/releases"
 
 [dependency-groups]
 dev = ["pytest", "pyyaml", "ruff"]

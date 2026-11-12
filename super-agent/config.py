@@ -7,7 +7,7 @@ import logging
 import os
 from typing import Any, List, Optional
 
-logger = logging.getLogger("hermes.plugins.proactive_agent")
+logger = logging.getLogger("hermes.plugins.super_agent")
 
 DEFAULTS: dict[str, Any] = {
     # Platforms whose main chat agent is governed. Unlisted platforms are untouched.
@@ -54,19 +54,20 @@ def _coerce(value: Any, default: Any) -> Any:
 
 def get(key: str) -> Any:
     default = DEFAULTS[key]
-    env_key = f"PROACTIVE_{key.upper()}"
-    if env_key in os.environ:
-        try:
-            return _coerce(os.environ[env_key], default)
-        except Exception:
-            logger.warning("proactive-agent: ignoring invalid %s=%r", env_key, os.environ[env_key])
+    for env_key in (f"SUPER_AGENT_{key.upper()}", f"PROACTIVE_{key.upper()}"):
+        if env_key in os.environ:
+            try:
+                return _coerce(os.environ[env_key], default)
+            except Exception:
+                logger.warning("super-agent: ignoring invalid %s=%r", env_key, os.environ[env_key])
+            break
     if _ctx is not None:
         try:
             value = _ctx.get_config(key, None)
             if value is not None:
                 return _coerce(value, default)
         except Exception:
-            logger.warning("proactive-agent: ignoring invalid config value for %s", key)
+            logger.warning("super-agent: ignoring invalid config value for %s", key)
     return default
 
 

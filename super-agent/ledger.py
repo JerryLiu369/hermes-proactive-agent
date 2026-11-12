@@ -18,9 +18,9 @@ import time
 from pathlib import Path
 from typing import Any, Iterable, List, Optional
 
-logger = logging.getLogger("hermes.plugins.proactive_agent")
+logger = logging.getLogger("hermes.plugins.super_agent")
 
-PLUGIN_NAME = "proactive-agent"
+PLUGIN_NAME = "super-agent"
 RUNNING = "running"
 LOST = "lost"
 STOPPED = "stopped"
@@ -62,7 +62,7 @@ def _open_default() -> sqlite3.Connection:
         root.mkdir(parents=True, exist_ok=True)
         return sqlite3.connect(str(root / "ledger.db"), check_same_thread=False)
     except Exception as e:
-        logger.debug("proactive-agent: no plugin-data directory (%s); task ledger kept in memory", e)
+        logger.debug("super-agent: no plugin-data directory (%s); task ledger kept in memory", e)
     return sqlite3.connect(":memory:", check_same_thread=False)
 
 

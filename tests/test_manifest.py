@@ -30,7 +30,7 @@ def test_versions_and_manifest_match_code(plugin):
 
 def test_prompt_only_for_governed_main(plugin, make_ctx):
     ctx = make_ctx()
-    render = ctx.prompt_sections["proactive-agent.discipline"]["renderer"]
+    render = ctx.prompt_sections["super-agent.discipline"]["renderer"]
     text = render({"platform": "weixin"})
     assert "~60s" in text and "At 120s" in text and "30s" in text and "action='list'" in text
     for info in ({"platform": "cli"}, {"platform": "subagent"}, {"platform": "cron"},
@@ -45,3 +45,10 @@ def test_config_from_env(plugin, make_ctx):
     with patch.dict(os.environ, {"PROACTIVE_WORKER_REPEAT_LIMIT": "7", "PROACTIVE_GOVERNED_PLATFORMS": "a, b"}):
         assert plugin.config.get("worker_repeat_limit") == 7
         assert plugin.config.governed_platforms() == ["a", "b"]
+    with patch.dict(os.environ, {"SUPER_AGENT_WORKER_REPEAT_LIMIT": "8", "SUPER_AGENT_GOVERNED_PLATFORMS": "c, d"}):
+        assert plugin.config.get("worker_repeat_limit") == 8
+        assert plugin.config.governed_platforms() == ["c", "d"]
+    with patch.dict(os.environ, {"SUPER_AGENT_WORKER_REPEAT_LIMIT": "8", "PROACTIVE_WORKER_REPEAT_LIMIT": "7",
+                                 "SUPER_AGENT_GOVERNED_PLATFORMS": "c, d", "PROACTIVE_GOVERNED_PLATFORMS": "a, b"}):
+        assert plugin.config.get("worker_repeat_limit") == 8
+        assert plugin.config.governed_platforms() == ["c", "d"]
