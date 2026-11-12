@@ -25,7 +25,7 @@ hermes plugins enable proactive-agent
 
 ```yaml
 delegation:
-  max_iterations: 60                # 需要更多步数的子代理，多半已经卡住了
+  max_iterations: 90                # 需要更多步数的子代理，多半已经卡住了
 plugins:
   entries:
     proactive-agent:

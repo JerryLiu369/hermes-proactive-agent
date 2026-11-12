@@ -30,7 +30,7 @@ from typing import Any, Optional
 
 from . import config, context, handoff, prompt, reports, secretary, workers
 
-__version__ = "0.1.16"
+__version__ = "0.1.17"
 
 logger = logging.getLogger("hermes.plugins.proactive_agent")
 

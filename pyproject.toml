@@ -1,6 +1,6 @@
 [project]
 name = "hermes-proactive-agent"
-version = "0.1.16"
+version = "0.1.17"
 description = "Hermes Agent plugin that keeps chat turns responsive, briefs subagents, stops loops and brings back decisions, verifies and delivers results, and persists tasks in a SQLite ledger"
 readme = "README.md"
 license = { text = "MIT" }

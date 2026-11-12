@@ -23,7 +23,7 @@ Two optional settings in `~/.hermes/config.yaml` work well alongside the plugin.
 
 ```yaml
 delegation:
-  max_iterations: 60                # a subagent that needs more steps is usually stuck
+  max_iterations: 90                # a subagent that needs more steps is usually stuck
 plugins:
   entries:
     proactive-agent:

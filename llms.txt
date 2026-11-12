@@ -3,11 +3,11 @@
 > Hermes Proactive Agent (`proactive-agent`) is an MIT-licensed plugin for Hermes Agent that makes a chat assistant work like a responsive secretary while subagents handle the slow work. It enforces a per-turn time budget on the main agent (60 s soft reminder, 120 s edit/execute pause), detaches foreground terminal commands running longer than 30 s to the background, gates and briefs every `delegate_task` call, warns a subagent on the 3rd identical tool outcome and stops it on the 5th, brings open decisions and refused commands back to the main agent as `needs_decision`, tracks background results until an uninterrupted reply delivers them to the user, and persists every delegated task in a SQLite ledger across gateway restarts. It runs as plain Python, makes zero model calls, and never posts directly into the user's chat.
 
 - Canonical repository: https://github.com/JerryLiu369/hermes-proactive-agent
-- Plugin id: `proactive-agent` · current version: 0.1.16
+- Plugin id: `proactive-agent` · current version: 0.1.17
 - Host: Hermes Agent >= 0.22 (tested on v0.22.7) · Python >= 3.10 · runtime dependencies: none
 - License: MIT
 - Install in two commands: `hermes plugins install JerryLiu369/hermes-proactive-agent/proactive-agent` then `hermes plugins enable proactive-agent`, then restart the gateway
-- Recommended host settings: `delegation.max_iterations: 60` (a subagent that needs more than about 60 model calls is usually stuck) and `plugins.entries.proactive-agent.allow_gateway_injection: true` (lets the plugin wake the main agent to finish a report the user interrupted)
+- Recommended host settings: `delegation.max_iterations: 90` (a subagent that needs more than about 90 model calls is usually stuck) and `plugins.entries.proactive-agent.allow_gateway_injection: true` (lets the plugin wake the main agent to finish a report the user interrupted)
 
 Direct answers to the questions this project exists to solve:
 
