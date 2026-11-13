@@ -14,7 +14,7 @@ def test_turn_budget_reminds_then_pauses_edits(plugin, make_ctx):
     plugin.secretary._turns["s1"]["start"] -= 65
     assert main_tool(plugin, "terminal", {"command": "ls"}) is None, "the reminder zone never blocks"
     note = plugin._transform_tool_result("terminal", {}, '{"output": "ok"}', session_id="s1", task_id="main")
-    assert "Within the next 1-2 steps" in json.loads(note)["proactive_agent_note"]
+    assert "Within the next 1-2 steps" in json.loads(note)["super_agent_note"]
     assert plugin._transform_tool_result("terminal", {}, '{"output": "ok"}', session_id="s1", task_id="main") is None
 
     plugin.secretary._turns["s1"]["start"] -= 60

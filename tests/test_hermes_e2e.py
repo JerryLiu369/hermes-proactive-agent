@@ -32,11 +32,11 @@ CONTEXT = (
 def hermes(tmp_path, monkeypatch):
     home = tmp_path / "hermes_home"
     (home / "plugins").mkdir(parents=True)
-    shutil.copytree(PLUGIN_DIR, home / "plugins" / "proactive-agent", ignore=shutil.ignore_patterns("__pycache__"))
+    shutil.copytree(PLUGIN_DIR, home / "plugins" / "super-agent", ignore=shutil.ignore_patterns("__pycache__"))
     (home / "config.yaml").write_text(yaml.safe_dump({
         "plugins": {
-            "enabled": ["proactive-agent"],
-            "entries": {"proactive-agent": {"settings": {
+            "enabled": ["super-agent"],
+            "entries": {"super-agent": {"settings": {
                 "handoff_min_context_chars": 40,
                 "terminal_auto_detach_seconds": 1,
             }}},
@@ -114,7 +114,7 @@ def test_worker_limits_through_hermes(hermes):
     text = "\n".join(str(r.get("context", "")) for r in results if isinstance(r, dict))
     assert "The plugin stopped it" in text
 
-    db_path = os.path.join(os.environ["HERMES_HOME"], "plugin-data", "proactive-agent", "ledger.db")
+    db_path = os.path.join(os.environ["HERMES_HOME"], "plugin-data", "super-agent", "ledger.db")
     with sqlite3.connect(db_path) as db:
         row = db.execute("SELECT parent, status FROM tasks WHERE id = 'sa-0-e2e'").fetchone()
     assert row == (SESSION, "blocked"), "the ledger lives in Hermes' plugin-data directory"
@@ -165,7 +165,8 @@ def test_tool_names_the_plugin_relies_on_exist_in_hermes(hermes):
     from tools.registry import registry
 
     plugin = next(m for name, m in sys.modules.items()
-                  if name.endswith("proactive-agent.secretary") or name.endswith("proactive_agent.secretary"))
+                  if name.endswith("super-agent.secretary") or name.endswith("super_agent.secretary")
+                  or name.endswith("proactive-agent.secretary") or name.endswith("proactive_agent.secretary"))
     names = set(plugin.RED_ALLOWED_TOOLS) | {"terminal", "delegate_task", "process_manage", "write_file", "patch"}
     missing = sorted(n for n in names if registry.get_entry(n) is None)
     assert not missing, f"tools renamed or removed in Hermes: {missing}"
@@ -229,7 +230,7 @@ def test_hermes_approval_refusals_reach_the_worker_as_a_note(hermes):
         out = plugins_mod.invoke_hook("transform_tool_result", tool_name="terminal", args={"command": command},
                                       result=result, duration_ms=5, status="error", error_type="tool_error",
                                       error_message=None, tool_call_id=f"c-{command}", **_child_ids())
-        note = json.loads(next(r for r in out if isinstance(r, str)))["proactive_agent_note"]
+        note = json.loads(next(r for r in out if isinstance(r, str)))["super_agent_note"]
         assert expected in note and "needs_decision" in note
 
 

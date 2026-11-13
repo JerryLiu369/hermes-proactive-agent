@@ -130,13 +130,13 @@ def test_user_message_during_a_report_wakes_the_main_agent_to_finish_it(plugin, 
     end_turn(plugin, turn="t2")
 
     assert len(calls) == 1 and calls[0]["session_key"] == SESSION_KEY
-    assert calls[0]["content"].startswith("[proactive-agent] No new message from the user.")
+    assert calls[0]["content"].startswith("[super-agent] No new message from the user.")
     assert plugin.ledger.get("sa-0-a")["unreported"] and plugin.ledger.get("sa-1-b")["unreported"]
 
     woken = start_turn(plugin, turn="t3", user=calls[0]["content"])["context"]
     assert "has not heard these subagent results" in woken
     assert "Clean up the disk" in woken and "Rewrite the README" in woken
-    assert not any(w.startswith("[proactive-agent]") for w in plugin.secretary.user_words("s1"))
+    assert not any(w.startswith(("[super-agent]", "[proactive-agent]")) for w in plugin.secretary.user_words("s1"))
     end_turn(plugin, turn="t3")
     assert not plugin.ledger.get("sa-0-a")["unreported"], "a clean reply settles the results"
     assert len(calls) == 1
@@ -154,7 +154,7 @@ def test_tool_result_after_the_user_wrote_carries_the_results_in_the_same_turn(p
     _user_cuts_into_the_report(plugin, [])
     out = plugin._transform_tool_result("read_file", {}, '{"content": "x"}', session_id="s1", turn_id="t2",
                                         task_id="main")
-    note = json.loads(out)["proactive_agent_note"]
+    note = json.loads(out)["super_agent_note"]
     assert "has not heard" in note and "in the same reply" in note
     assert plugin._transform_tool_result("read_file", {}, '{"content": "x"}', session_id="s1", turn_id="t2",
                                          task_id="main") is None, "said once per user message"
@@ -267,7 +267,7 @@ def test_a_wake_that_brings_other_news_is_not_told_to_stay_silent(plugin, make_c
     end_turn(plugin, turn="t2")
     start_turn(plugin, turn="t3", user="ok, and the README?")
     end_turn(plugin, turn="t3")  # the user's own turn reported them before the queued wake ran
-    plugin.ledger.add_note("s1", "[proactive-agent] Subagent finished: \"Rotate the logs\" (status: failed).")
+    plugin.ledger.add_note("s1", "[super-agent] Subagent finished: \"Rotate the logs\" (status: failed).")
     woken = start_turn(plugin, turn="t4", user=calls[0]["content"])["context"]
     assert "Rotate the logs" in woken and "[SILENT]" not in woken
 
@@ -363,7 +363,7 @@ def test_the_follow_up_waits_for_the_users_own_message(plugin, make_ctx):
     _background_question(plugin)
     start_turn(plugin, turn="t2", user=WAKE_TURN)
     end_turn(plugin, turn="t2")
-    plugin.ledger.add_note("s1", "[proactive-agent] Subagent finished: \"Rotate the logs\" (status: completed).")
+    plugin.ledger.add_note("s1", "[super-agent] Subagent finished: \"Rotate the logs\" (status: completed).")
     other = start_turn(plugin, turn="t3", user=WAKE_TURN)["context"]
     assert "Rotate the logs" in other and "question is still open" not in other
     end_turn(plugin, turn="t3")

@@ -29,7 +29,7 @@ def test_thin_handoff_returned_once_then_briefed(plugin, make_ctx):
 def test_steer_joins_user_words_but_injected_context_does_not(plugin, make_ctx):
     make_ctx()
     start_turn(plugin, user="deploy the site")
-    request = [{"role": "user", "content": "deploy the site\n\n[proactive-agent] Subagents still running: ..."},
+    request = [{"role": "user", "content": "deploy the site\n\n[super-agent] Subagents still running: ..."},
                {"role": "user", "content": "[OUT-OF-BAND USER MESSAGE] use the staging config"}]
     plugin._pre_api_request(session_id="s1", turn_id="t1", request_messages=request)
     res = main_tool(plugin, "delegate_task", {"tasks": [{"goal": "Deploy", "context": GOOD_CONTEXT}]})

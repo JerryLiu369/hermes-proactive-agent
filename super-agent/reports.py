@@ -25,13 +25,13 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from . import config, ledger, util, workers
 
-logger = logging.getLogger("hermes.plugins.proactive_agent")
+logger = logging.getLogger("hermes.plugins.super_agent")
 
-WAKE_MARKER = "[proactive-agent] No new message from the user."
+WAKE_MARKER = "[super-agent] No new message from the user."
 _WAKE = (f"{WAKE_MARKER} Your last reply answered the message the user sent while subagent results were "
          "reaching you, so the user has not heard those results yet (listed below). Tell the user now, briefly. "
          "If your last reply already covered them, reply exactly [SILENT].")
-_NOTHING_LEFT = ("[proactive-agent] Nothing is left to report: the user already got those results in an "
+_NOTHING_LEFT = ("[super-agent] Nothing is left to report: the user already got those results in an "
                  "earlier reply. Reply exactly [SILENT].")
 # Each wake answers a user message that cut into a report, so wakes are bounded by the user's own
 # messages; the cap only guards against a host that loops.
@@ -138,7 +138,7 @@ def _written_paths(history: Any) -> List[str]:
 def _finished_note(w: dict, final: str, evidence: List[str], duration_ms: Any, question: str = "",
                    options: Sequence[str] = ()) -> str:
     minutes = (duration_ms or 0) / 60000.0
-    lines = [f"[proactive-agent] Subagent finished: \"{util.short(w['goal'], 80)}\" "
+    lines = [f"[super-agent] Subagent finished: \"{util.short(w['goal'], 80)}\" "
              f"(status: {final}, {len(w['rounds'])} tool rounds, {minutes:.1f} min)."]
     if w["stop_reason"]:
         lines.append(f"- The plugin stopped it: {w['stop_reason']}. Treat it as blocked and decide the next step "
@@ -204,7 +204,7 @@ def on_subagent_stop(**kw: Any) -> None:
 def _lost_note(task: dict) -> str:
     files = task.get("files") or []
     changed = f" It had changed: {', '.join(files[:5])}." if files else ""
-    return (f"[proactive-agent] Hermes restarted while a subagent was running: \"{util.short(task.get('goal'), 80)}\" "
+    return (f"[super-agent] Hermes restarted while a subagent was running: \"{util.short(task.get('goal'), 80)}\" "
             f"(started {ledger.minutes_since(task.get('started'))} min ago). Its result is lost and its side effects "
             f"are unknown.{changed} Check the real state before re-dispatching or telling the user it is done.")
 
@@ -214,7 +214,7 @@ def recover_lost() -> None:
     for task in ledger.load():
         ledger.mark_unreported(task["id"])
         ledger.add_note(task["parent"], _lost_note(task))
-        logger.warning("proactive-agent: subagent %s was running when Hermes stopped; marked lost", task["id"])
+        logger.warning("super-agent: subagent %s was running when Hermes stopped; marked lost", task["id"])
 
 
 # ---------------------------------------------------------------- results the user has not heard
@@ -227,20 +227,20 @@ def _unreported_note(tasks: List[dict]) -> str:
                 if t.get("question") else "")
         rows.append(f"- \"{util.short(t.get('goal'), 80)}\" ended {t.get('status')} "
                     f"{ledger.minutes_since(t.get('ended'))} min ago" + (f": {summary}" if summary else ".") + asks)
-    return ("[proactive-agent] The user has not heard these subagent results yet: the turn that received them "
+    return ("[super-agent] The user has not heard these subagent results yet: the turn that received them "
             "was cut short or answered another message.\n" + "\n".join(rows) + "\nTheir full results are earlier in this chat. "
             "Answer the user's latest message and, in the same reply, tell the user these results: what was done, "
             "what is left.")
 
 
 def is_wake(user_message: Any) -> bool:
-    return isinstance(user_message, str) and WAKE_MARKER in user_message
+    return isinstance(user_message, str) and (WAKE_MARKER in user_message or "[proactive-agent] No new message from the user." in user_message)
 
 
 def _decision_note(tasks: List[dict]) -> str:
     rows = [f"- \"{util.short(t.get('goal'), 80)}\" asked: {describe_question(t['question'], t.get('options') or [])}"
             for t in tasks]
-    return ("[proactive-agent] A subagent's question is still open:\n" + "\n".join(rows)
+    return ("[super-agent] A subagent's question is still open:\n" + "\n".join(rows)
             + "\nIf it is answered now (by the user, in this message or earlier, or by what you know), dispatch a new "
             "subagent with the answer; it is briefed with that task's record automatically. If the user still has to "
             "decide, leave it until they do.")
@@ -300,7 +300,7 @@ def _wake(session_key: str) -> bool:
         # An internal turn: Hermes queues it behind a running turn and never lets it interrupt one.
         return bool(inject(_WAKE, session_key=session_key))
     except Exception as e:
-        logger.warning("proactive-agent: could not wake the main agent: %s", e)
+        logger.warning("super-agent: could not wake the main agent: %s", e)
         return False
 
 
@@ -321,7 +321,7 @@ def on_turn_end(session_id: str, turn: Optional[dict], completed: bool) -> None:
     due = [t["id"] for t in tasks if int(t.get("wakes") or 0) < _MAX_WAKES]
     if due and _wake(turn.get("session_key") or ""):
         ledger.add_wake(due)
-        logger.info("proactive-agent: woke %s to report %d result(s) the user has not heard", session_id, len(due))
+        logger.info("super-agent: woke %s to report %d result(s) the user has not heard", session_id, len(due))
 
 
 def forget(session_id: str) -> None:

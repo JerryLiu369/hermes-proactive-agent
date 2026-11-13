@@ -67,12 +67,12 @@ def block(message: str) -> dict:
     return {"action": "block", "message": message, "reason": message}
 
 
-def append_note(result: Any, note: str, key: str = "proactive_agent_note") -> str:
+def append_note(result: Any, note: str, key: str = "super_agent_note") -> str:
     """Attach a note to a tool result without breaking JSON results."""
     data = parse_json(result) if isinstance(result, str) else result
     if isinstance(data, dict) and (not isinstance(result, str) or result.strip().startswith("{")):
         data = dict(data)
-        existing = data.get(key)
+        existing = data.get(key) or data.get("proactive_agent_note")
         data[key] = f"{existing}\n{note}" if existing else note
         return json.dumps(data, ensure_ascii=False, default=str)
     return f"{result}\n\n{note}"

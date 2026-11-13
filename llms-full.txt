@@ -5,7 +5,7 @@
 This file is the complete, self-contained technical reference for the project. It is maintained alongside `README.md` from the same verified codebase facts; when any wording differs, the source code under `proactive-agent/` is authoritative.
 
 - Repository: https://github.com/JerryLiu369/hermes-proactive-agent
-- Version: 0.1.16 · License: MIT · Language: Python 3.10+ · Runtime dependencies: none
+- Version: 0.1.17 · License: MIT · Language: Python 3.10+ · Runtime dependencies: none
 - Host requirement: Hermes Agent >= 0.22 (tested on v0.22.7)
 - Verification commands: `uv run --group dev pytest` and `uv run --group dev ruff check`
 
@@ -51,12 +51,12 @@ The plugin id is `proactive-agent`. The install path `JerryLiu369/hermes-proacti
 
 Recommended host settings in `~/.hermes/config.yaml`:
 
-- `delegation.max_iterations: 60` caps total subagent iterations so a wandering subagent reports back sooner.
+- `delegation.max_iterations: 90` caps total subagent iterations so a wandering subagent reports back sooner.
 - `plugins.entries.proactive-agent.allow_gateway_injection: true` grants Hermes' permission for `ctx.inject_message`, allowing the plugin to wake the main agent when a user message interrupts a background result report (without it, the reminder simply rides on the user's next message). Use the plugin id shown by `hermes plugins list` if installed under another name:
 
 ```yaml
 delegation:
-  max_iterations: 60
+  max_iterations: 90
 plugins:
   entries:
     proactive-agent:
@@ -224,7 +224,7 @@ Any governed foreground terminal command still running after 30 s is automatical
 Hermes spawns subagents with `skip_memory=True` and no chat history. The plugin gates `delegate_task` briefs shorter than 120 characters once per turn and appends the user's last 6 messages verbatim, `USER.md`, `MEMORY.md`, active sibling subagents, recent unfinished tasks, working rules, and how to report.
 
 **How do I stop a subagent from repeating the same failing tool call until its budget runs out?**
-The plugin counts identical `(tool, args, normalized_first_line)` outcomes across the whole subagent run, warns on the 3rd repeat, and stops the subagent on the 5th, refusing further tool calls so it must report `blocked`. Pairing this with `delegation.max_iterations: 60` catches non-identical wandering loops as well.
+The plugin counts identical `(tool, args, normalized_first_line)` outcomes across the whole subagent run, warns on the 3rd repeat, and stops the subagent on the 5th, refusing further tool calls so it must report `blocked`. Pairing this with `delegation.max_iterations: 90` catches non-identical wandering loops as well.
 
 **Can a subagent ask the user a question, and what happens when command approval refuses a step?**
 Subagents cannot call `clarify` or be resumed. Instead, when a subagent hits a decision outside its authority, or when Hermes' approval or a hook refuses a command it needs, it stops and reports `status: "needs_decision"` with a `question` and `options` (and is explicitly told on the spot not to work around a refusal). The main agent answers the question itself when the chat or memory settles it, or asks the user in one short message, then dispatches a new subagent briefed with the answer and the earlier task's record.

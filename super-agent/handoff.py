@@ -13,7 +13,7 @@ from typing import Dict, List, Optional
 
 from . import config, ledger, reports, util, workers
 
-BRIEFING_MARKER = "=== Handoff briefing (attached by proactive-agent) ==="
+BRIEFING_MARKER = "=== Handoff briefing (attached by super-agent) ==="
 
 _RULES = (
     "- Do only the goal above. Never delete, stub out or rewrite working code or config just to make a check pass.\n"
@@ -162,7 +162,7 @@ def _clash(tasks: List[dict], running: List[dict]) -> Optional[tuple]:
 
 def _return_message(goal: str) -> str:
     return (
-        "[proactive-agent] Handoff returned once: the subagent starts with no memory and cannot see this chat, "
+        "[super-agent] Handoff returned once: the subagent starts with no memory and cannot see this chat, "
         f"so the context for \"{util.short(goal, 80)}\" is too thin. Rewrite it with what is already known "
         "(findings, exact errors, what was tried), the exact targets (paths, URLs, hosts), what must not change, "
         "when to stop, and what evidence proves success. The user's recent messages, memory and working rules are "
@@ -172,7 +172,7 @@ def _return_message(goal: str) -> str:
 
 def _clash_message(other: dict, files: List[str]) -> str:
     return (
-        f"[proactive-agent] Handoff returned once: the running subagent \"{util.short(other.get('goal'), 80)}\" is "
+        f"[super-agent] Handoff returned once: the running subagent \"{util.short(other.get('goal'), 80)}\" is "
         f"already changing {', '.join(files[:5])}. Two subagents editing the same files overwrite each other. Wait "
         "for it, redirect it with delegate_task(action='steer'), or stop it (action='stop'). Call delegate_task "
         "again to dispatch anyway."
@@ -204,7 +204,7 @@ def gate(session_id: str, turn_id: str, args: Optional[dict], user_words: List[s
         tasks = [{"goal": args.get("goal"), "context": args.get("context")}] if args.get("goal") else []
     else:
         tasks = [dict(t) for t in args["tasks"] if isinstance(t, dict)]
-    if not tasks or any(BRIEFING_MARKER in str(t.get("context") or "") for t in tasks):
+    if not tasks or any(BRIEFING_MARKER in str(t.get("context") or "") or "=== Handoff briefing (attached by proactive-agent) ===" in str(t.get("context") or "") for t in tasks):
         return None
 
     min_chars = int(config.get("handoff_min_context_chars"))

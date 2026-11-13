@@ -8,7 +8,7 @@ import pytest
 
 from helpers import PLUGIN_DIR
 
-PACKAGE = "proactive_agent_under_test"
+PACKAGE = "super_agent_under_test"
 
 
 def _load():
@@ -50,6 +50,8 @@ class FakeContext:
 def plugin(tmp_path, monkeypatch):
     # A real Hermes on sys.path would otherwise put the ledger under the developer's own home.
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
+    for var in ("HERMES_SESSION_PLATFORM", "HERMES_PLATFORM", "HERMES_CRON_SESSION", "_HERMES_CRON_EXTERNAL_WORKER"):
+        monkeypatch.delenv(var, raising=False)
     module = _load()
     module._reset_all()
     module.ledger.load(tmp_path / "ledger.db")

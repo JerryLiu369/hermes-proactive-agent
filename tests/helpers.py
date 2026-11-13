@@ -4,7 +4,7 @@ import json
 import os
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-PLUGIN_DIR = os.path.join(REPO_ROOT, "proactive-agent")
+PLUGIN_DIR = os.path.join(REPO_ROOT, "super-agent")
 
 GOOD_CONTEXT = (
     "Known: https://app.example.com/ping returns 522 since the deploy at 10:00; DNS record is proxied. "
@@ -55,4 +55,4 @@ def w_post(plugin, name, args, result, api="r1"):
 
 def w_note(plugin, result='{"output": "x"}'):
     out = plugin._transform_tool_result("terminal", {}, result, **CHILD)
-    return json.loads(out)["proactive_agent_note"] if out else None
+    return (json.loads(out).get("super_agent_note") or json.loads(out).get("proactive_agent_note")) if out else None

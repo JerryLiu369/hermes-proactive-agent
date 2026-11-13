@@ -1,7 +1,7 @@
 """
-proactive-agent: runs the Hermes chat agent like a secretary with a team of workers.
+super-agent: runs the Hermes chat agent as an always-responsive Lead Agent coordinating Worker subagents.
 
-The main agent stays reachable and decides; delegated subagents do the slow work. The plugin
+The Lead agent stays reachable and decides; delegated Worker subagents do the slow work. The plugin
 keeps four promises, one module each:
 
 1. The chat stays responsive (secretary): a turn time budget, with a note at the soft limit and
@@ -30,9 +30,9 @@ from typing import Any, Optional
 
 from . import config, context, handoff, prompt, reports, secretary, workers
 
-__version__ = "0.1.16"
+__version__ = "0.2.0"
 
-logger = logging.getLogger("hermes.plugins.proactive_agent")
+logger = logging.getLogger("hermes.plugins.super_agent")
 
 
 def _worker_for(**kw: Any) -> Optional[dict]:
@@ -54,7 +54,7 @@ def _guarded(fn):
         try:
             return fn(*args, **kwargs)
         except Exception:
-            logger.exception("proactive-agent: %s failed; continuing without governance", fn.__name__)
+            logger.exception("super-agent: %s failed; continuing without governance", fn.__name__)
             return None
     wrapper.__name__ = fn.__name__
     return wrapper
@@ -129,7 +129,7 @@ def _tool_execution(tool_name: str = "", args: Optional[dict] = None, next_call:
         if tool_name == "terminal" and _main_session(**kw):
             disarm = secretary.arm_detach(args)
     except Exception:
-        logger.exception("proactive-agent: background detach failed; running the command as is")
+        logger.exception("super-agent: background detach failed; running the command as is")
     try:
         return next_call(args)
     finally:
@@ -224,16 +224,16 @@ def register(ctx: Any) -> None:
     try:
         reports.recover_lost()
     except Exception:
-        logger.exception("proactive-agent: task ledger unavailable")
+        logger.exception("super-agent: task ledger unavailable")
     for name, fn in _HOOKS.items():
         ctx.register_hook(name, fn)
     try:
         ctx.register_middleware("tool_execution", _tool_execution)
     except Exception as e:
-        logger.warning("proactive-agent: tool_execution middleware unavailable; background detach disabled: %s", e)
+        logger.warning("super-agent: tool_execution middleware unavailable; background detach disabled: %s", e)
     try:
-        ctx.register_system_prompt_section("proactive-agent.discipline", prompt.render,
+        ctx.register_system_prompt_section("super-agent.discipline", prompt.render,
                                            position="after_memory", max_chars=2000)
     except Exception as e:
-        logger.debug("proactive-agent: system prompt section skipped: %s", e)
-    logger.info("proactive-agent %s loaded", __version__)
+        logger.debug("super-agent: system prompt section skipped: %s", e)
+    logger.info("super-agent %s loaded", __version__)

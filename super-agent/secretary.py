@@ -11,7 +11,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from . import config, context, handoff, util
 
-logger = logging.getLogger("hermes.plugins.proactive_agent")
+logger = logging.getLogger("hermes.plugins.super_agent")
 
 # Still available once the turn budget is spent: reading (files and images), delegating and wrapping up
 # (memory, skills, the todo list, a question to the user). Names are Hermes' registered tool names.
@@ -27,7 +27,7 @@ _KEEP_USER_MESSAGES = 6
 _STEER_MARKER = "[OUT-OF-BAND USER MESSAGE"
 _REDIRECT_MARKER = "[This response was interrupted by a user correction.]"
 # User-role rows that machinery wrote, not the user: Hermes' async-delegation wakes and this plugin's own.
-_MACHINE_PREFIXES = ("[ASYNC DELEGATION", "[proactive-agent]")
+_MACHINE_PREFIXES = ("[ASYNC DELEGATION", "[super-agent]", "[proactive-agent]")
 
 _lock = threading.Lock()
 _turns: Dict[str, dict] = {}
@@ -138,7 +138,7 @@ def on_api_request(session_id: str, turn_id: str, messages: Any) -> None:
         new = found[st["seen"]:]
         if not new:
             return
-        logger.info("proactive-agent: user wrote mid-turn in %s; turn budget reset", session_id)
+        logger.info("super-agent: user wrote mid-turn in %s; turn budget reset", session_id)
         _user_words[session_id] = (_user_words.get(session_id, []) + new)[-_KEEP_USER_MESSAGES:]
         now = time.monotonic()
         st.update(seen=len(found), interjections=st["interjections"] + len(new), start=now, noted="green")
@@ -166,15 +166,15 @@ def on_compression(session_id: str, turn_id: str, started: bool) -> None:
 def pre_tool_call(session_id: str, turn_id: str, tool_name: str, args: Optional[dict]) -> Optional[dict]:
     args = args or {}
     if tool_name == "process_manage" and args.get("action") == "wait":
-        return util.block("[proactive-agent] process_manage(action='wait') blocks the chat. Background jobs notify you "
-                      "when they finish; tell the user what is running and end your turn.")
+        return util.block("[super-agent] process_manage(action='wait') blocks the chat. Background jobs notify you "
+                          "when they finish; tell the user what is running and end your turn.")
     with _lock:
         _turn(session_id, turn_id)
     paused = tool_name not in RED_ALLOWED_TOOLS or (
         tool_name == "process_manage" and str(args.get("action") or "") not in RED_PROCESS_ACTIONS)
     if paused and zone(session_id) == "red":
         hard = int(float(config.get("turn_hard_seconds")))
-        return util.block(f"[proactive-agent] This turn has run for more than {hard}s, so editing and execution tools "
+        return util.block(f"[super-agent] This turn has run for more than {hard}s, so editing and execution tools "
                           "are paused. Answer the user now with what you know, or hand the rest to delegate_task.")
     if tool_name == "delegate_task":
         return handoff.gate(session_id, turn_id, args, user_words(session_id))
@@ -188,7 +188,7 @@ def transform_tool_result(session_id: str, tool_name: str, result: Any) -> Optio
             data = dict(data)
             detach = int(config.get("terminal_auto_detach_seconds"))
             data["note"] = (
-                f"[proactive-agent] Still running: this command took longer than {detach}s, so it moved to the "
+                f"[super-agent] Still running: this command took longer than {detach}s, so it moved to the "
                 "background. It has NOT failed. `output` holds what it printed so far. You will be notified "
                 "automatically when it finishes; do not poll, sleep or re-run it. Tell the user briefly what is "
                 "running and end your turn, or continue with work that does not depend on it."
@@ -204,11 +204,11 @@ def transform_tool_result(session_id: str, tool_name: str, result: Any) -> Optio
         st["noted"] = current
         elapsed = int(_elapsed(st))
     if current == "red":
-        note = (f"[proactive-agent] This turn has run for {elapsed}s. Editing and execution tools are now paused. "
+        note = (f"[super-agent] This turn has run for {elapsed}s. Editing and execution tools are now paused. "
                 "Answer the user, or delegate the rest.")
     else:
         hard = int(float(config.get("turn_hard_seconds")))
-        note = (f"[proactive-agent] This turn has run for {elapsed}s. Within the next 1-2 steps, answer the user "
+        note = (f"[super-agent] This turn has run for {elapsed}s. Within the next 1-2 steps, answer the user "
                 f"or hand the remaining work to delegate_task. Editing and execution tools pause at {hard}s.")
     return util.append_note(result, note)
 
@@ -252,7 +252,7 @@ def arm_detach(args: Optional[dict]) -> Optional[Callable[[], None]]:
             try:
                 request_yield(tid)
             except Exception as e:
-                logger.warning("proactive-agent: request_yield failed: %s", e)
+                logger.warning("super-agent: request_yield failed: %s", e)
 
     timer = threading.Timer(detach, _fire)
     timer.daemon = True
