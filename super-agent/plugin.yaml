@@ -1,10 +1,10 @@
 name: super-agent
 version: "0.2.0"
-description: "Coordinates Hermes chat agents with a Lead–Worker architecture: keeps the chat-facing Lead agent responsive (60s reminder, 120s pause, 30s background command yield), briefs Worker subagents, halts repetitive loops, brings open decisions back to the Lead agent, guarantees result delivery across interruptions, and tracks tasks in a persistent SQLite ledger."
+description: "Runs the Hermes chat agent like a secretary with a team of workers: keeps chat turns responsive (60s reminder, 120s edit/execute pause, 30s terminal auto-detach), briefs every subagent before it starts, stops subagents that repeat identical results, brings open decisions back to the main agent, tracks background results until they reach the user, and records every delegated task in a SQLite ledger across gateway restarts."
 author: Jerry Liu
 license: MIT
 homepage: https://github.com/JerryLiu369/hermes-super-agent
-tags: [super-agent, lead-worker, delegation, subagents, governance, responsiveness, task-ledger, background-jobs]
+tags: [super-agent, delegation, subagents, governance, responsiveness, task-ledger, background-jobs]
 requires_hermes: ">=0.22"
 provides_hooks:
   - pre_llm_call
