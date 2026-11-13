@@ -4,7 +4,7 @@ description: "Runs the Hermes chat agent like a secretary with a team of workers
 author: Jerry Liu
 license: MIT
 homepage: https://github.com/JerryLiu369/hermes-super-agent
-tags: [super-agent, lead-worker, delegation, subagents, governance, responsiveness, task-ledger, background-jobs]
+tags: [super-agent, delegation, subagents, governance, responsiveness, task-ledger, background-jobs]
 requires_hermes: ">=0.22"
 provides_hooks:
   - pre_llm_call
