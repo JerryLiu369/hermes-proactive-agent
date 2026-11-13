@@ -28,7 +28,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Optional
 
-from . import config, context, handoff, prompt, reports, secretary, workers
+from . import config, context, handoff, ledger, preflight, prompt, reports, secretary, workers
 
 __version__ = "0.2.0"
 
@@ -71,6 +71,9 @@ def _pre_llm_call(**kw: Any) -> Optional[dict]:
     turn = secretary.turn_facts(session_id, turn_id)
     notes = reports.pending_notes(session_id, turn["key"] if turn else turn_id, kw.get("user_message"),
                                   by_user=secretary.by_user(kw.get("user_message")))
+    startup_notice = preflight.pop_notice()
+    if startup_notice:
+        notes = f"{notes}\n\n{startup_notice}" if notes else startup_notice
     return {"context": notes} if notes else None
 
 
@@ -201,6 +204,8 @@ def _reset_all() -> None:
     reports.reset_all()
     workers.reset_all()
     context.reset_all()
+    preflight.reset_all()
+    ledger.reset_all()
 
 
 _HOOKS = {
@@ -221,10 +226,16 @@ _HOOKS = {
 
 def register(ctx: Any) -> None:
     config.set_ctx(ctx)
+    ledger_error: Optional[str] = None
     try:
         reports.recover_lost()
-    except Exception:
+    except Exception as e:
+        ledger_error = str(e) or type(e).__name__
         logger.exception("super-agent: task ledger unavailable")
+    try:
+        preflight.stage_startup(ledger_error=ledger_error)
+    except Exception:
+        logger.exception("super-agent: startup preflight failed")
     for name, fn in _HOOKS.items():
         ctx.register_hook(name, fn)
     try:

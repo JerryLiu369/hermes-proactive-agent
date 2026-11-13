@@ -253,3 +253,39 @@ def test_real_terminal_tool_yields_through_the_middleware(hermes):
         from tools.process_registry import process_registry
         if result.get("session_id"):
             process_registry.kill_process(result["session_id"])
+
+
+def test_startup_preflight_warns_once_and_stays_silent_when_healthy(tmp_path, monkeypatch):
+    home = tmp_path / "hermes_home"
+    (home / "plugins").mkdir(parents=True)
+    shutil.copytree(PLUGIN_DIR, home / "plugins" / "super-agent", ignore=shutil.ignore_patterns("__pycache__"))
+
+    # 1. Misconfigured host: inline delegation on weixin + high max_iterations
+    (home / "config.yaml").write_text(yaml.safe_dump({
+        "plugins": {"enabled": ["super-agent"]},
+        "display": {"platforms": {"weixin": {"interim_assistant_messages": False}}},
+        "delegation": {"max_iterations": 200},
+    }), encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    plugins_mod.discover_plugins(force=True)
+
+    r1 = _start_turn("t1")
+    text1 = "\n".join(str(r.get("context", "")) for r in r1 if isinstance(r, dict))
+    assert "weixin" in text1 and "inline" in text1
+    assert "delegation.max_iterations is 200" in text1
+
+    r2 = _start_turn("t2")
+    text2 = "\n".join(str(r.get("context", "")) for r in r2 if isinstance(r, dict))
+    assert "Startup host self-check" not in text2
+
+    # 2. Healthy host: background delegation + max_iterations 90 -> nothing injected
+    (home / "config.yaml").write_text(yaml.safe_dump({
+        "plugins": {"enabled": ["super-agent"]},
+        "display": {"interim_assistant_messages": False},
+        "delegation": {"gateway_mode": "background", "max_iterations": 90},
+    }), encoding="utf-8")
+    plugins_mod.discover_plugins(force=True)
+
+    r3 = _start_turn("t3")
+    text3 = "\n".join(str(r.get("context", "")) for r in r3 if isinstance(r, dict))
+    assert "Startup host self-check" not in text3

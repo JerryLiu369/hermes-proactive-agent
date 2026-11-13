@@ -48,6 +48,26 @@ _SCHEMA = (
 
 _lock = threading.RLock()
 _db: Optional[sqlite3.Connection] = None
+_memory_fallback: bool = False
+
+
+def _is_memory_db(db: sqlite3.Connection) -> bool:
+    try:
+        rows = db.execute("PRAGMA database_list").fetchall()
+        return not any(row[1] == "main" and bool(row[2]) for row in rows)
+    except Exception:
+        return True
+
+
+def is_memory_fallback() -> bool:
+    with _lock:
+        return _memory_fallback
+
+
+def reset_all() -> None:
+    global _memory_fallback
+    with _lock:
+        _memory_fallback = False
 
 
 def _open_default() -> sqlite3.Connection:
@@ -93,7 +113,7 @@ def _alive(pid: int) -> bool:
 def load(path: Optional[Path] = None) -> List[dict]:
     """Open the ledger and return the tasks a Hermes process that has since exited left running.
     Those are marked lost: Hermes does not resume a child across a restart."""
-    global _db
+    global _db, _memory_fallback
     with _lock:
         if _db is not None:
             try:
@@ -101,6 +121,7 @@ def load(path: Optional[Path] = None) -> List[dict]:
             except Exception:
                 pass
         _db = sqlite3.connect(str(path), check_same_thread=False) if path else _open_default()
+        _memory_fallback = _is_memory_db(_db) if path is None else False
         for statement in _SCHEMA:
             _db.execute(statement)
         _db.commit()
