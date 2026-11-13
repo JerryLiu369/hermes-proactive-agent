@@ -81,7 +81,7 @@ const ICON = {
 function chapter(root, num, lines, file) {
   const n = h('div', 'chap-num', num, root);
   const ti = h('div', 'chap-title', lines.map(l => `<div>${l}</div>`).join(''), root);
-  const f = h('div', 'chap-file', V ? file.replace('<br>proactive-agent/', ' · ') : file, root);
+  const f = h('div', 'chap-file', V ? file.replace('<br>super-agent/', ' · ') : file, root);
   if (V) {
     n.style.cssText += 'left:52px;top:276px;font-size:150px';
     ti.style.cssText += 'left:286px;top:290px;font-size:58px;line-height:1.24';
@@ -105,9 +105,9 @@ const msg = (bd, cls, html) => h('div', 'msg ' + cls, html, bd);
 scene('open', { fin: 0, fout: .5 }, (root, { cue, sc }) => {
   const g = at(h('div', 'abs', null, root, 'left:0;right:0;text-align:center'), 0, LV(300, 600));
   h('div', 'mono', 'HERMES AGENT PLUGIN · OPEN SOURCE', g, `font:700 ${LV(26, 24)}px var(--mono);letter-spacing:.3em;color:var(--muted)`);
-  h('div', 'serif', LV('Hermes Proactive Agent', 'Hermes<br>Proactive Agent'), g, `font:700 ${LV('128px/1.25', '118px/1.14')} var(--serif);margin-top:${LV(16, 26)}px`);
+  h('div', 'serif', LV('Hermes Super Agent', 'Hermes<br>Super Agent'), g, `font:700 ${LV('128px/1.25', '118px/1.14')} var(--serif);margin-top:${LV(16, 26)}px`);
   h('div', 'serif', '让聊天里的助手，像秘书一样做事', g, `font:500 ${LV(50, 48)}px var(--serif);color:var(--ink2);margin-top:${LV(10, 26)}px`);
-  h('div', 'mono', '<b style="color:var(--amber);margin-right:12px">★</b>github.com/JerryLiu369/hermes-proactive-agent', g,
+  h('div', 'mono', '<b style="color:var(--amber);margin-right:12px">★</b>助手在线 · 子代理干活', g,
     `display:inline-block;margin-top:46px;font:500 ${LV(30, 26)}px var(--mono);padding:14px 30px;border-radius:999px;border:2px solid var(--ink)`);
   cue(.15, 'ok', .6);
   return lt => { tr(g, { s: 1 + .012 * lt / sc.dur }); };
@@ -198,7 +198,7 @@ scene('problems', { fin: .45, fout: 0 }, (root, { L, cue, sc }) => {
 scene('title', { fin: .6, fout: .5 }, (root, { L, D, W, cue }) => {
   const g = at(h('div', 'abs', null, root, 'left:0;right:0;text-align:center;transform-origin:50% 0'), 0, LV(300, 540));
   const kick = h('div', 'mono', 'HERMES AGENT PLUGIN', g, 'font:700 26px var(--mono);letter-spacing:.32em;color:var(--muted)');
-  const name = h('div', 'serif', ['Hermes', 'Proactive', 'Agent'].map(w => `<span style="display:inline-block;margin:0 .14em">${w}</span>`).join(''), g,
+  const name = h('div', 'serif', ['Hermes', 'Super', 'Agent'].map(w => `<span style="display:inline-block;margin:0 .14em">${w}</span>`).join(''), g,
     `font:700 ${LV('132px/1.25', '118px/1.14')} var(--serif);letter-spacing:-.01em;margin-top:${LV(14, 24)}px`);
   if (V) name.children[0].insertAdjacentHTML('afterend', '<br>');
   const tag = h('div', 'serif', '让聊天里的助手，像一位靠谱的秘书那样做事', g, `font:500 ${LV(52, 46)}px var(--serif);color:var(--ink2);margin-top:${LV(14, 24)}px`);
@@ -249,7 +249,7 @@ scene('title', { fin: .6, fout: .5 }, (root, { L, D, W, cue }) => {
 
 /* ------------------------------------------------------------ 4. chapter 1: responsive */
 scene('ch1', {}, (root, { L, D, W, cue }) => {
-  const intro = chapter(root, '01', ['聊天始终', '保持响应'], 'proactive-agent/secretary.py');
+  const intro = chapter(root, '01', ['聊天始终', '保持响应'], 'super-agent/secretary.py');
   const st = block(root, [-720, 452]);
   const gA = h('div', 'abs', null, st, 'left:0;top:0;width:1920px;height:1080px');
   const lab = at(h('div', 'abs', '一轮对话的时间', gA, 'font:500 30px var(--sans);color:var(--ink2)'), 760, 222);
@@ -265,7 +265,7 @@ scene('ch1', {}, (root, { L, D, W, cue }) => {
     at(h('div', 'abs mono', s + 's', gA, `text-align:center;font:${s % 60 === 0 && s ? 700 : 500} 22px var(--mono);color:${c}`), X0 + s * PX - 50, BY + 32, 100);
   });
   const n1 = at(h('div', 'note', `<h4><span class="pill" style="background:var(--amber-l);color:var(--amber)">60s</span>提醒：一两步之内先回复你，或把剩下的活派出去</h4>` +
-    `<p>[proactive-agent] This turn has run for 60s. Within the next 1-2 steps, answer the user or hand the remaining work to delegate_task. Editing and execution tools pause at 120s.</p>`, gA), X0, 420, 1000);
+    `<p>[super-agent] This turn has run for 60s. Within the next 1-2 steps, answer the user or hand the remaining work to delegate_task. Editing and execution tools pause at 120s.</p>`, gA), X0, 420, 1000);
   n1.style.setProperty('--c', 'var(--amber)');
   const chips = (names, cls) => names.map(n => `<span class="chip ${cls}" style="margin:0 10px 12px 0">${n}</span>`).join('');
   const n2 = at(h('div', 'note', `<h4><span class="pill" style="background:var(--red-l);color:var(--red)">120s</span>本轮暂停：不再改文件、跑命令</h4>` +
@@ -283,7 +283,7 @@ scene('ch1', {}, (root, { L, D, W, cue }) => {
     'transforming (1824) modules…', '<span class="y">rendering chunks…</span>'];
   const spin = at(h('div', 'abs', null, gB, 'border-radius:50%;border:4px solid #9DBFA8;border-top-color:var(--green)'), 1700, 214, 34, 34);
   const n3 = at(h('div', 'note', `<h4><span class="pill" style="background:var(--green-l);color:var(--green)">30s</span>仍在运行，并非失败</h4>` +
-    `<p><span style="color:var(--green);font-weight:700">"status": "yielded_to_background"</span><br>[proactive-agent] Still running: this command took longer than 30s, so it moved to the background. It has NOT failed. You will be notified automatically when it finishes.</p>`, gB), X0, 220, 640);
+    `<p><span style="color:var(--green);font-weight:700">"status": "yielded_to_background"</span><br>[super-agent] Still running: this command took longer than 30s, so it moved to the background. It has NOT failed. You will be notified automatically when it finishes.</p>`, gB), X0, 220, 640);
   n3.style.setProperty('--c', 'var(--green)');
   const reply = at(h('div', 'abs', null, gB, 'display:flex;gap:16px;align-items:flex-end'), X0, 660);
   h('div', '', '<i style="position:absolute;left:17px;top:17px;width:18px;height:18px;border-radius:50%;background:var(--paper)"></i>', reply, 'width:52px;height:52px;border-radius:50%;background:var(--ink);flex:none;position:relative');
@@ -333,7 +333,7 @@ scene('ch1', {}, (root, { L, D, W, cue }) => {
 
 /* ------------------------------------------------------------ 5. chapter 2: informed handoff */
 scene('ch2', {}, (root, { L, D, W, cue }) => {
-  const intro = chapter(root, '02', ['子代理出发前', '心里有数'], 'proactive-agent/handoff.py');
+  const intro = chapter(root, '02', ['子代理出发前', '心里有数'], 'super-agent/handoff.py');
   const st = block(root, [-720, 452]);
   const X0 = 760;
   const card = at(h('div', 'card', null, st, 'padding:28px 34px'), X0, 128, 1000, 372);
@@ -393,7 +393,7 @@ scene('ch2', {}, (root, { L, D, W, cue }) => {
 
 /* ------------------------------------------------------------ 6. chapter 3: no spinning, no guessing */
 scene('ch3', {}, (root, { L, D, W, cue }) => {
-  const intro = chapter(root, '03', ['不空转', '不瞎猜'], 'proactive-agent/workers.py');
+  const intro = chapter(root, '03', ['不空转', '不瞎猜'], 'super-agent/workers.py');
   const st = block(root, [-720, 452]);
   const X0 = 760;
   const gA = h('div', 'abs', null, st, 'left:0;top:0;width:1920px;height:1080px');
@@ -408,9 +408,9 @@ scene('ch3', {}, (root, { L, D, W, cue }) => {
   const cl = h('div', '', '同一步骤<br>同一结果', cntBox, 'font:500 24px/1.4 var(--sans);color:var(--muted)');
   const cn = h('div', 'serif', '0', cntBox, 'font:700 230px/1.05 var(--serif);font-variant-numeric:tabular-nums');
   const ctag = h('div', 'pill', '', cntBox, 'font-size:24px;padding:6px 18px');
-  const nW = at(h('div', 'note', `<h4>第 3 次：换个思路，或上报阻碍</h4><p>[proactive-agent] You ran the same step 3 times with the same result: terminal(pytest tests/test_sync.py) -> "ConnectionError…". Change approach or report the blocker; at 5 repeats you will be stopped.</p>`, gA), X0, 626, 1000);
+  const nW = at(h('div', 'note', `<h4>第 3 次：换个思路，或上报阻碍</h4><p>[super-agent] You ran the same step 3 times with the same result: terminal(pytest tests/test_sync.py) -> "ConnectionError…". Change approach or report the blocker; at 5 repeats you will be stopped.</p>`, gA), X0, 626, 1000);
   nW.style.setProperty('--c', 'var(--amber)');
-  const nS = at(h('div', 'note', `<h4>第 5 次：叫停，只能以 blocked 交卷</h4><p>[proactive-agent] STOP: ran the same step 5 times with the same result. Do not call more tools. Write your final report now: status "blocked", what you tried, the exact blocker, and what you need.</p>`, gA), X0, 626, 1000);
+  const nS = at(h('div', 'note', `<h4>第 5 次：叫停，只能以 blocked 交卷</h4><p>[super-agent] STOP: ran the same step 5 times with the same result. Do not call more tools. Write your final report now: status "blocked", what you tried, the exact blocker, and what you need.</p>`, gA), X0, 626, 1000);
   nS.style.setProperty('--c', 'var(--red)');
 
   const gB = h('div', 'abs', null, st, 'left:0;top:0;width:1920px;height:1080px');
@@ -477,7 +477,7 @@ scene('ch3', {}, (root, { L, D, W, cue }) => {
 
 /* ------------------------------------------------------------ 7. chapter 4: checked, reported, remembered */
 scene('ch4', {}, (root, { L, D, W, cue }) => {
-  const intro = chapter(root, '04', ['有核实', '有交代', '有记录'], 'proactive-agent/reports.py<br>proactive-agent/ledger.py');
+  const intro = chapter(root, '04', ['有核实', '有交代', '有记录'], 'super-agent/reports.py<br>super-agent/ledger.py');
   const st = block(root, [-720, 452]);
   const X0 = 760;
   const gA = h('div', 'abs', null, st, 'left:0;top:0;width:1920px;height:1080px');
@@ -510,7 +510,7 @@ scene('ch4', {}, (root, { L, D, W, cue }) => {
   const tbl = at(h('div', 'card', null, gC, 'overflow:hidden'), X0, 128, 1000, 340);
   const cols = 'display:grid;grid-template-columns:330px 260px 280px 1fr;align-items:center;padding:0 30px';
   tbl.innerHTML = `<div style="display:flex;align-items:center;gap:14px;height:66px;padding:0 30px;background:var(--paper2)"><span class="mono" style="font:700 26px var(--mono)">ledger.db</span>
-    <span class="pill" style="background:var(--ink);color:var(--paper)">SQLite</span><span class="mono" style="margin-left:auto;font:500 20px var(--mono);color:var(--muted)">plugin-data/proactive-agent/</span></div>
+    <span class="pill" style="background:var(--ink);color:var(--paper)">SQLite</span><span class="mono" style="margin-left:auto;font:500 20px var(--mono);color:var(--muted)">plugin-data/super-agent/</span></div>
     <div style="${cols};height:56px;font:500 22px var(--sans);color:var(--muted);border-bottom:1.5px solid var(--line)"><span>任务</span><span>状态</span><span>改过的文件</span><span>已告知</span></div>`;
   const R = [['修复登录测试', 'completed', 'green', 'src/auth/token.py', '✓'], ['数据库迁移', 'needs_decision', 'amber', '—', '✓'], ['重建搜索索引', 'running', 'blue', 'search/index.py', '—']];
   const rowEls = R.map(([t, s, c, f, r]) => h('div', '', `<span style="font:700 26px var(--sans)">${t}</span><span><span class="pill st" style="background:var(--${c}-l);color:var(--${c})">${s}</span></span>` +
@@ -518,7 +518,7 @@ scene('ch4', {}, (root, { L, D, W, cue }) => {
   const lostPill = rowEls[2].querySelector('.st');
   const band = at(h('div', 'abs', `<svg width="44" height="44" viewBox="0 0 64 64" fill="none" stroke="#F2EEE5" stroke-width="5" stroke-linecap="round"><path d="M32 10v20"/><path d="M20 18a18 18 0 1 0 24 0"/></svg><span>Hermes 网关重启</span>`, gC,
     'display:flex;align-items:center;justify-content:center;gap:20px;background:var(--ink);color:var(--paper);font:700 40px var(--serif);border-radius:16px'), X0 - 20, 250, 1040, 110);
-  const nL = at(h('div', 'note', `<h4>下一轮告诉助手：哪个任务中断了、动过哪些文件，先核实现场</h4><p>[proactive-agent] Hermes restarted while a subagent was running: "重建搜索索引" (started 12 min ago). Its result is lost and its side effects are unknown. It had changed: search/index.py. Check the real state before re-dispatching or telling the user it is done.</p>`, gC), X0, 500, 1000);
+  const nL = at(h('div', 'note', `<h4>下一轮告诉助手：哪个任务中断了、动过哪些文件，先核实现场</h4><p>[super-agent] Hermes restarted while a subagent was running: "重建搜索索引" (started 12 min ago). Its result is lost and its side effects are unknown. It had changed: search/index.py. Check the real state before re-dispatching or telling the user it is done.</p>`, gC), X0, 500, 1000);
   nL.style.setProperty('--c', 'var(--red)');
 
   const e1 = L('e1'), e2 = L('e2'), e3 = L('e3');
@@ -627,24 +627,25 @@ scene('principles', {}, (root, { L, D, W, cue }) => {
 
 /* ------------------------------------------------------------ 10. end card */
 scene('end', { fout: 1.1 }, (root, { L, D, W, cue }) => {
-  const name = at(h('div', 'abs serif', LV('Hermes Proactive Agent', 'Hermes<br>Proactive Agent'), root, `left:0;right:0;text-align:center;font:700 ${LV('108px/1.45', '112px/1.14')} var(--serif)`), 0, LV(140, 370));
+  const name = at(h('div', 'abs serif', LV('Hermes Super Agent', 'Hermes<br>Super Agent'), root, `left:0;right:0;text-align:center;font:700 ${LV('108px/1.45', '112px/1.14')} var(--serif)`), 0, LV(140, 370));
   const tag = at(h('div', 'abs serif', '让你的助手，随时在线', root, 'left:0;right:0;text-align:center;font:500 48px var(--serif);color:var(--ink2)'), 0, LV(300, 658));
-  const code = at(h('div', 'term', `<pre style="font-size:${LV(27, 20)}px;padding:${LV('30px 40px', '30px 34px')};line-height:1.8;white-space:pre"></pre>`, root), LV(300, 40), LV(410, 780), LV(1320, 1000), LV(170, 132));
-  const pre = code.querySelector('pre');
-  const lines = ['<span class="dim">$</span> hermes plugins install JerryLiu369/hermes-proactive-agent/proactive-agent', '<span class="dim">$</span> hermes plugins enable proactive-agent'];
-  const foot = at(h('div', 'abs', `<div class="mono" style="font:700 32px var(--mono);color:var(--ink)">github.com/JerryLiu369/hermes-proactive-agent</div>` +
-    `<div style="font:500 26px var(--sans);color:var(--muted);margin-top:12px">MIT · Hermes Agent 0.22+ · Python 3.10+ · 零运行时依赖</div>` +
-    `<div class="srch" style="display:inline-block;margin-top:30px;font:700 30px var(--sans);color:var(--paper);background:var(--ink);padding:12px 30px;border-radius:999px"><span style="color:#E8C27A;margin-right:12px">★</span>在 GitHub 搜索 Hermes Proactive Agent</div>`, root, 'left:0;right:0;text-align:center'), 0, LV(622, 968));
+  const promises = [['01', '聊天始终保持响应'], ['02', '子代理出发前心里有数'], ['03', '不空转 · 不瞎猜'], ['04', '有核实 · 有交代 · 有记录']];
+  const grid = at(h('div', 'abs', promises.map(([n, p]) =>
+    `<div class="card" style="position:relative;display:flex;align-items:center;gap:18px;padding:${LV('22px 30px', '20px 26px')};font:700 ${LV(32, 30)}px var(--sans);color:var(--ink)">` +
+    `<span class="mono" style="font:700 ${LV(26, 24)}px var(--mono);color:var(--blue)">${n}</span>${p}</div>`).join(''), root,
+    `display:grid;grid-template-columns:${LV('1fr 1fr', '1fr')};gap:${LV('18px 24px', '16px')}`), LV(330, 140), LV(410, 790), LV(1260, 800));
+  const items = [...grid.children];
+  const foot = at(h('div', 'abs', `<div style="font:500 26px var(--sans);color:var(--muted)">MIT · Hermes Agent 0.22+ · Python 3.10+ · 零运行时依赖</div>` +
+    `<div class="srch" style="display:inline-block;margin-top:30px;font:700 30px var(--sans);color:var(--paper);background:var(--ink);padding:12px 30px;border-radius:999px"><span style="color:#E8C27A;margin-right:12px">★</span>Hermes Agent 开源插件</div>`, root, 'left:0;right:0;text-align:center'), 0, LV(686, 1240));
   const g = L('g1');
   const srch = root.querySelector('.srch');
-  cue(g + .2, 'pop', .6); cue(g + .7, 'pop', .6); cue(W('g1', '在 GitHub') - .1, 'pop', .8); cue(W('g1', '让你的'), 'ok', .8);
+  items.forEach((_, i) => cue(g + .2 + i * .3, 'pop', .6)); cue(W('g1', '开源插件') - .1, 'pop', .8); cue(W('g1', '让你的'), 'ok', .8);
   return lt => {
     const k = P(lt, .05, .8); tr(name, { o: k, y: (1 - k) * 30 });
     vis(tag, lt, W('g1', '让你的') - .1);
-    vis(code, lt, g, Infinity, { dy: 24 });
-    setHTML(pre, lines.filter((_, i) => lt >= g + .2 + i * .5).join('\n'));
+    items.forEach((el, i) => vis(el, lt, g + .2 + i * .3, Infinity, { dy: 24 }));
     vis(foot, lt, g + .9);
-    vis(srch, lt, W('g1', '在 GitHub') - .1, Infinity, { s0: .9, e: E.back, dy: 10 });
+    vis(srch, lt, W('g1', '开源插件') - .1, Infinity, { s0: .9, e: E.back, dy: 10 });
   };
 });
 

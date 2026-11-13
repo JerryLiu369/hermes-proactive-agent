@@ -56,14 +56,30 @@ for (let i = 0; ; i++) {
 const errs = await evalJS('window.__errors || []');
 if (errs.length) console.error(errs);
 const TL = await evalJS('window.TIMELINE');
-const shot = async t => {
+// The page is loaded once; each frame only calls render(t) (~15 ms). The cost is the screenshot encode:
+// PNG ~250 ms/frame, JPEG q95 ~90 ms. PROMO_FRAMES=png keeps lossless frames for a master.
+const FMT = process.env.PROMO_FRAMES === 'png' ? 'png' : 'jpeg';
+const shot = async (t, fmt = 'png') => {
   await evalJS(`render(${t})`, true);
-  const { data } = await S('Page.captureScreenshot', { format: 'png', optimizeForSpeed: true });
+  const { data } = await S('Page.captureScreenshot', fmt === 'png' ? { format: 'png', optimizeForSpeed: true } : { format: 'jpeg', quality: 95, optimizeForSpeed: true });
   return Buffer.from(data, 'base64');
 };
 
 try {
-  if (mode === 'cues') {
+  if (mode === 'bench') {
+    // per-frame cost split: seek (render(t) + two rAFs) vs capture, PNG vs JPEG
+    const N = +(args[0] || 60), t0 = +(args[1] || 40);
+    for (const fmt of ['png', 'jpeg']) {
+      let seek = 0, cap = 0, bytes = 0;
+      for (let i = 0; i < N; i++) {
+        let a = Date.now(); await evalJS(`render(${t0 + i / 30})`, true); seek += Date.now() - a;
+        a = Date.now();
+        const { data } = await S('Page.captureScreenshot', fmt === 'png' ? { format: 'png', optimizeForSpeed: true } : { format: 'jpeg', quality: 95, optimizeForSpeed: true });
+        cap += Date.now() - a; bytes += data.length * .75;
+      }
+      console.log(`${fmt}: seek ${(seek / N).toFixed(0)}ms capture ${(cap / N).toFixed(0)}ms size ${(bytes / N / 1024).toFixed(0)}KB`);
+    }
+  } else if (mode === 'cues') {
     writeFileSync(join(BUILD, 'cues.json'), JSON.stringify(await evalJS('window.CUES'), null, 1));
     console.log('cues written');
   } else if (mode === 'stills') {
@@ -78,11 +94,11 @@ try {
     const fps = TL.fps, n = Math.ceil(TL.duration * fps);
     const from = +(args[0] || 0), to = Math.min(n, +(args[1] || n));
     const out = join(BUILD, args[2] || (VERT ? 'video-v.mp4' : 'video.mp4'));
-    const ff = spawn('ffmpeg', ['-hide_banner', '-loglevel', 'warning', '-y', '-f', 'image2pipe', '-framerate', String(fps), '-c:v', 'png', '-i', '-',
+    const ff = spawn('ffmpeg', ['-hide_banner', '-loglevel', 'warning', '-y', '-f', 'image2pipe', '-framerate', String(fps), '-c:v', FMT === 'png' ? 'png' : 'mjpeg', '-i', '-',
       '-c:v', 'libx264', '-preset', 'medium', '-crf', '15', '-tune', 'stillimage', '-pix_fmt', 'yuv420p', '-r', String(fps), out], { stdio: ['pipe', 'inherit', 'inherit'] });
     const t0 = Date.now();
     for (let f = from; f < to; f++) {
-      const buf = await shot(f / fps);
+      const buf = await shot(f / fps, FMT);
       if (!ff.stdin.write(buf)) await new Promise(r => ff.stdin.once('drain', r));
       if (f % 150 === 0) console.log(`frame ${f}/${to} ${((Date.now() - t0) / 1000).toFixed(0)}s`);
     }

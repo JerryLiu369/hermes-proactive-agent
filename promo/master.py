@@ -4,10 +4,10 @@ Usage: master.py [out.mp4] [build video, default video.mp4]"""
 import json, re, subprocess, sys
 from pathlib import Path
 B = Path(__file__).resolve().parent / "build"
-OUT = B.parent / (sys.argv[1] if len(sys.argv) > 1 else "proactive-agent-promo.mp4")
-META = ["-metadata", "title=Hermes Proactive Agent: 让聊天里的助手像秘书一样做事",
+OUT = B.parent / (sys.argv[1] if len(sys.argv) > 1 else "super-agent-promo.mp4")
+META = ["-metadata", "title=Hermes Super Agent: 让聊天里的助手像秘书一样做事",
         "-metadata", "artist=JerryLiu369",
-        "-metadata", "comment=https://github.com/JerryLiu369/hermes-proactive-agent",
+        "-metadata", "comment=Hermes Super Agent, an open-source Hermes Agent plugin",
         "-metadata", "description=Hermes Agent plugin: responsive chat, informed subagents, no spinning or guessing, checked and recorded results."]
 PRE = ("[1:a]highpass=f=70,acompressor=threshold=-20dB:ratio=2.5:attack=6:release=140:makeup=1.4[v];"
        "[v][2:a]amix=inputs=2:normalize=0[m]")

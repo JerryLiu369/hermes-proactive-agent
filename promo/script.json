@@ -64,8 +64,8 @@
    "lines": [
     [
      "t1",
-     "Hermes Proactive Agent，让聊天里的助手，像一位靠谱的秘书那样做事：",
-     "Hermes Proactive Agent makes your chat assistant work like a reliable secretary:"
+     "Hermes Super Agent，让聊天里的助手，像一位靠谱的秘书那样做事：",
+     "Hermes Super Agent makes your chat assistant work like a reliable secretary:"
     ],
     [
      "t2",
@@ -208,8 +208,8 @@
    "lines": [
     [
      "g1",
-     "两行命令装上它。在 GitHub 搜索 Hermes Proactive Agent，让你的助手，随时在线。",
-     "Two commands to install. Search “Hermes Proactive Agent” on GitHub, and keep your assistant reachable."
+     "Hermes Super Agent，Hermes Agent 的开源插件。让你的助手，随时在线。",
+     "Hermes Super Agent, an open-source plugin for Hermes Agent. Keep your assistant reachable."
     ]
    ]
   }
