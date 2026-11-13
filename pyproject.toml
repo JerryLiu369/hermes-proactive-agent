@@ -1,7 +1,7 @@
 [project]
 name = "hermes-super-agent"
 version = "0.2.0"
-description = "Hermes Agent plugin implementing Lead–Worker Super Agent orchestration: responsive chat coordinator, subagent briefing, anti-loop guards, decision escalation, and persistent SQLite task ledger"
+description = "Hermes Agent plugin that runs the chat agent like a secretary with a team of workers: responsive chat turns, briefed subagents, repeat stops, decisions brought back to the main agent, and a persistent SQLite task ledger"
 readme = "README.md"
 license = { text = "MIT" }
 authors = [{ name = "Jerry Liu" }]

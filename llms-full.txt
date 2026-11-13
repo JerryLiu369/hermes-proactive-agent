@@ -1,11 +1,12 @@
-# Hermes Proactive Agent - Full Reference
+# Hermes Super Agent - Full Reference
 
-> Hermes Proactive Agent (`proactive-agent`) is an MIT-licensed Hermes Agent plugin that governs how a chat-based AI assistant delegates work. It keeps the main agent responsive with a per-turn time budget (60 s reminder, 120 s edit/execute pause), moves foreground terminal commands longer than 30 s to the background through Hermes' own yield path, returns `delegate_task` briefs under 120 characters once per turn and enriches accepted briefs with chat context and memory, stops a subagent that produces the same tool outcome 5 times, brings open decisions and refused commands back to the main agent as `needs_decision`, verifies each reported result, keeps background results marked unreported until an uninterrupted reply delivers them to the user, and persists every task in a SQLite ledger at `<hermes home>/plugin-data/proactive-agent/ledger.db` (retaining the last 20 finished tasks per chat for up to 7 days). The plugin makes zero model calls, never writes directly into the user's chat, and fails open on internal errors.
+> Hermes Super Agent (`super-agent`) is an MIT-licensed Hermes Agent plugin that governs how a chat-based AI assistant delegates work. It keeps the main agent responsive with a per-turn time budget (60 s reminder, 120 s edit/execute pause), moves foreground terminal commands longer than 30 s to the background through Hermes' own yield path, returns `delegate_task` briefs under 120 characters once per turn and enriches accepted briefs with chat context and memory, stops a subagent that produces the same tool outcome 5 times, brings open decisions and refused commands back to the main agent as `needs_decision`, verifies each reported result, keeps background results marked unreported until an uninterrupted reply delivers them to the user, and persists every task in a SQLite ledger at `<hermes home>/plugin-data/super-agent/ledger.db` (retaining the last 20 finished tasks per chat for up to 7 days). The plugin makes zero model calls, never writes directly into the user's chat, and fails open on internal errors.
 
-This file is the complete, self-contained technical reference for the project. It is maintained alongside `README.md` from the same verified codebase facts; when any wording differs, the source code under `proactive-agent/` is authoritative.
+This file is the complete, self-contained technical reference for the project. It is maintained alongside `README.md` from the same verified codebase facts; when any wording differs, the source code under `super-agent/` is authoritative.
 
-- Repository: https://github.com/JerryLiu369/hermes-proactive-agent
-- Version: 0.1.17 · License: MIT · Language: Python 3.10+ · Runtime dependencies: none
+- Repository: https://github.com/JerryLiu369/hermes-super-agent
+- Former name: `hermes-proactive-agent` (plugin id `proactive-agent`, versions 0.1.x)
+- Version: 0.2.0 · License: MIT · Language: Python 3.10+ · Runtime dependencies: none
 - Host requirement: Hermes Agent >= 0.22 (tested on v0.22.7)
 - Verification commands: `uv run --group dev pytest` and `uv run --group dev ruff check`
 
@@ -30,7 +31,7 @@ Every question below is answered in full in the "Mechanism detail" and "FAQ" sec
 
 ## What it is
 
-Hermes Proactive Agent is a lightweight host plugin, not a separate agent framework or runtime. It registers ten lifecycle hooks on Hermes (`pre_llm_call`, `pre_api_request`, `pre_tool_call`, `post_tool_call`, `transform_tool_result`, `subagent_start`, `subagent_stop`, `on_session_end`, `on_session_reset`, `on_session_finalize`) plus one system prompt section (`proactive-agent.discipline`), filling only the gaps Hermes leaves open when used from a messaging app.
+Hermes Super Agent is a lightweight host plugin, not a separate agent framework or runtime. It registers twelve lifecycle hooks on Hermes (`pre_llm_call`, `pre_api_request`, `pre_auxiliary_call`, `post_auxiliary_call`, `pre_tool_call`, `post_tool_call`, `transform_tool_result`, `subagent_start`, `subagent_stop`, `on_session_end`, `on_session_reset`, `on_session_finalize`) plus one `tool_execution` middleware and one system prompt section (`super-agent.discipline`), filling only the gaps Hermes leaves open when used from a messaging app.
 
 The core model in one sentence: **the main agent acts like a secretary and subagents act like workers.** The secretary stays reachable in chat, makes decisions, and reports back; workers handle the slow jobs in the background; every job ends with a checked, recorded result that reaches the user.
 
@@ -43,37 +44,39 @@ Three design invariants govern the entire codebase:
 ## Install
 
 ```bash
-hermes plugins install JerryLiu369/hermes-proactive-agent/proactive-agent
-hermes plugins enable proactive-agent
+hermes plugins install JerryLiu369/hermes-super-agent/super-agent
+hermes plugins enable super-agent
 ```
 
-The plugin id is `proactive-agent`. The install path `JerryLiu369/hermes-proactive-agent/proactive-agent` points to the plugin subdirectory, which is the only directory Hermes copies during installation. Restart the gateway after enabling, and update later with `hermes plugins update proactive-agent`.
+The plugin id is `super-agent`. The install path `JerryLiu369/hermes-super-agent/super-agent` points to the plugin subdirectory, which is the only directory Hermes copies during installation. Restart the gateway after enabling, and update later with `hermes plugins update super-agent`.
 
 Recommended host settings in `~/.hermes/config.yaml`:
 
 - `delegation.max_iterations: 90` caps total subagent iterations so a wandering subagent reports back sooner.
-- `plugins.entries.proactive-agent.allow_gateway_injection: true` grants Hermes' permission for `ctx.inject_message`, allowing the plugin to wake the main agent when a user message interrupts a background result report (without it, the reminder simply rides on the user's next message). Use the plugin id shown by `hermes plugins list` if installed under another name:
+- `plugins.entries.super-agent.allow_gateway_injection: true` grants Hermes' permission for `ctx.inject_message`, allowing the plugin to wake the main agent when a user message interrupts a background result report (without it, the reminder simply rides on the user's next message). Use the plugin id shown by `hermes plugins list` if installed under another name:
 
 ```yaml
 delegation:
   max_iterations: 90
 plugins:
   entries:
-    proactive-agent:
+    super-agent:
       allow_gateway_injection: true
 ```
 
 Verify the plugin is active:
 
 ```bash
-hermes plugins list           # proactive-agent should appear as enabled
+hermes plugins list           # super-agent should appear as enabled
 ```
+
+Upgrading from `proactive-agent` (0.1.x): version 0.2.0 renamed the project from `hermes-proactive-agent` to `hermes-super-agent` and the plugin id from `proactive-agent` to `super-agent`; behaviour is unchanged. Install and enable `super-agent`, run `hermes plugins disable proactive-agent`, rename `plugins.entries.proactive-agent` to `plugins.entries.super-agent`, and copy `<hermes home>/plugin-data/proactive-agent/ledger.db` to `<hermes home>/plugin-data/super-agent/ledger.db` before the first start to keep task history. `SUPER_AGENT_<KEY>` environment overrides take precedence; `PROACTIVE_<KEY>` is still read as a fallback. Notes and briefings now start with `[super-agent]`; the plugin still recognises its old `[proactive-agent]` markers in existing chats.
 
 ## Status quo vs governed: comparison matrix
 
 "Status quo" describes vanilla Hermes Agent with subagent delegation enabled and this plugin disabled.
 
-| Dimension | Status quo | Governed by proactive-agent |
+| Dimension | Status quo | Governed by super-agent |
 |---|---|---|
 | Main-agent turn duration | Unbounded; the chat goes silent until the turn finishes | Soft reminder at 60 s; hard pause on edit/execute tools at 120 s; resets when the user writes mid-turn |
 | Tools available after 120 s | Unchanged | `read_file`, `search_files`, `session_search`, `vision_analyze`, `memory`, `skill_view`, `skills_list`, `skill_manage`, `todo_list`, `clarify`, `delegate_task`, and `process_manage` (`list`/`poll`/`log`/`kill`) |
@@ -169,7 +172,7 @@ When the subagent finishes with `needs_decision`, `reports.on_subagent_stop` que
 | User writes mid-turn, and the main agent replies without calling a tool | `reports.on_turn_end` calls `ctx.inject_message` (up to `_MAX_WAKES = 2` times per result) to queue an internal wake turn; the main agent reports briefly or replies `[SILENT]` if already covered |
 | Turn is interrupted/failed, or gateway injection is disabled | The result stays `unreported` and is attached to the start of the user's next turn |
 
-**Durable SQLite ledger and restart recovery:** `ledger.py` stores two tables (`tasks` and `notes`) in `<hermes home>/plugin-data/proactive-agent/ledger.db`:
+**Durable SQLite ledger and restart recovery:** `ledger.py` stores two tables (`tasks` and `notes`) in `<hermes home>/plugin-data/super-agent/ledger.db`:
 
 - Each `tasks` row stores `id`, `parent`, `child`, `status`, `started`, `ended`, `pid`, and a JSON `data` payload (`goal`, `files`, `steers`, `transcript`, `summary`, `evidence`, `blockers`, `background`, `unreported`, `shown`, `shown_turn`, `wakes`, `question`, `options`, `awaiting`, `asked_turn`).
 - Retention is bounded automatically: up to **20 finished tasks** per chat (`_KEEP_FINISHED_PER_PARENT = 20`), expiring records older than **7 days** (`_KEEP_SECONDS = 7 * 86400`), and chasing unreported results for at most **24 hours** (`_REPORT_HORIZON_S = 86400`).
@@ -177,12 +180,12 @@ When the subagent finishes with `needs_decision`, `reports.on_subagent_stop` que
 
 ## Configuration
 
-Settings live under `plugins.entries.proactive-agent.settings` in `~/.hermes/config.yaml`. Resolution order is: environment variable `PROACTIVE_<KEY>` (uppercase), then `config.yaml`, then `config.DEFAULTS`.
+Settings live under `plugins.entries.super-agent.settings` in `~/.hermes/config.yaml`. Resolution order is: environment variable `SUPER_AGENT_<KEY>` (uppercase), then the legacy `PROACTIVE_<KEY>`, then `config.yaml`, then `config.DEFAULTS`.
 
 ```yaml
 plugins:
   entries:
-    proactive-agent:
+    super-agent:
       allow_gateway_injection: true   # Hermes host permission for ctx.inject_message
       settings:
         governed_platforms: ["weixin"]
@@ -195,12 +198,12 @@ plugins:
 
 | Key | Type | Default | Description | Environment override |
 |---|---|---|---|---|
-| `governed_platforms` | `list[str]` | `["weixin"]` | Platforms whose main agent and spawned subagents are governed | `PROACTIVE_GOVERNED_PLATFORMS` |
-| `turn_soft_seconds` | `float` | `60` | Seconds before the main agent is reminded to answer or delegate | `PROACTIVE_TURN_SOFT_SECONDS` |
-| `turn_hard_seconds` | `float` | `120` | Seconds before editing and command execution pause for the rest of the turn | `PROACTIVE_TURN_HARD_SECONDS` |
-| `terminal_auto_detach_seconds` | `int` | `30` | Seconds before a foreground terminal command moves to the background (`0` disables) | `PROACTIVE_TERMINAL_AUTO_DETACH_SECONDS` |
-| `handoff_min_context_chars` | `int` | `120` | Minimum `delegate_task` `context` length; shorter briefs are returned once per turn | `PROACTIVE_HANDOFF_MIN_CONTEXT_CHARS` |
-| `worker_repeat_limit` | `int` | `5` | Identical tool outcomes before a subagent is stopped (warned two attempts earlier) | `PROACTIVE_WORKER_REPEAT_LIMIT` |
+| `governed_platforms` | `list[str]` | `["weixin"]` | Platforms whose main agent and spawned subagents are governed | `SUPER_AGENT_GOVERNED_PLATFORMS` |
+| `turn_soft_seconds` | `float` | `60` | Seconds before the main agent is reminded to answer or delegate | `SUPER_AGENT_TURN_SOFT_SECONDS` |
+| `turn_hard_seconds` | `float` | `120` | Seconds before editing and command execution pause for the rest of the turn | `SUPER_AGENT_TURN_HARD_SECONDS` |
+| `terminal_auto_detach_seconds` | `int` | `30` | Seconds before a foreground terminal command moves to the background (`0` disables) | `SUPER_AGENT_TERMINAL_AUTO_DETACH_SECONDS` |
+| `handoff_min_context_chars` | `int` | `120` | Minimum `delegate_task` `context` length; shorter briefs are returned once per turn | `SUPER_AGENT_HANDOFF_MIN_CONTEXT_CHARS` |
+| `worker_repeat_limit` | `int` | `5` | Identical tool outcomes before a subagent is stopped (warned two attempts earlier) | `SUPER_AGENT_WORKER_REPEAT_LIMIT` |
 
 ## Compatibility and limits
 
@@ -215,7 +218,7 @@ plugins:
 ## FAQ
 
 **How do I stop a Hermes Agent chat from going silent while it works?**
-Install and enable `proactive-agent`. The main agent receives a reminder at 60 s to reply or delegate, and loses edit/execute tools at 120 s for the remainder of the turn. Sending a new message mid-turn resets the timer.
+Install and enable `super-agent`. The main agent receives a reminder at 60 s to reply or delegate, and loses edit/execute tools at 120 s for the remainder of the turn. Sending a new message mid-turn resets the timer.
 
 **How do I keep a 10-minute build from blocking my chat?**
 Any governed foreground terminal command still running after 30 s is automatically detached to the background through Hermes' yield mechanism. The command keeps running, the main agent is told it has not failed, and Hermes notifies the chat when it completes. `process_manage(action='wait')` is refused so the agent cannot block on it.
@@ -236,7 +239,7 @@ Every accepted task is asked to end with a JSON report holding `status`, `summar
 The background result stays marked `unreported` until a turn that showed it finishes with an uninterrupted reply. If the main agent calls a tool after the user's message, that tool result reminds it to answer the user and report the finished task together; if it replies without calling a tool, the plugin wakes it via `ctx.inject_message` (requires `allow_gateway_injection: true`) for a brief follow-up or `[SILENT]`; otherwise the reminder rides on the user's next message.
 
 **How do I persist task progress across a Hermes gateway restart?**
-Every task, pending note, and unreported-result flag is stored in SQLite at `<hermes home>/plugin-data/proactive-agent/ledger.db`. If the gateway restarts while a subagent is running, the plugin marks the task `lost` and tells the main agent on the next turn which tasks were interrupted and which files they had touched.
+Every task, pending note, and unreported-result flag is stored in SQLite at `<hermes home>/plugin-data/super-agent/ledger.db`. If the gateway restarts while a subagent is running, the plugin marks the task `lost` and tells the main agent on the next turn which tasks were interrupted and which files they had touched.
 
 **Does this plugin make extra model calls or cost tokens?**
 It makes zero model calls of its own; it only adds concise notes to the main agent's context and subagent briefings. Waking the main agent after an interrupted report uses one extra turn, equivalent to one user message.
@@ -251,4 +254,4 @@ A `delegate_task` call whose `goal` or `context` names a file another running su
 
 If you cite or reference this project, use:
 
-Hermes Proactive Agent (2026), Jerry Liu, MIT License - https://github.com/JerryLiu369/hermes-proactive-agent. A Hermes Agent plugin that keeps chat turns responsive, detaches long terminal commands, briefs subagents, stops repeated failing tool calls, brings open decisions back to the main agent, guarantees background result delivery, and persists delegated task records in a SQLite ledger.
+Hermes Super Agent (2026), Jerry Liu, MIT License - https://github.com/JerryLiu369/hermes-super-agent. A Hermes Agent plugin that keeps chat turns responsive, detaches long terminal commands, briefs subagents, stops repeated failing tool calls, brings open decisions back to the main agent, guarantees background result delivery, and persists delegated task records in a SQLite ledger.

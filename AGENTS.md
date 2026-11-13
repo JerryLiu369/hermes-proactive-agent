@@ -4,7 +4,7 @@ Guidance for agents (and people) changing this repository. Read it before you ch
 
 ## What this is
 
-`proactive-agent` is a Hermes Agent plugin. It runs the chat agent like a secretary with a team of workers: the
+`super-agent` (Hermes Super Agent, formerly `proactive-agent`) is a Hermes Agent plugin. It runs the chat agent like a secretary with a team of workers: the
 **main agent** (the secretary) stays reachable, decides and reports; **subagents** (workers, started with
 `delegate_task`) do the slow work; every job ends with a result that is checked and recorded.
 
@@ -20,7 +20,7 @@ module each:
 
 Supporting modules: `context.py` (who is calling: governed main agent, subagent or cron run), `prompt.py` (system
 prompt section), `config.py` (settings), `util.py` (text and tool-result helpers), `__init__.py` (hook wiring).
-`proactive-agent/` is the whole installed plugin; everything else in the repository is development only.
+`super-agent/` is the whole installed plugin; everything else in the repository is development only.
 
 A new feature should fit one of the four promises. If it does not, question it before building it.
 
@@ -175,7 +175,7 @@ the `hermes-agent` checkout.
   `register_middleware` calls.
 - `ctx.register_system_prompt_section(id, fn, *, position, max_chars)`: `fn` receives read-only session info, and the
   rendered text is frozen per session.
-- `ctx.get_config(key)` reads `plugins.entries.proactive-agent.settings.<key>`.
+- `ctx.get_config(key)` reads `plugins.entries.super-agent.settings.<key>`.
 - `ctx.inject_message(content, role="user", *, session_key=None, origin=None) -> bool` (`hermes_cli/plugins.py`,
   `hermes_cli/plugins_injection.py`) starts an internal turn in an existing gateway session
   (`gateway/run_plugin_injection.py`). It needs `plugins.entries.<plugin id>.allow_gateway_injection: true` and, for
@@ -206,8 +206,11 @@ the `hermes-agent` checkout.
 ## Working on the code
 
 - State lives in module-level dicts guarded by a lock. Anything that must survive a restart goes in the ledger.
-- Notes to the main agent or a subagent start with `[proactive-agent]` and are attached with `util.append_note`
+- Notes to the main agent or a subagent start with `[super-agent]` and are attached with `util.append_note`
   (JSON results stay valid JSON). Refusals use `util.block`.
+- The 0.1.x names are still read so chats and setups from before the rename keep working: the `[proactive-agent]`
+  note prefix and wake marker, the old briefing marker, the `proactive_agent_note` key and `PROACTIVE_<KEY>`
+  environment overrides (after `SUPER_AGENT_<KEY>`). Do not remove them without being asked.
 - Hook entry points live in `__init__.py` and only route: worker calls go to `workers`, governed main-agent calls go to
   `secretary`, `handoff` or `reports`.
 - Comments explain a reason the code cannot show (a Hermes behaviour, an invariant). Do not narrate the code.
@@ -250,6 +253,6 @@ uv run --group dev ruff check
 
 - Commit messages: `feat:`, `fix:`, `refactor:`, `docs:` or `release:`, then an imperative summary.
 - Push, tag or publish only when the maintainer asks.
-- A release bumps the version in `pyproject.toml`, `proactive-agent/plugin.yaml` and `proactive-agent/__init__.py`
+- A release bumps the version in `pyproject.toml`, `super-agent/plugin.yaml` and `super-agent/__init__.py`
   (`release: vX.Y.Z`), adds an annotated tag `vX.Y.Z`, and publishes a GitHub release. Its notes describe everything
   since the previous tag in user-facing terms.

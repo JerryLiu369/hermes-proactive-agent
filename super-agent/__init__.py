@@ -1,7 +1,7 @@
 """
-super-agent: runs the Hermes chat agent as an always-responsive Lead Agent coordinating Worker subagents.
+super-agent: runs the Hermes chat agent like a secretary with a team of workers.
 
-The Lead agent stays reachable and decides; delegated Worker subagents do the slow work. The plugin
+The main agent stays reachable and decides; delegated subagents do the slow work. The plugin
 keeps four promises, one module each:
 
 1. The chat stays responsive (secretary): a turn time budget, with a note at the soft limit and
