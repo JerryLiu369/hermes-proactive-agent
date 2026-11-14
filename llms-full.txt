@@ -1,6 +1,6 @@
 # Hermes Super Agent - Full Reference
 
-> Hermes Super Agent (`super-agent`) is an MIT-licensed Hermes Agent plugin that governs how a chat-based AI assistant delegates work. It keeps the main agent responsive with a per-turn time budget (60 s reminder, 120 s edit/execute pause), moves foreground terminal commands longer than 30 s to the background through Hermes' own yield path, returns `delegate_task` briefs under 120 characters once per turn and enriches accepted briefs with chat context and memory, stops a subagent that produces the same tool outcome 5 times, brings open decisions and refused commands back to the main agent as `needs_decision`, verifies each reported result, keeps background results marked unreported until an uninterrupted reply delivers them to the user, and persists every task in a SQLite ledger at `<hermes home>/plugin-data/super-agent/ledger.db` (retaining the last 20 finished tasks per chat for up to 7 days). The plugin makes zero model calls, never writes directly into the user's chat, and fails open on internal errors.
+> Hermes Super Agent (`super-agent`) is an MIT-licensed Hermes Agent plugin that governs how a chat-based AI assistant delegates work. It keeps the main agent responsive with a per-turn time budget (60 s reminder, 120 s edit/execute pause), moves foreground terminal commands longer than 30 s to the background through Hermes' own yield path, returns `delegate_task` briefs under 120 characters once per turn and enriches accepted briefs with chat context and memory, stops a subagent that produces the same tool outcome 5 times, brings open decisions and refused commands back to the main agent as `needs_decision`, returns a dispatch once after 2 subagents ended without finishing since the user last wrote, verifies each reported result (one without a report is recorded `no_report`, not done), keeps background results marked unreported until an uninterrupted reply delivers them to the user, and persists every task in a SQLite ledger at `<hermes home>/plugin-data/super-agent/ledger.db` (retaining the last 20 finished tasks per chat for up to 7 days). The plugin makes zero model calls, never writes directly into the user's chat, and fails open on internal errors.
 
 This file is the complete, self-contained technical reference for the project. It is maintained alongside `README.md` from the same verified codebase facts; when any wording differs, the source code under `super-agent/` is authoritative.
 
@@ -28,10 +28,12 @@ Every question below is answered in full in the "Mechanism detail" and "FAQ" sec
 12. Does the plugin replace Hermes' built-in delegation, approval, or loop guard?
 13. What are the exact thresholds and how are they configured?
 14. How is this different from simply lowering `delegation.max_iterations`?
+15. How do you stop the main agent from re-dispatching a failing plan again and again?
+16. How do you see which subagent tasks ran and how they ended?
 
 ## What it is
 
-Hermes Super Agent is a lightweight host plugin, not a separate agent framework or runtime. It registers twelve lifecycle hooks on Hermes (`pre_llm_call`, `pre_api_request`, `pre_auxiliary_call`, `post_auxiliary_call`, `pre_tool_call`, `post_tool_call`, `transform_tool_result`, `subagent_start`, `subagent_stop`, `on_session_end`, `on_session_reset`, `on_session_finalize`) plus one `tool_execution` middleware and one system prompt section (`super-agent.discipline`), filling only the gaps Hermes leaves open when used from a messaging app.
+Hermes Super Agent is a lightweight host plugin, not a separate agent framework or runtime. It registers twelve lifecycle hooks on Hermes (`pre_llm_call`, `pre_api_request`, `pre_auxiliary_call`, `post_auxiliary_call`, `pre_tool_call`, `post_tool_call`, `transform_tool_result`, `subagent_start`, `subagent_stop`, `on_session_end`, `on_session_reset`, `on_session_finalize`) plus one `tool_execution` middleware, one system prompt section (`super-agent.discipline`) and one read-only CLI command (`hermes super-agent status`), filling only the gaps Hermes leaves open when used from a messaging app.
 
 The core model in one sentence: **the main agent acts like a secretary and subagents act like workers.** The secretary stays reachable in chat, makes decisions, and reports back; workers handle the slow jobs in the background; every job ends with a checked, recorded result that reaches the user.
 
@@ -89,11 +91,13 @@ Upgrading from `proactive-agent` (0.1.x): version 0.2.0 renamed the project from
 | Repeated identical tool outcomes | Hermes warns subagents but never stops them | Cumulative counter across the whole run: warn on 3rd identical outcome, hard stop on 5th, refuse further tools, require `blocked` report |
 | Outcome matching for repeats | Consecutive tool calls | Whole-run history matched by tool name, arguments, and first result line with long numbers and hashes masked |
 | Decisions outside a subagent's scope | No `clarify` tool and no resume; subagent guesses or aborts | Subagent stops with `needs_decision`, `question`, and `options`; main agent answers from chat/memory or asks the user in one message, then spawns a follow-up subagent |
+| Main agent re-dispatching after failures | Unbounded; each new subagent may hit the same wall while the user hears nothing | Once 2 subagents of the chat ended `failed`, `blocked`, `partial` or `interrupted` since the user last wrote, the next dispatch is returned once with what they ran into; the user's next message resets the count |
 | Step refused by approval or hook | Subagent may retry or search for a workaround | Immediate note (or on next tool result for a hook): do not retry or work around it; if required for the goal, report `needs_decision` |
-| Result verification | "Done" is an unchecked self-report | Next main-agent turn opens with reported evidence, or warns on missing evidence, unfinished status, or repeat stop |
+| Result verification | "Done" is an unchecked self-report; an exit without any report still counts as `completed` | Next main-agent turn opens with reported evidence, or warns on missing evidence, unfinished status, or repeat stop; an exit without the requested JSON report is recorded `no_report`, not done |
 | Background result arrives while user types | Hermes merges the user's message into the reporting turn; main agent often answers only the message | Result stays marked unreported until an uninterrupted reply completes: reminded via next tool result, woken via `inject_message` (max 2 wakes), or reminded on the user's next message |
 | Task durability and retention | Lost when subagent exits or gateway restarts | SQLite ledger (`ledger.db`) stores goal, status, files, steers, transcript path, summary, evidence, blockers, and open questions; keeps last 20 finished tasks per chat for up to 7 days |
 | Gateway restart mid-task | Running subagents vanish silently | Interrupted tasks are marked `lost`; next turn tells the main agent which tasks were lost, which files they touched, and that side effects are unknown |
+| Seeing what the plugin did | Read logs | `hermes super-agent status` prints settings, the startup host check and the latest tasks (`--json`, `--limit N`); read only |
 | Failure mode of the plugin | N/A | Fails open: exceptions are logged and never block a tool call |
 | Model calls / token overhead | N/A | Zero model calls; compact context notes only |
 | Governed scope | N/A | Only `governed_platforms` (default `["weixin"]`) and their subagents; cron, CLI, and other platforms untouched |
@@ -154,12 +158,15 @@ When Hermes' command approval refuses a subagent call (returning an error starti
 
 When the subagent finishes with `needs_decision`, `reports.on_subagent_stop` queues a note for the main agent containing the question and options. Because the main agent can see the full conversation and memory, it resolves the question itself if the answer is already settled, or asks the user in one concise message, and then dispatches a new subagent with the answer (which automatically receives the unfinished task's ledger record). If the user has heard the question and the main agent still has not dispatched a follow-up by the user's next message, `_decision_reminder` reminds the main agent once.
 
+**Failed-task limit (the main agent's own spin):** `handoff.user_wrote` records when the user last wrote, on a `pre_llm_call` whose message the user wrote (not an async-delegation or plugin wake) and on each new mid-turn steer or redirect. `handoff.gate` counts this chat's tasks that ended `failed`, `blocked`, `partial`, `interrupted` or `unknown` since then (`ledger.ended_since`). When the count reaches `failed_task_limit` (default `2`), the next `delegate_task(action='spawn')` is returned once per turn with each task's goal, status and first blocker, and the main agent is told to tell the user what was tried, what stopped it and what it proposes, and let them decide. `needs_decision`, `stopped`, `lost` and `no_report` tasks are not counted. The time lives in memory, so after a gateway restart nothing is counted until the user writes again. `0` disables the check.
+
 ### 5. Results are checked, delivered, and remembered (`reports.py`, `ledger.py`)
 
 **Verification notes:** When `subagent_stop` fires, `reports.on_subagent_stop` parses the worker's structured report, extracts written file paths from `tool_call_history`, closes the task in the ledger, and queues a note for the main agent's next turn:
 
 - `completed` with `evidence`: lists the evidence items and reminds the main agent to spot-check the real state.
 - `completed` without `evidence`: warns that success was claimed without proof.
+- No report: when the answer holds no JSON report (no object with `status` or `summary`, and no `needs_decision` in prose) and Hermes says `completed`, the task is recorded `no_report`. The note says whether the goal was reached is not known, quotes its final answer (up to 300 characters) (or says it returned no text), lists the files it changed, and tells the main agent to check the real end state and not re-dispatch the same plan blindly. A follow-up subagent is briefed with the record like any unfinished task.
 - Stopped by repeat guard: tells the main agent why the plugin stopped the worker and instructs it to tell the user in one line what got stuck and what it will do instead.
 - Stopped intentionally by the main agent (`delegate_task(action='stop')`): recorded as `stopped` rather than a failure.
 
@@ -178,6 +185,8 @@ When the subagent finishes with `needs_decision`, `reports.on_subagent_stop` que
 - Retention is bounded automatically: up to **20 finished tasks** per chat (`_KEEP_FINISHED_PER_PARENT = 20`), expiring records older than **7 days** (`_KEEP_SECONDS = 7 * 86400`), and chasing unreported results for at most **24 hours** (`_REPORT_HORIZON_S = 86400`).
 - On startup (`ledger.load` / `reports.recover_lost`), any task left in `running` status by a dead gateway PID is atomically claimed, marked `lost` and `unreported`, and queued as a warning note for that chat's next turn listing the interrupted goal and the files it had already touched.
 
+**Status command:** `hermes super-agent status` (registered with `ctx.register_cli_command`, `cli.py`) prints the version, the ledger file, every setting with its effective value (marked when changed from the default), the startup host check (`preflight.check_host`), and the latest tasks of every chat, running ones first: status, age, goal, chat, changed files, whether the user has heard the result, and an open question. `--limit N` (default 10) and `--json` are accepted. It only reads. Hermes does not register plugin CLI commands under `plugins.isolation: host`, so the command is missing there.
+
 ## Configuration
 
 Settings live under `plugins.entries.super-agent.settings` in `~/.hermes/config.yaml`. Resolution order is: environment variable `SUPER_AGENT_<KEY>` (uppercase), then the legacy `PROACTIVE_<KEY>`, then `config.yaml`, then `config.DEFAULTS`.
@@ -194,6 +203,7 @@ plugins:
         terminal_auto_detach_seconds: 30
         handoff_min_context_chars: 120
         worker_repeat_limit: 5
+        failed_task_limit: 2
 ```
 
 | Key | Type | Default | Description | Environment override |
@@ -204,6 +214,7 @@ plugins:
 | `terminal_auto_detach_seconds` | `int` | `30` | Seconds before a foreground terminal command moves to the background (`0` disables) | `SUPER_AGENT_TERMINAL_AUTO_DETACH_SECONDS` |
 | `handoff_min_context_chars` | `int` | `120` | Minimum `delegate_task` `context` length; shorter briefs are returned once per turn | `SUPER_AGENT_HANDOFF_MIN_CONTEXT_CHARS` |
 | `worker_repeat_limit` | `int` | `5` | Identical tool outcomes before a subagent is stopped (warned two attempts earlier) | `SUPER_AGENT_WORKER_REPEAT_LIMIT` |
+| `failed_task_limit` | `int` | `2` | Subagents of one chat ending without finishing since the user last wrote before the next dispatch is returned once (`0` disables) | `SUPER_AGENT_FAILED_TASK_LIMIT` |
 
 ## Compatibility and limits
 
@@ -233,7 +244,7 @@ The plugin counts identical `(tool, args, normalized_first_line)` outcomes acros
 Subagents cannot call `clarify` or be resumed. Instead, when a subagent hits a decision outside its authority, or when Hermes' approval or a hook refuses a command it needs, it stops and reports `status: "needs_decision"` with a `question` and `options` (and is explicitly told on the spot not to work around a refusal). The main agent answers the question itself when the chat or memory settles it, or asks the user in one short message, then dispatches a new subagent briefed with the answer and the earlier task's record.
 
 **How do I verify a subagent actually finished the job?**
-Every accepted task is asked to end with a JSON report holding `status`, `summary`, `evidence`, and `blockers`. When the subagent stops, the main agent's next turn opens with the reported evidence or an explicit warning if evidence is missing, the task is incomplete, or the worker was stopped for looping.
+Every accepted task is asked to end with a JSON report holding `status`, `summary`, `evidence`, and `blockers`. When the subagent stops, the main agent's next turn opens with the reported evidence or an explicit warning if evidence is missing, the task is incomplete, or the worker was stopped for looping. A subagent that ends without the report is recorded `no_report` rather than done.
 
 **What happens when the user sends a message right as a background subagent result arrives?**
 The background result stays marked `unreported` until a turn that showed it finishes with an uninterrupted reply. If the main agent calls a tool after the user's message, that tool result reminds it to answer the user and report the finished task together; if it replies without calling a tool, the plugin wakes it via `ctx.inject_message` (requires `allow_gateway_injection: true`) for a brief follow-up or `[SILENT]`; otherwise the reminder rides on the user's next message.
@@ -246,6 +257,12 @@ It makes zero model calls of its own; it only adds concise notes to the main age
 
 **Will it interfere with cron jobs, the CLI, or other chat platforms?**
 No. Only platforms listed in `governed_platforms` (default `["weixin"]`) and the subagents they spawn are governed. Cron runs, CLI sessions, and unlisted platforms are untouched.
+
+**How do I stop the main agent from re-dispatching a failing plan again and again?**
+Once 2 subagents of a chat have ended without finishing since the user's last message, the next `delegate_task` is returned once with what they ran into, and the main agent is told to tell the user and let them decide. The user's next message resets the count; set `failed_task_limit` to change the number or `0` to turn it off.
+
+**How do I see which subagent tasks ran and how they ended?**
+Run `hermes super-agent status` (add `--json` for JSON, `--limit N` for more tasks). It reads the ledger and prints the latest tasks, running ones first, with status, age, chat, changed files, whether the result reached the user, and any open question, plus the effective settings and the startup host check.
 
 **What if two subagents try to edit the same file?**
 A `delegate_task` call whose `goal` or `context` names a file another running subagent is already modifying is returned once per turn so the main agent can wait, steer the active worker, or stop it.

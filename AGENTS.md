@@ -19,7 +19,9 @@ module each:
 | "Done" is a self-report; a result the user writes over never reaches them; what a subagent did is lost when it ends or Hermes restarts | 4. Results are checked, reported and remembered | `reports.py`, `ledger.py` |
 
 Supporting modules: `context.py` (who is calling: governed main agent, subagent or cron run), `prompt.py` (system
-prompt section), `config.py` (settings), `util.py` (text and tool-result helpers), `__init__.py` (hook wiring).
+prompt section), `preflight.py` (startup host check, told to the main agent once), `cli.py` (the read-only
+`hermes super-agent status` command), `config.py` (settings), `util.py` (text and tool-result helpers), `__init__.py`
+(hook wiring).
 `super-agent/` is the whole installed plugin; everything else in the repository is development only.
 
 A new feature should fit one of the four promises. If it does not, question it before building it.
@@ -176,6 +178,13 @@ the `hermes-agent` checkout.
 - `ctx.register_system_prompt_section(id, fn, *, position, max_chars)`: `fn` receives read-only session info, and the
   rendered text is frozen per session.
 - `ctx.get_config(key)` reads `plugins.entries.super-agent.settings.<key>`.
+- `ctx.register_cli_command(name, help, setup_fn, handler_fn, description)` (`hermes_cli/plugins_context.py`, checked at
+  `v0.23.1+canary.20261113`) adds
+  `hermes <name>`: `setup_fn` gets the argparse subparser and `handler_fn(args)` becomes its `func`
+  (`hermes_cli/main.py::_attach_plugin_cli_command`). Hermes loads plugins (so `register` runs, ledger recovery
+  included) in that CLI process only when the first argument is not a built-in command. Under `plugins.isolation:
+  host` the call is skipped with a warning (`hermes_cli/plugin_isolation.py`, `HOST_SKIPPED_CTX_METHODS`). Importing
+  `hermes_cli.main` runs Hermes' startup bootstrap, so tests repeat the wiring instead of importing it.
 - `ctx.inject_message(content, role="user", *, session_key=None, origin=None) -> bool` (`hermes_cli/plugins.py`,
   `hermes_cli/plugins_injection.py`) starts an internal turn in an existing gateway session
   (`gateway/run_plugin_injection.py`). It needs `plugins.entries.<plugin id>.allow_gateway_injection: true` and, for

@@ -289,3 +289,21 @@ def test_startup_preflight_warns_once_and_stays_silent_when_healthy(tmp_path, mo
     r3 = _start_turn("t3")
     text3 = "\n".join(str(r.get("context", "")) for r in r3 if isinstance(r, dict))
     assert "Startup host self-check" not in text3
+
+
+def test_status_command_through_hermes_cli_parser(hermes, capsys):
+    """The command Hermes' loader registered, wired the way hermes_cli/main.py::_attach_plugin_cli_command
+    does it (importing hermes_cli.main runs Hermes' startup bootstrap, so the few lines are repeated here)."""
+    import argparse
+
+    info = hermes._cli_commands["super-agent"]
+    parser = argparse.ArgumentParser(prog="hermes")
+    sub = parser.add_subparsers(dest="command").add_parser(info["name"], help=info["help"],
+                                                            description=info.get("description", ""))
+    info["setup_fn"](sub)
+    sub.set_defaults(func=info["handler_fn"])
+    args = parser.parse_args(["super-agent", "status", "--json"])
+    assert args.func(args) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["ledger"].endswith(os.path.join("plugin-data", "super-agent", "ledger.db"))
+    assert out["settings"]["handoff_min_context_chars"]["value"] == 40, "settings come from Hermes' config"

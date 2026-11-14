@@ -47,6 +47,9 @@ REPORT_STATUSES = ("completed", "partial", "blocked", DECISION, "failed")
 _DONE_STATUSES = ("completed", "complete", "success", "done")
 _FAILED_STATUSES = ("error", "failure", "aborted", "cancelled", "canceled")
 _DECISION_STATUSES = ("needs_input", "needs_user", "needs_approval", "awaiting_decision", "awaiting_user")
+# Ended as Hermes' "completed" without the JSON report the briefing asks for: whether the goal was
+# reached is not known, and a subagent that changed files may have left them half done.
+NO_REPORT = "no_report"
 
 
 def record_dispatch(result: Any) -> None:
@@ -136,7 +139,7 @@ def _written_paths(history: Any) -> List[str]:
 
 
 def _finished_note(w: dict, final: str, evidence: List[str], duration_ms: Any, question: str = "",
-                   options: Sequence[str] = ()) -> str:
+                   options: Sequence[str] = (), summary: str = "") -> str:
     minutes = (duration_ms or 0) / 60000.0
     lines = [f"[super-agent] Subagent finished: \"{util.short(w['goal'], 80)}\" "
              f"(status: {final}, {len(w['rounds'])} tool rounds, {minutes:.1f} min)."]
@@ -156,6 +159,14 @@ def _finished_note(w: dict, final: str, evidence: List[str], duration_ms: Any, q
                      "answer it yourself. If it is the user's call (a preference, a risk, money, a refused command), "
                      "ask the user in one short message with the options. Then dispatch a new subagent with the "
                      "answer; it is briefed with this task's record automatically.")
+    elif final == NO_REPORT:
+        changed = (ledger.get(w["id"]) or {}).get("files") or []
+        said = util.short(summary, 300)
+        lines.append("- It ended without the report it was asked for, so whether it reached the goal is not known. "
+                     + (f"Its last words: \"{said}\"." if said else "It returned no text.")
+                     + (f" It changed: {', '.join(changed[:5])}." if changed else "")
+                     + " Check the real end state before telling the user anything, and do not re-dispatch the same "
+                     "plan blindly: a follow-up subagent is briefed with this task's record automatically.")
     elif final == "completed":
         if evidence:
             lines.append("- Evidence it reported: " + "; ".join(util.short(e, 120) for e in evidence[:5])
@@ -173,6 +184,8 @@ def on_subagent_stop(**kw: Any) -> None:
     w = workers.finish(child_session)
     report = _report(kw.get("child_summary"))
     outcome = _outcome(report, kw.get("child_status"))
+    if not report and outcome == "completed":
+        outcome = NO_REPORT
     summary = str(report.get("summary") or kw.get("child_summary") or "")
     evidence, blockers = _strings(report.get("evidence")), _strings(report.get("blockers"))
     files = _written_paths(kw.get("tool_call_history"))
@@ -198,7 +211,8 @@ def on_subagent_stop(**kw: Any) -> None:
     options = _options(report.get("options")) if question else []
     ledger.finish(w["id"], final, summary, evidence, blockers, files,
                   unreported=background and final != ledger.STOPPED, question=question, options=options)
-    ledger.add_note(w["parent_session"], _finished_note(w, final, evidence, kw.get("duration_ms"), question, options))
+    ledger.add_note(w["parent_session"],
+                    _finished_note(w, final, evidence, kw.get("duration_ms"), question, options, summary))
 
 
 def _lost_note(task: dict) -> str:

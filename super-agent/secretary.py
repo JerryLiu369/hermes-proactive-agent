@@ -119,8 +119,10 @@ def turn_facts(session_id: str, turn_id: str = "") -> Optional[dict]:
 def on_turn_start(session_id: str, turn_id: str, platform: str, messages: Any, user_message: Any) -> None:
     context.remember_platform(session_id, platform)
     words = _user_messages(messages)
-    if by_user(user_message) and (not words or words[-1] != user_message):
-        words.append(user_message)
+    if by_user(user_message):
+        handoff.user_wrote(session_id)
+        if not words or words[-1] != user_message:
+            words.append(user_message)
     with _lock:
         _turns[session_id] = _new_turn(turn_id, len(_interjections(messages)),
                                        context.session_env("HERMES_SESSION_KEY"))
@@ -138,6 +140,7 @@ def on_api_request(session_id: str, turn_id: str, messages: Any) -> None:
         new = found[st["seen"]:]
         if not new:
             return
+        handoff.user_wrote(session_id)
         logger.info("super-agent: user wrote mid-turn in %s; turn budget reset", session_id)
         _user_words[session_id] = (_user_words.get(session_id, []) + new)[-_KEEP_USER_MESSAGES:]
         now = time.monotonic()

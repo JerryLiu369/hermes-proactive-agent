@@ -29,6 +29,7 @@ class FakeContext:
         self.hooks = {}
         self.middleware = {}
         self.prompt_sections = {}
+        self.cli_commands = {}
         if post_message is not None:
             self.post_message = post_message
         if inject_message is not None:
@@ -42,6 +43,10 @@ class FakeContext:
 
     def register_middleware(self, kind, fn):
         self.middleware[kind] = fn
+
+    def register_cli_command(self, name, help, setup_fn, handler_fn=None, description=""):
+        self.cli_commands[name] = {"help": help, "setup_fn": setup_fn, "handler_fn": handler_fn,
+                                   "description": description}
 
     def register_system_prompt_section(self, name, renderer, position="after_memory", max_chars=2000):
         self.prompt_sections[name] = {"renderer": renderer, "position": position, "max_chars": max_chars}

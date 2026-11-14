@@ -206,7 +206,7 @@ def test_status_comes_from_the_report_not_from_quoted_json(plugin, make_ctx):
     start_turn(plugin)
     spawn_worker(plugin)
     _stop(plugin, 'Checked the service, it answered {"status": "running", "uptime": 5}. All good.')
-    assert plugin.ledger.get("sa-0-abc")["status"] == "completed"
+    assert plugin.ledger.get("sa-0-abc")["status"] == "no_report", "prose quoting JSON is not a report"
     assert plugin.ledger.running("s1") == []
 
     spawn_worker(plugin, sub_id="sa-1", child_session="child-2")

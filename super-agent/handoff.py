@@ -1,13 +1,15 @@
 """delegate_task gate. A brief that is too short goes back to the main agent once per turn, and so
-does one that names a file another running subagent is changing. Every accepted brief gets the
-user's own words, memory, the chat's task ledger, working rules and how to report. The rules and
-the report's needs_decision status are how a subagent, which cannot ask the user, brings a
-question back to the main agent instead of guessing or working around a refusal."""
+does one that names a file another running subagent is changing, and so does any dispatch once
+several subagents of the chat have ended without finishing since the user last wrote. Every
+accepted brief gets the user's own words, memory, the chat's task ledger, working rules and how to
+report. The rules and the report's needs_decision status are how a subagent, which cannot ask the
+user, brings a question back to the main agent instead of guessing or working around a refusal."""
 
 from __future__ import annotations
 
 import re
 import threading
+import time
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -41,21 +43,43 @@ _REPORT = (
     "answer it) and the choices, each with what it would mean"
 )
 
+# How a task ends when it did not finish and was not ended on purpose. A question (needs_decision), a
+# task the main agent stopped, one lost to a restart and one without a report are not counted.
+_FAILED_STATUSES = ("failed", "blocked", "partial", "interrupted", "unknown")
+
 _lock = threading.Lock()
 _returned_turn: Dict[str, str] = {}
 _clash_turn: Dict[str, str] = {}
+_failed_turn: Dict[str, str] = {}
+# session -> when the user last wrote (wall clock, as the ledger records). Outlives the turn.
+_user_at: Dict[str, float] = {}
+
+
+def user_wrote(session_id: str) -> None:
+    if session_id:
+        with _lock:
+            _user_at[session_id] = time.time()
 
 
 def forget(session_id: str) -> None:
     with _lock:
         _returned_turn.pop(session_id, None)
         _clash_turn.pop(session_id, None)
+        _failed_turn.pop(session_id, None)
+
+
+def forget_chat(session_id: str) -> None:
+    forget(session_id)
+    with _lock:
+        _user_at.pop(session_id, None)
 
 
 def reset_all() -> None:
     with _lock:
         _returned_turn.clear()
         _clash_turn.clear()
+        _failed_turn.clear()
+        _user_at.clear()
 
 
 def _memory_text() -> str:
@@ -179,6 +203,28 @@ def _clash_message(other: dict, files: List[str]) -> str:
     )
 
 
+def _failures(session_id: str) -> List[dict]:
+    """Tasks of this chat that ended without finishing since the user last wrote. Until the user writes
+    after a restart, none are counted."""
+    with _lock:
+        since = _user_at.get(session_id)
+    return ledger.ended_since(session_id, since, _FAILED_STATUSES) if since is not None else []
+
+
+def _failed_message(failed: List[dict]) -> str:
+    rows = []
+    for t in failed[-5:]:
+        why = (t.get("blockers") or [""])[0] or t.get("summary") or ""
+        rows.append(f"- \"{util.short(t.get('goal'), 80)}\" ended {t.get('status')}"
+                    + (f": {util.short(why, 150)}" if why else "."))
+    return (
+        f"[super-agent] Dispatch returned once: since the user last wrote, {len(failed)} subagents in this chat "
+        "ended without finishing:\n" + "\n".join(rows) + "\nAnother attempt the user has not heard about is likely to "
+        "end the same way. Tell the user what was tried, what stopped it and what you propose, and let them decide; "
+        "their answer resets this count. To dispatch anyway with a different approach, call delegate_task again."
+    )
+
+
 def _first_this_turn(seen: Dict[str, str], session_id: str, turn_id: str) -> bool:
     with _lock:
         first = seen.get(session_id) != turn_id
@@ -206,6 +252,11 @@ def gate(session_id: str, turn_id: str, args: Optional[dict], user_words: List[s
         tasks = [dict(t) for t in args["tasks"] if isinstance(t, dict)]
     if not tasks or any(BRIEFING_MARKER in str(t.get("context") or "") or "=== Handoff briefing (attached by proactive-agent) ===" in str(t.get("context") or "") for t in tasks):
         return None
+
+    limit = int(config.get("failed_task_limit"))
+    failed = _failures(session_id) if limit > 0 else []
+    if len(failed) >= limit > 0 and _first_this_turn(_failed_turn, session_id, turn_id):
+        return util.block(_failed_message(failed))
 
     min_chars = int(config.get("handoff_min_context_chars"))
     thin = [t for t in tasks if len(str(t.get("context") or "").strip()) < min_chars]

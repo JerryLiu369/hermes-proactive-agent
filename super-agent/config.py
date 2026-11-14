@@ -22,6 +22,9 @@ DEFAULTS: dict[str, Any] = {
     "handoff_min_context_chars": 120,
     # Stop a worker after the same step gives the same result this many times.
     "worker_repeat_limit": 5,
+    # Once this many subagents of a chat have ended without finishing since the user last wrote, the
+    # next dispatch is returned once so the main agent asks the user first (0 disables).
+    "failed_task_limit": 2,
 }
 
 _ctx: Optional[Any] = None

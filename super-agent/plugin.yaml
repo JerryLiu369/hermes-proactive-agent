@@ -1,6 +1,6 @@
 name: super-agent
 version: "0.2.0"
-description: "Runs the Hermes chat agent like a secretary with a team of workers: keeps chat turns responsive (60s reminder, 120s edit/execute pause, 30s terminal auto-detach), briefs every subagent before it starts, stops subagents that repeat identical results, brings open decisions back to the main agent, tracks background results until they reach the user, and records every delegated task in a SQLite ledger across gateway restarts."
+description: "Runs the Hermes chat agent like a secretary with a team of workers: keeps chat turns responsive (60s reminder, 120s edit/execute pause, 30s terminal auto-detach), briefs every subagent before it starts, stops subagents that repeat identical results, brings open decisions back to the main agent, has it ask the user after repeated failed subagents, never takes a subagent that ended without its report as done, tracks background results until they reach the user, and records every delegated task in a SQLite ledger across gateway restarts (`hermes super-agent status` shows it)."
 author: Jerry Liu
 license: MIT
 homepage: https://github.com/JerryLiu369/hermes-super-agent
@@ -46,3 +46,7 @@ config_schema:
     type: int
     default: 5
     description: "Stop a subagent after the same step gives the same result this many times (reminder two repeats earlier)."
+  failed_task_limit:
+    type: int
+    default: 2
+    description: "Once this many subagents of a chat have ended without finishing since the user last wrote, the next dispatch is returned once so the main agent asks the user first (0 disables)."

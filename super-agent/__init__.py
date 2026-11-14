@@ -13,11 +13,13 @@ keeps four promises, one module each:
 3. Subagents do not spin or guess (workers, handoff, reports): a subagent that gets the same
    result from the same step again and again is stopped; one that needs a decision it should not make, or
    is refused by approval or a rule, ends with a question that the main agent answers or takes
-   to the user.
+   to the user; and after several subagents ended without finishing since the user last wrote, the
+   next dispatch goes back once so the main agent asks the user first.
 4. Results are checked, reported and remembered (reports, ledger): the main agent is told what
-   to verify when a subagent returns, a result stays unreported until the user has heard it (a
-   user message that cuts into the report gets it repeated), and a persistent ledger records
-   every task, survives restarts and briefs the next one.
+   to verify when a subagent returns (one that ended without a report is not taken as done), a
+   result stays unreported until the user has heard it (a user message that cuts into the report
+   gets it repeated), and a persistent ledger records every task, survives restarts and briefs the
+   next one. ``hermes super-agent status`` (cli) shows the settings and the ledger.
 
 Only platforms listed in ``governed_platforms`` (default: weixin) and the subagents they spawn
 are governed; cron runs are never touched.
@@ -28,7 +30,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Optional
 
-from . import config, context, handoff, ledger, preflight, prompt, reports, secretary, workers
+from . import cli, config, context, handoff, ledger, preflight, prompt, reports, secretary, workers
 
 __version__ = "0.2.0"
 
@@ -191,7 +193,7 @@ def _on_session_clean(session_id: str = "", old_session_id: str = "", **kw: Any)
     if not ended:
         return
     secretary.forget(ended)
-    handoff.forget(ended)
+    handoff.forget_chat(ended)
     reports.forget(ended)
     workers.forget_parent(ended)
     context.forget_session(ended)
@@ -247,4 +249,9 @@ def register(ctx: Any) -> None:
                                            position="after_memory", max_chars=2000)
     except Exception as e:
         logger.debug("super-agent: system prompt section skipped: %s", e)
+    if callable(getattr(ctx, "register_cli_command", None)):
+        try:
+            cli.register(ctx, __version__)
+        except Exception as e:
+            logger.debug("super-agent: CLI command skipped: %s", e)
     logger.info("super-agent %s loaded", __version__)

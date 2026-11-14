@@ -14,7 +14,7 @@ def test_result_without_evidence_asks_for_verification(plugin, make_ctx):
     make_ctx()
     start_turn(plugin)
     spawn_worker(plugin)
-    _stop(plugin, "All fixed, 143 nodes OK")
+    _stop(plugin, json.dumps({"status": "completed", "summary": "All fixed, 143 nodes OK"}))
     injected = start_turn(plugin, turn="t2")
     assert "without evidence" in injected["context"]
     end_turn(plugin, turn="t2")
@@ -29,6 +29,36 @@ def test_result_with_evidence_lists_it(plugin, make_ctx):
                               "evidence": ["curl -sI https://app.example.com/ping -> HTTP/2 200"]}))
     injected = start_turn(plugin, turn="t2")
     assert "HTTP/2 200" in injected["context"] and "Spot-check" in injected["context"]
+
+
+def test_result_without_a_report_is_not_taken_as_done(plugin, make_ctx):
+    make_ctx()
+    start_turn(plugin)
+    spawn_worker(plugin)
+    history = [{"tool_name": "write_file", "tool_input": {"targets": {"path": "/srv/app/wrangler.toml"}},
+                "status": "ok"}]
+    plugin._subagent_stop(parent_session_id="s1", child_session_id="child-1", child_status="completed",
+                          child_summary="I updated the route and redeployed.", tool_call_history=history,
+                          duration_ms=60000)
+    assert plugin.ledger.get("sa-0-abc")["status"] == "no_report"
+    note = start_turn(plugin, turn="t2")["context"]
+    assert "ended without the report it was asked for" in note
+    assert 'Its last words: "I updated the route and redeployed."' in note
+    assert "It changed: /srv/app/wrangler.toml" in note and "do not re-dispatch the same plan blindly" in note
+    assert "without evidence" not in note
+
+    res = main_tool(plugin, "delegate_task", {"tasks": [{"goal": "Finish the route fix", "context": GOOD_CONTEXT}]},
+                    turn="t2")
+    assert "I updated the route" in res["args"]["tasks"][0]["context"], "the follow-up is briefed with it"
+
+
+def test_empty_result_is_not_taken_as_done(plugin, make_ctx):
+    make_ctx()
+    start_turn(plugin)
+    spawn_worker(plugin)
+    _stop(plugin, "")
+    note = start_turn(plugin, turn="t2")["context"]
+    assert "It returned no text." in note
 
 
 def test_stopped_or_unfinished_results(plugin, make_ctx):
@@ -420,4 +450,4 @@ def test_a_report_in_prose_or_a_fenced_block(plugin, make_ctx):
     assert task["status"] == "needs_decision" and task["summary"].startswith("Status: needs_decision")
     spawn_worker(plugin, sub_id="sa-2", child_session="child-3")
     _asks(plugin, child="child-3", report='Done. The config now reads {"status": "on"}.')
-    assert plugin.ledger.get("sa-2")["status"] == "completed", "prose quoting JSON is not a report"
+    assert plugin.ledger.get("sa-2")["status"] == "no_report", "prose quoting JSON is not a report"

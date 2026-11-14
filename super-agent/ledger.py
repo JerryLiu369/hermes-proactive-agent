@@ -393,3 +393,32 @@ def minutes_since(ts: Any) -> int:
         return max(0, int((time.time() - float(ts)) / 60))
     except (TypeError, ValueError):
         return 0
+
+
+def ended_since(parent: str, since: float, statuses: Iterable[str]) -> List[dict]:
+    """Tasks of *parent* that ended with one of *statuses* at or after *since*, oldest first."""
+    wanted = tuple(statuses)
+    if not parent or not wanted:
+        return []
+    marks = ",".join("?" * len(wanted))
+    with _lock:
+        return _select(f"parent = ? AND ended >= ? AND status IN ({marks})", (parent, float(since), *wanted),
+                       order="ended ASC")
+
+
+def latest(limit: int = 10) -> List[dict]:
+    """The most recent tasks of every chat: running ones first, then by when they ended."""
+    with _lock:
+        return _select("1 = 1", order=f"status = '{RUNNING}' DESC, COALESCE(ended, started) DESC", limit=limit)
+
+
+def location() -> str:
+    """The ledger's file, or "" when it is kept in memory."""
+    with _lock:
+        try:
+            for row in _conn().execute("PRAGMA database_list").fetchall():
+                if row[1] == "main":
+                    return str(row[2] or "")
+        except Exception:
+            pass
+    return ""

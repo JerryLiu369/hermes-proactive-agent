@@ -1,5 +1,6 @@
 """delegate_task check and the attached briefing."""
 
+import json
 import sys
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -79,3 +80,77 @@ def test_briefing_tells_the_worker_to_bring_a_decision_back(plugin, make_ctx):
     assert "A refusal that says the user denied it may be automatic" in context
     assert '"needs_decision"' in context and '"question" and "options"' in context
     assert "output_schema" not in res["args"]
+
+
+# ---------------------------------------------------------------- failed tasks since the user last wrote
+
+def _fail(plugin, n, status="failed", summary="", turn="t1"):
+    sub, child = f"sa-{n}-f", f"child-f{n}"
+    res = main_tool(plugin, "delegate_task", {"tasks": [{"goal": f"Fix the 522, attempt {n}", "context": GOOD_CONTEXT}]},
+                    turn=turn)
+    assert res["action"] == "modify", res
+    plugin._subagent_start(parent_session_id="s1", child_session_id=child, child_subagent_id=sub,
+                           child_goal=f"Fix the 522, attempt {n}")
+    report = summary or json.dumps({"status": "blocked", "summary": "tried", "blockers": ["no Cloudflare token"]})
+    plugin._subagent_stop(parent_session_id="s1", child_session_id=child, child_status=status,
+                          child_summary=report, tool_call_history=[], duration_ms=1000)
+
+
+def _dispatch(plugin, turn):
+    return main_tool(plugin, "delegate_task", {"tasks": [{"goal": "Fix the 522 again", "context": GOOD_CONTEXT}]},
+                     turn=turn)
+
+
+def test_dispatch_after_repeated_failures_goes_back_once(plugin, make_ctx):
+    make_ctx()
+    start_turn(plugin)
+    _fail(plugin, 0)
+    _fail(plugin, 1)
+    start_turn(plugin, turn="t2", user="[ASYNC DELEGATION BATCH COMPLETE — d1] a unit finished")
+    first = _dispatch(plugin, "t2")
+    assert first["action"] == "block", "an async result is not the user writing"
+    assert "2 subagents in this chat ended without finishing" in first["message"]
+    assert "no Cloudflare token" in first["message"] and "let them decide" in first["message"]
+    assert _dispatch(plugin, "t2")["action"] == "modify", "returned once per turn"
+
+    start_turn(plugin, turn="t3", user="use the API key in the vault")
+    assert _dispatch(plugin, "t3")["action"] == "modify", "the user's answer resets the count"
+
+
+def test_a_mid_turn_message_resets_the_failure_count(plugin, make_ctx):
+    make_ctx()
+    start_turn(plugin)
+    _fail(plugin, 0)
+    _fail(plugin, 1)
+    plugin._pre_api_request(session_id="s1", turn_id="t1",
+                            conversation_history=[{"role": "user", "content": "[OUT-OF-BAND USER MESSAGE] try staging"}])
+    assert _dispatch(plugin, "t1")["action"] == "modify"
+
+
+def test_questions_and_reportless_ends_are_not_failures(plugin, make_ctx):
+    make_ctx()
+    start_turn(plugin)
+    _fail(plugin, 0, summary=json.dumps({"status": "needs_decision", "question": "Route or proxy?"}))
+    _fail(plugin, 1, status="completed", summary="did some of it")
+    _fail(plugin, 2)
+    assert _dispatch(plugin, "t1")["action"] == "modify"
+
+
+def test_failure_limit_zero_disables_it(plugin, make_ctx, monkeypatch):
+    monkeypatch.setenv("SUPER_AGENT_FAILED_TASK_LIMIT", "0")
+    make_ctx()
+    start_turn(plugin)
+    for n in range(3):
+        _fail(plugin, n)
+    assert _dispatch(plugin, "t1")["action"] == "modify"
+
+
+def test_failures_count_only_once_the_user_wrote(plugin, make_ctx):
+    """After a restart nothing says when the user last wrote, so earlier failures are not counted."""
+    make_ctx()
+    start_turn(plugin)
+    _fail(plugin, 0)
+    _fail(plugin, 1)
+    plugin.handoff.forget_chat("s1")
+    start_turn(plugin, turn="t2", user="[ASYNC DELEGATION BATCH COMPLETE — d1] a unit finished")
+    assert _dispatch(plugin, "t2")["action"] == "modify"
