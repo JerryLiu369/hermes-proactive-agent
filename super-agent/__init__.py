@@ -33,7 +33,7 @@ from typing import Any, Optional
 
 from . import cli, config, context, handoff, ledger, preflight, prompt, reports, secretary, workers
 
-__version__ = "0.2.1"
+__version__ = "0.2.2"
 
 logger = logging.getLogger("hermes.plugins.super_agent")
 

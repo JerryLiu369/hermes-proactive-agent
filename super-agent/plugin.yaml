@@ -1,5 +1,5 @@
 name: super-agent
-version: "0.2.1"
+version: "0.2.2"
 description: "Runs the Hermes chat agent like a secretary with a team of workers: keeps chat turns responsive (60s reminder, 120s edit/execute pause, 30s terminal auto-detach), briefs every subagent before it starts, stops subagents that repeat identical results, brings open decisions back to the main agent, has it ask the user after repeated failed subagents, never takes a subagent that ended without its report as done, tracks background results until they reach the user, and records every delegated task in a SQLite ledger across gateway restarts (`hermes super-agent status` shows it)."
 author: Jerry Liu
 license: MIT

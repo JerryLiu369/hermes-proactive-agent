@@ -6,7 +6,7 @@ This file is the complete, self-contained technical reference for the project. I
 
 - Repository: https://github.com/JerryLiu369/hermes-super-agent
 - Former name: `hermes-proactive-agent` (plugin id `proactive-agent`, versions 0.1.x)
-- Version: 0.2.1 · License: MIT · Language: Python 3.10+ · Runtime dependencies: none
+- Version: 0.2.2 · License: MIT · Language: Python 3.10+ · Runtime dependencies: none
 - Host requirement: Hermes Agent >= 0.22 (tested on v0.22.7)
 - Verification commands: `uv run --group dev pytest` and `uv run --group dev ruff check`
 
