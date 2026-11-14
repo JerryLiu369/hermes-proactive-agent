@@ -111,6 +111,12 @@ the `hermes-agent` checkout.
   `send_message` and `todo` are not registered for the main agent. `tests/test_hermes_e2e.py` checks
   `secretary.RED_ALLOWED_TOOLS` against the live registry.
 - The `delegate_task` dispatch result has `subagent_ids` and `live_transcripts` (`tools/delegate_tool_dispatch.py`).
+  `action='steer'` takes `subagent_id` and `message` (`tools/delegate_tool.py`, `_LIVE_CONTROL_PARAMS`). Hermes does
+  not tell the main agent at turn start which background subagents are running; `action='list'` shows them on request.
+- Some tools (by default `process_manage`, `session_search`, `todo_list`, ...; `tools.tool_search.defer`) are offered
+  behind the `tool_search` / `tool_call` bridge. Hermes peels the bridge before plugin hooks run
+  (`agent/tool_executor.py`), so `pre_tool_call` and the other tool hooks see the underlying tool name. Checked at
+  `v0.23.1+canary.20261113`.
 - Subagents run with `skip_memory=True`, so `USER.md` and `MEMORY.md` reach them only through the handoff briefing.
   They cannot use `clarify`, `memory`, `send_message` or `cronjob_manage` (`DELEGATE_BLOCKED_TOOLS`,
   `tools/delegate_tool_toolsets.py`; the tools are removed, not refused). Hermes cannot resume a finished subagent; a

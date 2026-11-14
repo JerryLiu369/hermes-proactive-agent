@@ -203,6 +203,20 @@ def _clash_message(other: dict, files: List[str]) -> str:
     )
 
 
+def running_note(session_id: str) -> str:
+    """For a turn the user started while this chat's subagents run: which ones, so a message that changes
+    one of their tasks reaches it with a steer instead of starting a second subagent. Hermes does not list
+    them at turn start, and the main agent loses track after many turns or a compaction."""
+    running = ledger.running(session_id)
+    if not running:
+        return ""
+    rows = "; ".join(f"\"{util.short(t.get('goal'), 60)}\" ({t['id']})" for t in running[:5])
+    more = f" and {len(running) - 5} more" if len(running) > 5 else ""
+    return (f"[super-agent] Subagents running in this chat: {rows}{more}. If this message changes one of their "
+            "tasks, send it with delegate_task(action='steer', subagent_id=..., message=...) instead of dispatching "
+            "a new one.")
+
+
 def _failures(session_id: str) -> List[dict]:
     """Tasks of this chat that ended without finishing since the user last wrote. Until the user writes
     after a restart, none are counted."""

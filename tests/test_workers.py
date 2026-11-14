@@ -69,11 +69,17 @@ def test_worker_commands_are_left_to_hermes(plugin, make_ctx):
         assert w_tool(plugin, "terminal", {"command": command}) is None
 
 
-def test_running_workers_are_not_injected_each_turn(plugin, make_ctx):
+def test_running_workers_are_named_on_user_turns_only(plugin, make_ctx):
     make_ctx()
     start_turn(plugin)
     spawn_worker(plugin)
-    assert start_turn(plugin, turn="t2") is None
+    note = start_turn(plugin, turn="t2", user="use the staging config instead")["context"]
+    assert note.startswith("[super-agent] Subagents running in this chat: ")
+    assert '"Fix the 522 on app.example.com" (sa-0-abc)' in note
+    assert "delegate_task(action='steer', subagent_id=..., message=...)" in note
+    assert "wrangler" not in note and len(note) < 300, "names and ids only; the main agent can look up the rest"
+    assert start_turn(plugin, turn="t3", user="[ASYNC DELEGATION BATCH COMPLETE — d1] done") is None, \
+        "not on an async result or a wake"
     assert plugin.ledger.running("s1")
     assert main_tool(plugin, "delegate_task", {"action": "stop", "subagent_id": "sa-0-abc"}, turn="t2") is None
     assert not plugin.ledger.running("s1"), "stopped workers are no longer listed as running"

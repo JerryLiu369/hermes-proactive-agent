@@ -9,7 +9,8 @@ keeps four promises, one module each:
    background.
 2. Subagents start informed (handoff): a thin or clashing delegate_task brief is returned once;
    an accepted one carries the user's words, memory, running and unfinished tasks, working rules
-   and how to report.
+   and how to report; and a user message that arrives while subagents run comes with their names,
+   so a change to one of their tasks reaches it with a steer.
 3. Subagents do not spin or guess (workers, handoff, reports): a subagent that gets the same
    result from the same step again and again is stopped; one that needs a decision it should not make, or
    is refused by approval or a rule, ends with a question that the main agent answers or takes
@@ -71,8 +72,12 @@ def _pre_llm_call(**kw: Any) -> Optional[dict]:
     secretary.on_turn_start(session_id, turn_id, context.platform_for(**kw),
                             kw.get("conversation_history"), kw.get("user_message"))
     turn = secretary.turn_facts(session_id, turn_id)
+    by_user = secretary.by_user(kw.get("user_message"))
     notes = reports.pending_notes(session_id, turn["key"] if turn else turn_id, kw.get("user_message"),
-                                  by_user=secretary.by_user(kw.get("user_message")))
+                                  by_user=by_user)
+    running = handoff.running_note(session_id) if by_user else ""
+    if running:
+        notes = f"{notes}\n\n{running}" if notes else running
     startup_notice = preflight.pop_notice()
     if startup_notice:
         notes = f"{notes}\n\n{startup_notice}" if notes else startup_notice
