@@ -2,6 +2,7 @@
 
 import importlib.util
 import os
+import sqlite3
 import sys
 
 import pytest
@@ -54,7 +55,11 @@ def plugin(tmp_path, monkeypatch):
         monkeypatch.delenv(var, raising=False)
     module = _load()
     module._reset_all()
-    module.ledger.load(tmp_path / "ledger.db")
+    # register() reopens the ledger at its default path; without Hermes importable (as in CI) that is :memory:,
+    # which preflight then reports. Point the default at the same test file.
+    db_path = tmp_path / "ledger.db"
+    monkeypatch.setattr(module.ledger, "_open_default", lambda: sqlite3.connect(str(db_path), check_same_thread=False))
+    module.ledger.load(db_path)
     yield module
     module._reset_all()
     module.config.set_ctx(None)

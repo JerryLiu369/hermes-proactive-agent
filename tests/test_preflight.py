@@ -2,11 +2,25 @@
 
 import builtins
 import concurrent.futures
+import importlib.util
 import sqlite3
 
+import pytest
 import yaml
 
 from helpers import start_turn
+
+
+def _hermes_importable() -> bool:
+    try:
+        return importlib.util.find_spec("hermes_cli.config_effective") is not None
+    except ImportError:
+        return False
+
+
+# The host config checks read the config through Hermes' own resolvers and skip themselves when Hermes is not
+# importable (as in CI), so tests that expect one of their findings need a Hermes checkout on the path.
+requires_hermes = pytest.mark.skipif(not _hermes_importable(), reason="Hermes is not importable")
 
 
 def _write_hermes_config(tmp_path, monkeypatch, data):
@@ -66,6 +80,7 @@ def test_ledger_open_error_reported_once(plugin, make_ctx, tmp_path, monkeypatch
     assert start_turn(plugin, turn="t2") is None
 
 
+@requires_hermes
 def test_inline_delegation_detected_via_hermes_display_and_mode(plugin, make_ctx, tmp_path, monkeypatch):
     _write_hermes_config(tmp_path, monkeypatch, {
         "display": {"platforms": {"weixin": {"interim_assistant_messages": False}}},
@@ -80,6 +95,7 @@ def test_inline_delegation_detected_via_hermes_display_and_mode(plugin, make_ctx
     assert start_turn(plugin, turn="t2") is None
 
 
+@requires_hermes
 def test_background_gateway_mode_overrides_disabled_interim(plugin, make_ctx, tmp_path, monkeypatch):
     _write_hermes_config(tmp_path, monkeypatch, {
         "display": {"interim_assistant_messages": False},
@@ -89,6 +105,7 @@ def test_background_gateway_mode_overrides_disabled_interim(plugin, make_ctx, tm
     assert start_turn(plugin, turn="t1") is None
 
 
+@requires_hermes
 def test_mattermost_without_override_warns_inline(plugin, make_ctx, tmp_path, monkeypatch):
     _write_hermes_config(tmp_path, monkeypatch, {
         "delegation": {"max_iterations": 90},
@@ -99,6 +116,7 @@ def test_mattermost_without_override_warns_inline(plugin, make_ctx, tmp_path, mo
     assert first and "mattermost" in first["context"] and "inline" in first["context"]
 
 
+@requires_hermes
 def test_high_or_unset_max_iterations_warns_once(plugin, make_ctx, tmp_path, monkeypatch):
     _write_hermes_config(tmp_path, monkeypatch, {
         "display": {"interim_assistant_messages": True},
@@ -111,6 +129,7 @@ def test_high_or_unset_max_iterations_warns_once(plugin, make_ctx, tmp_path, mon
     assert start_turn(plugin, turn="t2") is None
 
 
+@requires_hermes
 def test_ungoverned_or_child_does_not_consume_notice(plugin, make_ctx, tmp_path, monkeypatch):
     _write_hermes_config(tmp_path, monkeypatch, {
         "display": {"interim_assistant_messages": True},
@@ -127,6 +146,7 @@ def test_ungoverned_or_child_does_not_consume_notice(plugin, make_ctx, tmp_path,
     assert start_turn(plugin, session="wx-1", platform="weixin", turn="t2") is None
 
 
+@requires_hermes
 def test_pop_notice_is_thread_safe_and_delivered_once(plugin, make_ctx, tmp_path, monkeypatch):
     _write_hermes_config(tmp_path, monkeypatch, {"delegation": {"max_iterations": 250}})
     make_ctx()
@@ -139,6 +159,7 @@ def test_pop_notice_is_thread_safe_and_delivered_once(plugin, make_ctx, tmp_path
     assert "delegation.max_iterations" in non_empty[0]
 
 
+@requires_hermes
 def test_preflight_does_not_wake_or_pollute_reports(plugin, make_ctx, tmp_path, monkeypatch):
     woken = []
     _write_hermes_config(tmp_path, monkeypatch, {"delegation": {"max_iterations": 250}})
