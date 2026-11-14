@@ -2,6 +2,7 @@
 
 import json
 import sqlite3
+from pathlib import Path
 
 from helpers import GOOD_CONTEXT, end_turn, main_tool, spawn_worker, start_turn, w_post
 
@@ -331,3 +332,53 @@ def test_a_question_for_the_user_survives_a_reload(plugin, tmp_path):
     assert [(t["question"], t["options"]) for t in waiting] == [("Route or proxy?", ["route", "proxy"])]
     plugin.ledger.stop_awaiting(["sa-1"])
     assert plugin.ledger.awaiting_decision("s1") == []
+
+
+def _left_running(plugin, **data):
+    plugin.ledger.start("sa-9-old", "s1", "Rebuild the index")
+    plugin.ledger._update("sa-9-old", lambda t: t.update(**data))
+    # What the next Hermes process does at startup: reopen the same file and claim what was left running.
+    return [t["id"] for t in plugin.ledger.load(Path(plugin.ledger.location()))]
+
+
+def test_restart_with_the_same_pid_is_still_a_restart(plugin, make_ctx, monkeypatch):
+    """A restarted container gives the gateway the same PID; the start time tells the processes apart."""
+    make_ctx()
+    monkeypatch.setattr(plugin.ledger, "_boot_id", lambda: "boot-1")
+    monkeypatch.setattr(plugin.ledger, "_proc_identity", lambda pid: "boot-1:200")
+    assert _left_running(plugin, proc="boot-1:100") == ["sa-9-old"]
+    assert plugin.ledger.get("sa-9-old")["status"] == "lost"
+
+
+def test_a_reused_pid_after_a_reboot_is_not_alive(plugin, make_ctx, monkeypatch):
+    make_ctx()
+    monkeypatch.setattr(plugin.ledger, "_boot_id", lambda: "boot-2")
+    monkeypatch.setattr(plugin.ledger, "_alive", lambda pid: True)
+    assert _left_running(plugin, proc="boot-1:100", pid=4242) == ["sa-9-old"]
+
+
+def test_a_live_process_keeps_its_tasks(plugin, make_ctx, monkeypatch):
+    make_ctx()
+    monkeypatch.setattr(plugin.ledger, "_boot_id", lambda: "boot-1")
+    monkeypatch.setattr(plugin.ledger, "_proc_identity", lambda pid: "boot-1:100" if pid == 4242 else "")
+    assert _left_running(plugin, proc="boot-1:100", pid=4242) == []
+    assert plugin.ledger.get("sa-9-old")["status"] == "running"
+
+
+def test_records_without_an_identity_fall_back_to_the_pid(plugin, make_ctx, monkeypatch):
+    make_ctx()
+    monkeypatch.setattr(plugin.ledger, "_alive", lambda pid: pid == 4242)
+    assert _left_running(plugin, proc="", pid=4242) == []
+    assert _left_running(plugin, proc="", pid=4243) == ["sa-9-old"]
+
+
+def test_the_identity_is_read_from_proc_on_linux(plugin):
+    import os
+    import sys
+    identity = plugin.ledger._proc_identity(os.getpid())
+    if sys.platform.startswith("linux"):
+        boot, start = identity.split(":")
+        assert boot == plugin.ledger._boot_id() and start.isdigit()
+        assert plugin.ledger._proc_identity(2 ** 22 + 7) == "", "a missing process has no identity"
+    else:
+        assert identity == ""

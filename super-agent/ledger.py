@@ -110,6 +110,42 @@ def _alive(pid: int) -> bool:
     return True
 
 
+def _boot_id() -> str:
+    try:
+        return Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii").strip()
+    except Exception:
+        return ""
+
+
+def _proc_identity(pid: int) -> str:
+    """``<boot id>:<start time>`` of a process on Linux, "" elsewhere or when it is gone. A PID alone is not
+    enough: a restarted container gives the gateway the same PID, and after a reboot an old PID may belong to
+    any process."""
+    boot = _boot_id()
+    if not boot or pid <= 0:
+        return ""
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="ascii", errors="replace")
+        return f"{boot}:{stat[stat.rfind(')') + 2:].split()[19]}"
+    except Exception:
+        return ""
+
+
+def _still_running(task: dict) -> bool:
+    """Whether the Hermes process that started *task* still runs. Unsure means yes."""
+    pid, proc = int(task.get("pid") or 0), str(task.get("proc") or "")
+    if proc:
+        boot = _boot_id()
+        if boot and proc.split(":", 1)[0] != boot:
+            return False  # the machine rebooted since
+        current = _proc_identity(pid)
+        if current:
+            return current == proc
+    elif pid == os.getpid():
+        return True
+    return _alive(pid)
+
+
 def load(path: Optional[Path] = None) -> List[dict]:
     """Open the ledger and return the tasks a Hermes process that has since exited left running.
     Those are marked lost: Hermes does not resume a child across a restart."""
@@ -130,7 +166,7 @@ def load(path: Optional[Path] = None) -> List[dict]:
         _db.commit()
         lost = []
         for t in _select("status = ?", (RUNNING,)):
-            if t["pid"] == os.getpid() or _alive(int(t["pid"] or 0)):
+            if _still_running(t):
                 continue
             # Conditional, so of two processes starting together only one claims (and reports) the task.
             claimed = _db.execute("UPDATE tasks SET status = ?, ended = ? WHERE id = ? AND status = ?",
@@ -195,7 +231,7 @@ def _prune(parent: str, now: float) -> None:
 def start(task_id: str, parent: str, goal: str, child: str = "") -> None:
     with _lock:
         _put({"id": task_id, "parent": parent, "child": child, "status": RUNNING, "started": time.time(),
-              "ended": None, "pid": os.getpid(), "goal": goal, "files": [], "steers": [], "transcript": ""})
+              "ended": None, "pid": os.getpid(), "proc": _proc_identity(os.getpid()), "goal": goal, "files": [], "steers": [], "transcript": ""})
 
 
 def add_files(task_id: str, paths: Iterable[str]) -> None:
