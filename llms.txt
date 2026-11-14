@@ -3,7 +3,7 @@
 > Hermes Super Agent (`super-agent`) is an MIT-licensed plugin for Hermes Agent, formerly `hermes-proactive-agent`, that makes a chat assistant work like a responsive secretary while subagents handle the slow work. It enforces a per-turn time budget on the main agent (60 s soft reminder, 120 s edit/execute pause), detaches foreground terminal commands running longer than 30 s to the background, gates and briefs every `delegate_task` call, warns a subagent on the 3rd identical tool outcome and stops it on the 5th, brings open decisions and refused commands back to the main agent as `needs_decision`, returns a dispatch once after 2 subagents ended without finishing since the user last wrote, does not take a subagent that ended without its report as done, tracks background results until an uninterrupted reply delivers them to the user, and persists every delegated task in a SQLite ledger across gateway restarts. It runs as plain Python, makes zero model calls, and never posts directly into the user's chat.
 
 - Canonical repository: https://github.com/JerryLiu369/hermes-super-agent
-- Plugin id: `super-agent` · current version: 0.2.0
+- Plugin id: `super-agent` · current version: 0.2.1
 - Host: Hermes Agent >= 0.22 (tested on v0.22.7) · Python >= 3.10 · runtime dependencies: none
 - License: MIT
 - Install in two commands: `hermes plugins install JerryLiu369/hermes-super-agent/super-agent` then `hermes plugins enable super-agent`, then restart the gateway
