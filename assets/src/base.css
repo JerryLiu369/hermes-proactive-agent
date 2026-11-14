@@ -1,0 +1,47 @@
+/* Shared look for the README and catalog images: the promo video's paper-and-ink system. */
+@font-face { font-family: "JB Mono"; src: url(fonts/jbmono-400.woff2) format("woff2"); font-weight: 400; }
+@font-face { font-family: "JB Mono"; src: url(fonts/jbmono-700.woff2) format("woff2"); font-weight: 700; }
+:root {
+  --paper: #F2EEE5; --paper2: #E8E2D5; --card: #FBF9F4; --ink: #17171B; --ink2: #4A4740; --muted: #8C867A;
+  --faint: #DED6C6; --line: #D8D1C2; --amber: #C98516; --amber-l: #F3E2BF; --red: #C8412A; --red-l: #F2D3CA;
+  --green: #2E7D4F; --green-l: #D6E8D9; --blue: #2F5DA8; --blue-l: #D8E1F0; --term: #1C1C21;
+  --serif: "Noto Serif CJK SC", serif; --sans: "Noto Sans CJK SC", sans-serif;
+  --mono: "JB Mono", "Noto Sans Mono CJK SC", monospace;
+  --r-card: 18px; --r-inner: 10px;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { background: var(--paper); }
+body { font-family: var(--sans); color: var(--ink); -webkit-font-smoothing: antialiased; overflow: hidden; }
+.frame { position: relative; overflow: hidden; background: var(--paper); }
+.serif { font-family: var(--serif); }
+.mono { font-family: var(--mono); }
+/* JB Mono draws -> and === as ligatures; quoted plugin text must show the characters it really contains */
+* { font-variant-ligatures: none !important; }
+/* pwid keeps Noto CJK's quotes narrow in English text; Chinese keeps its full-width punctuation */
+html:not(:lang(zh)) * { font-feature-settings: "liga" 0, "calt" 0, "pwid" 1 !important; }
+html:lang(zh) * { font-feature-settings: "liga" 0, "calt" 0 !important; }
+
+.card { background: var(--card); border: 1.5px solid var(--line); border-radius: var(--r-card);
+  box-shadow: 0 1px 0 rgba(0,0,0,.02), 0 16px 36px -26px rgba(60,48,30,.38); }
+.pill { display: inline-flex; align-items: center; font: 700 12.5px/1 var(--mono); padding: 5px 10px 5px;
+  border-radius: 999px; white-space: nowrap; letter-spacing: .01em; }
+.pill.ink { background: var(--ink); color: var(--paper); }
+.pill.amber { background: var(--amber-l); color: #7A4F0B; }
+.pill.red { background: var(--red-l); color: #8E2A18; }
+.pill.green { background: var(--green-l); color: #1F5A38; }
+.pill.blue { background: var(--blue-l); color: #213F73; }
+.pill.line { border: 1.5px solid var(--line); color: var(--ink2); padding: 4px 9px; }
+
+/* a plugin note as the main agent or a subagent receives it */
+.note { padding: 14px 18px 15px; }
+.note .hd { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.note .hd .who { font: 500 13px var(--sans); color: var(--muted); }
+.note p { font: 400 13px/1.58 var(--mono); color: var(--ink2); white-space: pre-wrap; }
+.note p b { color: var(--ink); font-weight: 700; }
+
+/* left column of a feature image */
+.side .num { font: 700 88px/1 var(--serif); color: var(--faint); }
+.side h2 { font: 700 38px/1.24 var(--serif); margin-top: 18px; letter-spacing: -.005em; text-wrap: balance; }
+.side p { font: 400 18px/1.62 var(--sans); color: var(--ink2); margin-top: 18px; }
+.side .file { font: 500 13.5px/1.7 var(--mono); color: var(--muted); padding-top: 12px; border-top: 1.5px solid var(--ink); }
+:lang(zh) .side h2 { letter-spacing: .02em; }

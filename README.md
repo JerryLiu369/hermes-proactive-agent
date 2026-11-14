@@ -1,16 +1,20 @@
-# Hermes Super Agent
+<h1 align="center"><img alt="Hermes Super Agent" src="assets/banner.png"></h1>
 
-[![Release](https://img.shields.io/github/v/release/JerryLiu369/hermes-super-agent?label=release)](https://github.com/JerryLiu369/hermes-super-agent/releases)
-[![CI](https://github.com/JerryLiu369/hermes-super-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/JerryLiu369/hermes-super-agent/actions/workflows/ci.yml)
-[![Hermes Plugin](https://img.shields.io/badge/Hermes-plugin-blue.svg)](https://hermes-agent.nousresearch.com)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
-[![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
+<p align="center">
+<a href="https://github.com/JerryLiu369/hermes-super-agent/releases"><img alt="Release" src="https://img.shields.io/github/v/release/JerryLiu369/hermes-super-agent?style=flat-square&labelColor=17171B&color=C98516&label=release"></a>
+<a href="https://github.com/JerryLiu369/hermes-super-agent/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/JerryLiu369/hermes-super-agent/ci.yml?style=flat-square&labelColor=17171B&label=CI"></a>
+<a href="https://hermes-agent.nousresearch.com/docs/plugins/super-agent"><img alt="Hermes plugin" src="https://img.shields.io/badge/Hermes-plugin-2F5DA8?style=flat-square&labelColor=17171B"></a>
+<a href="https://www.python.org/"><img alt="Python 3.10+" src="https://img.shields.io/badge/python-3.10%2B-2F5DA8?style=flat-square&labelColor=17171B"></a>
+<a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-2E7D4F?style=flat-square&labelColor=17171B"></a>
+</p>
 
-English | [简体中文](README_zh.md)
+<p align="center">English · <a href="README_zh.md">简体中文</a></p>
 
 A plugin for [Hermes Agent](https://hermes-agent.nousresearch.com) that turns one chat assistant into a small team, like a good secretary with workers behind it: the **main agent** stays reachable in the chat while **subagents** handle the slow work in the background, and every delegated job ends with a result that is verified, delivered to you, and recorded.
 
 Built for talking to Hermes from a messaging app, the plugin runs as plain Python code. It makes no model calls of its own and never writes directly into your chat; every message you read still comes from the main agent.
+
+![Left, a chat in which the assistant hands a test run to a subagent, answers another question meanwhile, then reports the checked result. Right, the briefing attached to the subagent's task and the note the main agent receives when the subagent finishes.](assets/demo.gif)
 
 ## Install
 
@@ -58,6 +62,8 @@ The next four sections explain how the plugin solves each of these problems.
 
 ### The chat stays responsive
 
+![The turn timeline at 30, 60 and 120 seconds, with the note the main agent gets at each.](assets/promise-1.png)
+
 Every turn of the main agent has a time budget:
 
 - **At 60 seconds**, the main agent gets a single reminder to answer you or hand the remaining work to `delegate_task` within a step or two.
@@ -68,6 +74,8 @@ Every turn of the main agent has a time budget:
 Long commands cannot hold a turn hostage either. Any foreground terminal command still running after **30 seconds** is moved to the background through Hermes' own yield mechanism (on Hermes' local terminal backend, the only one that can hand a running process over). The process keeps running, Hermes notifies the main agent when it finishes, and a note tells the main agent that the command is still running rather than failed. Calling `process_manage(action='wait')` is refused so the main agent cannot freeze the chat by blocking on a background job.
 
 ### Subagents start informed
+
+![A delegate_task call written by the main agent, followed by the briefing super-agent attaches to it.](assets/promise-2.png)
 
 Because a subagent cannot see the chat history or memory, the main agent has to brief it. Before a `delegate_task` call goes through, the plugin checks the brief and returns it **once per turn** in two cases:
 
@@ -85,6 +93,8 @@ A second attempt in the same turn always passes. Every accepted task then gets a
 
 ### Subagents do not spin or guess
 
+![A subagent running the same failing command: warned on the 3rd try, stopped on the 5th; below, a needs_decision report with a question and options.](assets/promise-3.png)
+
 Hermes warns subagents when they repeat tool calls, but never stops them. The plugin tracks every tool call across the subagent's entire run, not only consecutive steps. Results are compared by their first line with long numbers and hashes masked out, so a fresh timestamp or request ID still counts as the same outcome. When a subagent runs the same tool with the same arguments and gets the same result:
 
 - on the **3rd time**, it receives a warning to change approach or report the blocker;
@@ -100,6 +110,8 @@ Subagents also have no way to ask you a question directly: Hermes gives them no 
 When a `needs_decision` report comes back, the main agent has the full chat context. If your earlier messages, memory, or facts it can check already answer the question, the main agent settles it on its own; if it truly is your call, it asks you in one short message with the options. Either way, once the answer is known, the main agent spawns a new subagent with the decision and the earlier task's record. If you have heard the question and the main agent still has not dispatched a follow-up by your next message, that turn reminds it once.
 
 ### Results are checked, reach you, and are remembered
+
+![The note the main agent gets when a subagent finishes, the task ledger, and the note after a gateway restart.](assets/promise-4.png)
 
 When a subagent finishes, the main agent's next turn opens with a verification note:
 
@@ -207,8 +219,10 @@ super-agent/      installed plugin package (the only directory Hermes copies)
 ├── config.py         settings resolution and defaults
 ├── util.py           text, JSON, and signature helpers
 ├── __init__.py       hook registration and routing
-└── plugin.yaml       Hermes plugin manifest and config schema
+├── plugin.yaml       Hermes plugin manifest and config schema
+└── README.md         short README for the plugin's page in the Hermes catalog
 tests/                unit tests per module plus end-to-end tests against Hermes
+assets/               README and catalog images; src/make.sh rebuilds them
 ```
 
 ## For AI agents

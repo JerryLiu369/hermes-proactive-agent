@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Banner</title>
+<link rel="stylesheet" href="base.css">
+<style>
+.frame { width: 1280px; height: 400px; }
+.copy { position: absolute; left: 76px; top: 0; bottom: 0; width: 560px; display: flex; flex-direction: column;
+  justify-content: center; }
+.kicker { font: 500 14px var(--mono); color: var(--muted); letter-spacing: .14em; text-transform: uppercase;
+  display: flex; align-items: center; gap: 12px; }
+.kicker i { width: 12px; height: 12px; border-radius: 3px; background: var(--ink); display: block; }
+h1 { font: 700 56px/1.08 var(--serif); margin-top: 18px; letter-spacing: -.01em; white-space: nowrap; }
+.tag { font: 400 19px/1.62 var(--sans); color: var(--ink2); margin-top: 20px; max-width: 500px; text-wrap: balance; }
+:lang(zh) .tag { letter-spacing: .02em; }
+svg { position: absolute; right: 76px; top: 85px; }
+.lb { font: 500 15px var(--mono); fill: var(--ink2); }
+:lang(zh) .lb { font-family: var(--sans); font-size: 16.5px; }
+.st { font: 700 11.5px var(--mono); }
+/* ?cover=1: the catalog image, 2:1. The catalog crops it to a wide band around its middle and sets the
+   plugin's name over the left half, so the cover carries no text of its own beyond the diagram labels. */
+.cover .frame { width: 1200px; height: 600px; }
+.cover .copy { display: none; }
+.cover svg { right: 40px; top: 185px; }
+</style>
+</head>
+<body>
+<div class="frame">
+  <div class="copy">
+    <div class="kicker"><i></i><span data-t="kicker"></span></div>
+    <h1>Hermes Super Agent</h1>
+    <div class="tag" data-t="tag"></div>
+  </div>
+  <svg width="500" height="230" viewBox="20 60 610 280">
+    <!-- you <-> assistant -->
+    <line x1="92" y1="200" x2="196" y2="200" stroke="#17171B" stroke-width="2"/>
+    <circle cx="62" cy="200" r="30" fill="#FBF9F4" stroke="#17171B" stroke-width="2"/>
+    <circle cx="240" cy="200" r="44" fill="#17171B"/>
+    <circle cx="240" cy="200" r="14" fill="#F2EEE5"/>
+    <text class="lb" x="62" y="270" text-anchor="middle" data-t="you"></text>
+    <text class="lb" x="240" y="270" text-anchor="middle" data-t="assistant"></text>
+    <!-- assistant -> subagents -->
+    <path d="M284 200 C 330 200, 330 104, 372 104" fill="none" stroke="#8C867A" stroke-width="1.8" stroke-dasharray="5 6"/>
+    <path d="M284 200 L 372 200" fill="none" stroke="#8C867A" stroke-width="1.8" stroke-dasharray="5 6"/>
+    <path d="M284 200 C 330 200, 330 296, 372 296" fill="none" stroke="#8C867A" stroke-width="1.8" stroke-dasharray="5 6"/>
+    <g id="subs"></g>
+    <!-- subagents -> ledger -->
+    <path d="M534 104 C 556 104, 556 184, 572 192" fill="none" stroke="#D8D1C2" stroke-width="1.8"/>
+    <path d="M534 200 L 572 200" fill="none" stroke="#D8D1C2" stroke-width="1.8"/>
+    <path d="M534 296 C 556 296, 556 216, 572 208" fill="none" stroke="#D8D1C2" stroke-width="1.8"/>
+    <g transform="translate(572 172)">
+      <ellipse cx="22" cy="8" rx="22" ry="7" fill="#FBF9F4" stroke="#17171B" stroke-width="1.8"/>
+      <path d="M0 8 V48 A22 7 0 0 0 44 48 V8" fill="#FBF9F4" stroke="#17171B" stroke-width="1.8"/>
+      <path d="M0 21 A22 7 0 0 0 44 21 M0 34 A22 7 0 0 0 44 34" fill="none" stroke="#17171B" stroke-width="1.4"/>
+      <ellipse cx="22" cy="8" rx="22" ry="7" fill="#FBF9F4" stroke="#17171B" stroke-width="1.8"/>
+    </g>
+    <text class="lb" x="594" y="270" text-anchor="middle" data-t="ledger"></text>
+  </svg>
+</div>
+<script>
+window.__errors = []; addEventListener("error", e => __errors.push(String(e.message)));
+const Q = new URLSearchParams(location.search);
+const zh = Q.get("lang") === "zh";
+if (Q.get("cover") === "1") {
+  document.documentElement.classList.add("cover");
+  const svg = document.querySelector("svg"); svg.setAttribute("width", 500); svg.setAttribute("height", 230);
+}
+if (zh) document.documentElement.lang = "zh-CN";
+const T = zh ? {
+  kicker: "Hermes Agent 插件",
+  tag: "让聊天里的助手随时在线：慢活交给后台子代理，每个结果都核实、告知、留档。",
+  you: "你", assistant: "助手", ledger: "账本",
+} : {
+  kicker: "A Hermes Agent plugin",
+  tag: "Your Hermes chat stays responsive while subagents do the slow work, and every result is checked, reported and recorded.",
+  you: "you", assistant: "assistant", ledger: "ledger",
+};
+document.querySelectorAll("[data-t]").forEach(el => { el.textContent = T[el.dataset.t]; });
+// three subagents with the statuses a report can end in
+const subs = [["completed", "#D6E8D9", "#1F5A38"], ["running", "#D8E1F0", "#213F73"], ["needs_decision", "#F3E2BF", "#7A4F0B"]];
+const g = document.getElementById("subs");
+subs.forEach(([label, bg, fg], i) => {
+  const y = 104 + i * 96;
+  g.insertAdjacentHTML("beforeend",
+    `<rect x="372" y="${y - 26}" width="162" height="52" rx="12" fill="#FBF9F4" stroke="#17171B" stroke-width="1.8"/>
+     <text class="lb" x="388" y="${y - 5}" style="font-size:12.5px;fill:#8C867A">${zh ? "子代理" : "subagent"}</text>
+     <rect x="386" y="${y + 3}" width="${label.length * 7.4 + 16}" height="17" rx="8.5" fill="${bg}"/>
+     <text class="st" x="394" y="${y + 15.5}" fill="${fg}">${label}</text>`);
+});
+document.fonts.ready.then(() => { document.body.dataset.ready = "1"; });
+</script>
+</body>
+</html>

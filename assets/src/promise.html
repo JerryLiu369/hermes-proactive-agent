@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Promise</title>
+<link rel="stylesheet" href="base.css">
+<style>
+.frame { width: 1280px; height: 720px; }
+.side { position: absolute; left: 72px; top: 72px; bottom: 72px; width: 380px; display: flex; flex-direction: column; }
+.side .file { margin-top: auto; }
+.main { position: absolute; left: 500px; right: 72px; top: 72px; bottom: 72px; display: flex; flex-direction: column;
+  gap: 12px; justify-content: center; }
+.label { font: 500 13px var(--sans); color: var(--muted); display: flex; align-items: center; gap: 10px; }
+:lang(zh) .label { font-size: 14px; }
+:lang(zh) .side h2 { white-space: pre-line; text-wrap: wrap; }
+
+/* 1: turn timeline */
+.tl { padding: 14px 20px 10px; }
+.track { position: relative; height: 12px; margin: 14px 0 0; border-radius: 6px; overflow: hidden; display: flex; }
+.track i { display: block; height: 100%; }
+.ticks { position: relative; height: 34px; }
+.ticks span { position: absolute; top: 8px; transform: translateX(-50%); font: 700 13px var(--mono); color: var(--ink); }
+.ticks span::before { content: ""; position: absolute; left: 50%; top: -22px; width: 1.5px; height: 16px; background: var(--ink); }
+.ticks span.s0 { transform: none; } .ticks span.s0::before { left: 0; }
+
+/* 2: delegate_task call and the briefing */
+.call { padding: 16px 20px 18px; }
+.kv { display: grid; grid-template-columns: 76px 1fr; row-gap: 8px; margin-top: 12px; }
+.kv dt { font: 500 13px var(--mono); color: var(--muted); }
+.kv dd { font: 400 13.5px/1.55 var(--mono); color: var(--ink); }
+.join { display: flex; align-items: center; gap: 12px; font: 500 13px var(--mono); color: var(--muted); padding-left: 20px; }
+.join::before { content: ""; width: 1.5px; height: 22px; background: var(--line); }
+.brief { padding: 16px 20px 16px; }
+.brief .mk { font: 700 13px var(--mono); color: var(--ink); }
+.brief .sec { margin-top: 10px; }
+.brief .sec h5 { font: 700 13px/1.5 var(--mono); color: var(--ink); }
+.brief .sec div { font: 400 13px/1.5 var(--mono); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* 3: tool calls */
+.calls { padding: 14px 20px 6px; }
+.row { display: grid; grid-template-columns: 26px 1fr auto; align-items: baseline; gap: 10px; padding: 5px 0;
+  border-top: 1px solid var(--paper2); font: 400 13.5px/1.5 var(--mono); }
+.row:first-of-type { border-top: 0; }
+.row .n { color: var(--muted); }
+.row .c { color: var(--ink); }
+.row .c em { font-style: normal; color: var(--red); }
+.inline { margin: 2px 0 8px 36px; padding: 9px 14px 10px; border-radius: var(--r-inner); font: 400 12.5px/1.55 var(--mono);
+  color: var(--ink2); white-space: pre-wrap; }
+.inline.amber { background: #F8EEDA; } .inline.red { background: #F7E2DC; }
+.json { padding: 16px 20px 18px; }
+.json pre { font: 400 13.5px/1.6 var(--mono); color: var(--ink); white-space: pre-wrap; margin-top: 10px; }
+.json .k { color: var(--blue); } .json .s { color: #2E6B45; }
+
+/* 4: ledger */
+.ledger { padding: 14px 20px 10px; }
+table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+th { text-align: left; font: 500 12.5px var(--sans); color: var(--muted); padding: 6px 10px 8px 0; border-bottom: 1.5px solid var(--line); }
+:lang(zh) th { font-size: 13.5px; }
+td { font: 400 13.5px/1.45 var(--mono); padding: 9px 10px 9px 0; border-bottom: 1px solid var(--paper2); vertical-align: middle; }
+tr:last-child td { border-bottom: 0; }
+td.muted { color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="frame">
+  <div class="side">
+    <div class="num" id="num"></div>
+    <h2 id="title"></h2>
+    <p id="lead"></p>
+    <div class="file" id="file"></div>
+  </div>
+  <div class="main" id="main"></div>
+</div>
+<script>
+window.__errors = []; addEventListener("error", e => __errors.push(String(e.message)));
+const q = new URLSearchParams(location.search);
+const n = +(q.get("n") || 1), zh = q.get("lang") === "zh";
+if (zh) document.documentElement.lang = "zh-CN";
+const esc = s => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+const L = (en, cn) => (zh ? cn : en);
+const note = (pill, who, text, cls = "") =>
+  `<div class="card note ${cls}"><div class="hd">${pill}<span class="who">${esc(who)}</span></div><p>${esc(text)}</p></div>`;
+
+// Note texts are copied from super-agent/*.py with the defaults in config.py; the task names, paths and
+// command outputs are an example.
+const SIDE = {
+  1: [L("The chat stays responsive", "聊天始终保持响应"),
+      L("Every turn of the main agent has a time budget. At 60 s it is reminded to answer or delegate; at 120 s editing and running commands pause for the rest of the turn. A command still running after 30 s moves to the background.",
+        "助手每一轮都有时间预算：满 60 秒提醒它先回复你或把活派出去，满 120 秒本轮暂停改文件和跑命令。前台命令跑满 30 秒还没结束，就自动转入后台。"),
+      "super-agent/secretary.py"],
+  2: [L("Subagents start informed", "子代理出发前\n心里有数"),
+      L("A brief under 120 characters, or one naming a file another running subagent is changing, goes back once. Every accepted task gets your recent messages, memory, the chat's task record, working rules and how to report.",
+        "交代不足 120 个字符，或点名的文件正被别的子代理修改，就退回一次。放行的任务都会附上你最近的原话、记忆、本对话的任务记录、做事规矩和回报方式。"),
+      "super-agent/handoff.py"],
+  3: [L("Subagents do not spin or guess", "子代理\n不空转、不瞎猜"),
+      L("The same step with the same result draws a warning the 3rd time and a stop the 5th. A choice that is not the subagent's to make comes back to the main agent as a question with options.",
+        "同一步拿到同样的结果，第 3 次警告，第 5 次叫停。不该由子代理拍板的选择，带着问题和选项交回给助手。"),
+      "super-agent/workers.py<br>super-agent/reports.py"],
+  4: [L("Results are checked, reported and remembered", "结果有核实、\n有交代、有记录"),
+      L("The main agent checks a result's evidence before passing it on. A result you have not heard is chased until you have. Every task is kept in a SQLite ledger that survives a restart.",
+        "子代理交卷后，助手先看证据、核实真实状态再告诉你；你还没听到的结果会一直追报；每个任务都记进 SQLite 账本，网关重启也不丢。"),
+      "super-agent/reports.py<br>super-agent/ledger.py"],
+};
+const [title, lead, file] = SIDE[n];
+document.getElementById("num").textContent = "0" + n;
+document.getElementById("title").textContent = title;
+document.getElementById("lead").textContent = lead;
+document.getElementById("file").innerHTML = file;
+
+const M = document.getElementById("main");
+if (n === 1) {
+  const W = 150, pct = s => (s / W * 100).toFixed(2) + "%";
+  M.innerHTML = `
+    <div class="card tl">
+      <div class="label">${L("One turn of the main agent", "助手的一轮对话")}</div>
+      <div class="track"><i style="width:${pct(60)};background:var(--paper2)"></i><i style="width:${pct(60)};background:var(--amber-l)"></i><i style="flex:1;background:var(--red-l)"></i></div>
+      <div class="ticks">
+        <span class="s0" style="left:0">0 s</span><span style="left:${pct(30)}">30 s</span>
+        <span style="left:${pct(60)}">60 s</span><span style="left:${pct(120)}">120 s</span>
+      </div>
+    </div>` +
+    note(`<span class="pill line">30 s</span>`, L("note on a terminal result", "附在终端结果上的说明"),
+      "[super-agent] Still running: this command took longer than 30s, so it moved to the background. It has NOT failed. `output` holds what it printed so far. You will be notified automatically when it finishes; do not poll, sleep or re-run it. Tell the user briefly what is running and end your turn, or continue with work that does not depend on it.") +
+    note(`<span class="pill amber">60 s</span>`, L("note on the next tool result", "附在下一个工具结果上的提醒"),
+      "[super-agent] This turn has run for 61s. Within the next 1-2 steps, answer the user or hand the remaining work to delegate_task. Editing and execution tools pause at 120s.") +
+    note(`<span class="pill red">120 s</span>`, L("an edit or command after 120 s is refused with", "120 秒后再改文件或跑命令，会被拒绝并收到"),
+      "[super-agent] This turn has run for more than 120s, so editing and execution tools are paused. Answer the user now with what you know, or hand the rest to delegate_task.");
+} else if (n === 2) {
+  const secs = [
+    ["## The user's recent messages (latest last)", "- Use the Postgres from docker compose, and don't touch src/auth/."],
+    ["## User and environment memory", "### About the user … ### About the environment …"],
+    ["## Other subagents running now", "- \"Rebuild the search index\" (running 4 min; changing search/index.py)"],
+    ["## Earlier unfinished work in this chat (newest first)", "- \"Fix the failing login tests\" ended needs_decision 6 min ago."],
+    ["## Working rules", "- If a step fails the same way twice, stop trying variations and report the blocker."],
+    ["## How to report", "End with one JSON object as your final answer: status, summary, evidence …"],
+  ];
+  M.innerHTML = `
+    <div class="card call">
+      <div class="note" style="padding:0"><div class="hd" style="margin:0"><span class="pill ink">delegate_task</span><span class="who">${L("written by the main agent", "助手写的交代")}</span></div></div>
+      <dl class="kv">
+        <dt>goal</dt><dd>Make tests/test_auth.py pass against a local Postgres</dd>
+        <dt>context</dt><dd>The tests fail with "db:5432 - no response": nothing starts the database. The user chose Docker. Start it with docker compose up -d db; do not change src/auth/. Done when pytest tests/test_auth.py passes.</dd>
+      </dl>
+    </div>
+    <div class="join">${L("+ attached by super-agent", "+ super-agent 自动附上")}</div>
+    <div class="card brief">
+      <div class="mk">=== Handoff briefing (attached by super-agent) ===</div>
+      ${secs.map(([h, d]) => `<div class="sec"><h5>${esc(h)}</h5><div>${esc(d)}</div></div>`).join("")}
+    </div>`;
+} else if (n === 3) {
+  const step = 'terminal pg_isready -h db -p 5432 -> "[exit 2] db:5432 - no response"';
+  const row = (i, tag = "") => `<div class="row"><span class="n">${i}</span><span class="c">terminal  pg_isready -h db -p 5432  <em>→ [exit 2] db:5432 - no response</em></span>${tag}</div>`;
+  M.innerHTML = `
+    <div class="card calls">
+      <div class="label">${L("A subagent's tool calls", "子代理的工具调用")}</div>
+      ${row(1)}${row(2)}${row(3, `<span class="pill amber">${L("warned", "警告")}</span>`)}
+      <div class="inline amber">${esc(`[super-agent] You ran the same step 3 times with the same result: ${step}. Change approach or report the blocker; at 5 repeats you will be stopped.`)}</div>
+      ${row(4)}${row(5, `<span class="pill red">${L("stopped", "叫停")}</span>`)}
+      <div class="inline red">${esc(`[super-agent] STOP: ran the same step 5 times with the same result: ${step}. Do not call more tools. Write your final report now: status "blocked", what you tried, the exact blocker, and what you need from the main agent or the user.`)}</div>
+    </div>
+    <div class="card json">
+      <div class="label">${L("A choice that is not the subagent's to make: its final report", "遇到不该自己拍板的选择：子代理的最终回报")}</div>
+      <pre>{ <span class="k">"status"</span>: <span class="s">"needs_decision"</span>,
+  <span class="k">"question"</span>: <span class="s">"Start Postgres in Docker for the tests, or mock the database?"</span>,
+  <span class="k">"options"</span>: [<span class="s">"Docker: real queries, needs docker compose"</span>,
+              <span class="s">"Mock: fast, skips the SQL layer"</span>] }</pre>
+    </div>`;
+} else {
+  const st = (s, c) => `<span class="pill ${c}">${s}</span>`;
+  M.innerHTML =
+    note(`<span class="pill green">${L("subagent finished", "子代理交卷")}</span>`, L("note at the start of the main agent's next turn", "助手下一轮开头收到的核验说明"),
+      '[super-agent] Subagent finished: "Make tests/test_auth.py pass against a local Postgres" (status: completed, 14 tool rounds, 3.2 min).\n- Evidence it reported: pytest tests/test_auth.py: 12 passed, exit 0; docker compose ps db: healthy. Spot-check the real end state before telling the user.') +
+    `<div class="card ledger">
+      <div class="label">ledger.db</div>
+      <table>
+        <tr><th>${L("task", "任务")}</th><th>${L("status", "状态")}</th><th>${L("files changed", "改过的文件")}</th><th>${L("user told", "已告知你")}</th></tr>
+        <tr><td>Make tests/test_auth.py pass…</td><td>${st("completed", "green")}</td><td>docker-compose.yml</td><td>${L("yes", "是")}</td></tr>
+        <tr><td>Fix the failing login tests</td><td>${st("needs_decision", "amber")}</td><td class="muted">–</td><td>${L("yes", "是")}</td></tr>
+        <tr><td>Rebuild the search index</td><td>${st("lost", "red")}</td><td>search/index.py</td><td>${L("not yet", "还没有")}</td></tr>
+      </table>
+    </div>` +
+    note(`<span class="pill red">${L("after a restart", "网关重启后")}</span>`, L("note for the chat that started it", "发给派出它的那个对话"),
+      '[super-agent] Hermes restarted while a subagent was running: "Rebuild the search index" (started 9 min ago). Its result is lost and its side effects are unknown. It had changed: search/index.py. Check the real state before re-dispatching or telling the user it is done.');
+}
+document.fonts.ready.then(() => {
+  if (M.scrollHeight > M.clientHeight + 1) __errors.push(`right column overflows by ${M.scrollHeight - M.clientHeight}px`);
+  document.body.dataset.ready = "1";
+});
+</script>
+</body>
+</html>

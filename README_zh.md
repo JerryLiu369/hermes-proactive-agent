@@ -1,16 +1,20 @@
-# Hermes Super Agent
+<h1 align="center"><img alt="Hermes Super Agent" src="assets/banner_zh.png"></h1>
 
-[![Release](https://img.shields.io/github/v/release/JerryLiu369/hermes-super-agent?label=release)](https://github.com/JerryLiu369/hermes-super-agent/releases)
-[![CI](https://github.com/JerryLiu369/hermes-super-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/JerryLiu369/hermes-super-agent/actions/workflows/ci.yml)
-[![Hermes Plugin](https://img.shields.io/badge/Hermes-plugin-blue.svg)](https://hermes-agent.nousresearch.com)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
-[![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
+<p align="center">
+<a href="https://github.com/JerryLiu369/hermes-super-agent/releases"><img alt="Release" src="https://img.shields.io/github/v/release/JerryLiu369/hermes-super-agent?style=flat-square&labelColor=17171B&color=C98516&label=release"></a>
+<a href="https://github.com/JerryLiu369/hermes-super-agent/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/JerryLiu369/hermes-super-agent/ci.yml?style=flat-square&labelColor=17171B&label=CI"></a>
+<a href="https://hermes-agent.nousresearch.com/docs/plugins/super-agent"><img alt="Hermes plugin" src="https://img.shields.io/badge/Hermes-plugin-2F5DA8?style=flat-square&labelColor=17171B"></a>
+<a href="https://www.python.org/"><img alt="Python 3.10+" src="https://img.shields.io/badge/python-3.10%2B-2F5DA8?style=flat-square&labelColor=17171B"></a>
+<a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-2E7D4F?style=flat-square&labelColor=17171B"></a>
+</p>
 
-[English](README.md) | 简体中文
+<p align="center"><a href="README.md">English</a> · 简体中文</p>
 
 [Hermes Agent](https://hermes-agent.nousresearch.com) 的插件，把聊天里的一个助手变成一支小团队：**助手**像一位靠谱的秘书，把耗时的慢活交给后台的**子代理**去跑，自己随时在线响应；每件活做完，结果都会先核实、确实转达给你，并记入账本留档。
 
 插件专为在聊天软件里使用 Hermes 而写。它完全由普通 Python 代码运行，自己不调用任何模型，也从不直接往聊天窗口发消息；你看到的每一句回复，依然都出自助手。
+
+![左边是聊天：助手把跑测试的活交给子代理，期间照常回答别的问题，最后汇报核实过的结果。右边是插件给子代理任务附上的背景材料，以及子代理交卷时助手收到的说明。](assets/demo_zh.gif)
 
 ## 安装
 
@@ -58,6 +62,8 @@ Hermes 本身就能把任务派给子代理在后台执行。但真正在聊天�
 
 ### 聊天始终保持响应
 
+![一轮对话的时间轴：30 秒、60 秒、120 秒时助手各收到什么说明。](assets/promise-1_zh.png)
+
 助手的每一轮对话都有时间预算：
 
 - **满 60 秒时**，助手会收到一次提醒：在一两步之内先回复你，或者把剩下的慢活通过 `delegate_task` 派给子代理。
@@ -68,6 +74,8 @@ Hermes 本身就能把任务派给子代理在后台执行。但真正在聊天�
 耗时命令同样不会拖住聊天。前台终端命令运行满 **30 秒**仍未结束时，插件会借助 Hermes 自带的让出机制（yield）将它转入后台（限 Hermes 的本地终端后端，只有它能把运行中的进程交给后台）：进程照常运行，结束时由 Hermes 通知助手，同时插件会明确告知助手“命令仍在后台运行，并非执行失败”。此外，插件会拒绝 `process_manage(action='wait')`，防止助手在原地干等后台任务而再次卡死聊天。
 
 ### 子代理出发前心里有数
+
+![助手写的 delegate_task 交代，以及插件附在后面的背景材料。](assets/promise-2_zh.png)
 
 子代理看不到聊天上下文，也没有记忆，全靠助手在派活时写好任务交代（`context`）。插件会在 `delegate_task` 发出前做一次把关；遇到下面两种情况，**每轮会退回一次**并说明原因：
 
@@ -85,6 +93,8 @@ Hermes 本身就能把任务派给子代理在后台执行。但真正在聊天�
 
 ### 子代理不空转、不瞎猜
 
+![子代理反复执行同一条失败的命令：第 3 次警告，第 5 次叫停；下方是带问题和选项的 needs_decision 回报。](assets/promise-3_zh.png)
+
 Hermes 能发现子代理在重复调用工具，但对子代理只提醒、不制止。插件会在子代理的整个运行周期内累计计数（不限于连续重复），并按结果的第一行做比对；长数字和哈希会先抹平，因此就算每次请求 ID 或时间戳不同，只要报错一样就记为同一次重复。当子代理用同一个工具、同样的参数，拿到同样的结果时：
 
 - **第 3 次**：收到警告，要求换思路或直接上报阻碍；
@@ -100,6 +110,8 @@ Hermes 能发现子代理在重复调用工具，但对子代理只提醒、不�
 当 `needs_decision` 回报送到助手手里时，助手看得到完整对话和记忆：如果答案在前面的聊天、记忆或它能直接查到的事实里已经很清楚，助手会自己拍板；如果确实需要你拿主意（个人偏好、风险取舍、花钱、被拒的危险命令），它会发一条简短的消息把选项列给你。无论哪种方式，拿到答案后助手都会带着决定和前一个任务的记录，重新派一个子代理接着做。要是你已经看到了问题，而到你发下一条消息时助手还没派活跟进，插件会在那条消息里提醒助手一次。
 
 ### 结果有核实、有交代、有记录
+
+![子代理交卷时助手收到的核验说明、任务账本，以及网关重启后的提示。](assets/promise-4_zh.png)
 
 子代理一结束，助手的下一轮对话开头就会收到一条核验说明：
 
@@ -207,8 +219,10 @@ super-agent/      插件安装目录（Hermes 唯一会复制的目录）
 ├── config.py         配置读取与默认值
 ├── util.py           文本、JSON 与调用签名辅助函数
 ├── __init__.py       钩子注册与路由
-└── plugin.yaml       Hermes 插件清单与配置定义
+├── plugin.yaml       Hermes 插件清单与配置定义
+└── README.md         Hermes 插件商店页面上显示的精简说明
 tests/                按模块对应的单元测试，以及基于真实 Hermes 的端到端测试
+assets/               README 与插件商店用的图片，用 src/make.sh 重新生成
 ```
 
 ## 给 AI 读的文档
