@@ -248,6 +248,14 @@ uv run --group dev ruff check
 - Write plainly: short sentences, one term per concept, numbers that match the defaults in `config.py`.
 - A changed setting means changing `config.DEFAULTS`, `plugin.yaml`'s `config_schema` and the settings tables in
   `README.md`, `README_zh.md` and `llms-full.txt`.
+- `super-agent/README.md` is the README on the plugin's page in the Hermes catalog, which reads the README from the
+  entry's `subdir` at the pinned commit. Keep it short (what it is, install, one line per promise, a link to the full
+  README) and in plain Markdown: the catalog drops raw HTML and resolves relative links at the pinned commit, so it
+  points at `../assets/` and `../README.md`.
+- The images in `assets/` (README banner and promise images, the demo GIF, the catalog cover) are built from the pages
+  in `assets/src/` by `assets/src/make.sh`, in the promo video's visual style. Every `[super-agent]` note they show is
+  copied from the code with the defaults filled in; when a note's wording or a default changes, update the page and
+  rebuild. Task names, paths and command output in them are an example.
 
 ## Commits and releases
 

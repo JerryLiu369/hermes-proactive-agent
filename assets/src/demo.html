@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Demo</title>
+<link rel="stylesheet" href="base.css">
+<style>
+.frame { width: 1200px; height: 600px; }
+.pane-label { position: absolute; top: 40px; font: 500 14px var(--sans); color: var(--muted); }
+:lang(zh) .pane-label { font-size: 15px; }
+.chat { position: absolute; left: 48px; top: 70px; width: 500px; bottom: 48px; display: flex; flex-direction: column; overflow: hidden; }
+.chat .hd { height: 64px; flex: none; border-bottom: 1.5px solid var(--line); display: flex; align-items: center; gap: 14px; padding: 0 20px; }
+.chat .av { width: 36px; height: 36px; border-radius: 50%; background: var(--ink); position: relative; flex: none; }
+.chat .av::after { content: ""; position: absolute; left: 12px; top: 12px; width: 12px; height: 12px; border-radius: 50%; background: var(--paper); }
+.chat .nm { font: 700 18px var(--sans); }
+.chat .bd { flex: 1; padding: 20px; display: flex; flex-direction: column; gap: 12px; }
+.msg { max-width: 84%; font: 400 16px/1.55 var(--sans); padding: 10px 16px; border-radius: 18px; }
+.msg.u { align-self: flex-end; background: var(--ink); color: var(--paper); border-bottom-right-radius: 6px; }
+.msg.a { align-self: flex-start; background: #fff; border: 1.5px solid var(--line); border-bottom-left-radius: 6px; }
+.sys { align-self: center; font: 500 13px var(--sans); color: var(--muted); background: var(--paper2); padding: 4px 14px; border-radius: 999px; }
+.typing { align-self: flex-start; display: flex; gap: 7px; padding: 14px 18px; background: #fff; border: 1.5px solid var(--line);
+  border-radius: 18px; border-bottom-left-radius: 6px; }
+.typing i { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); display: block; }
+.side2 { position: absolute; left: 584px; right: 48px; top: 70px; bottom: 48px; display: flex; flex-direction: column; gap: 14px; }
+.ev .hd .ttl { font: 700 15px var(--sans); color: var(--ink); }
+.ev p { font-size: 12.5px; }
+.hide { display: none !important; }
+</style>
+</head>
+<body>
+<div class="frame">
+  <div class="pane-label" style="left:48px" data-t="you"></div>
+  <div class="pane-label" style="left:584px" data-t="behind"></div>
+  <div class="card chat">
+    <div class="hd"><div class="av"></div><div class="nm" data-t="name"></div></div>
+    <div class="bd" id="chat"></div>
+  </div>
+  <div class="side2" id="side"></div>
+</div>
+<script>
+window.__errors = []; addEventListener("error", e => __errors.push(String(e.message)));
+const zh = new URLSearchParams(location.search).get("lang") === "zh";
+if (zh) document.documentElement.lang = "zh-CN";
+const esc = s => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+const T = zh ? { you: "你在聊天里看到的", behind: "同一时刻，插件在幕后做的事", name: "助手" }
+             : { you: "What you see in the chat", behind: "Meanwhile, behind the scenes", name: "Assistant" };
+document.querySelectorAll("[data-t]").forEach(el => { el.textContent = T[el.dataset.t]; });
+
+// [time it appears, kind, text]. "a" messages get a typing bubble for 0.8 s first.
+const CHAT = zh ? [
+  [0.6, "u", "把测试全部跑一遍，告诉我过没过。"],
+  [2.6, "a", "好，已经派了一个子代理在后台跑测试，这期间你随时找我。"],
+  [4.8, "u", "对了，明天站会几点？"],
+  [6.0, "a", "明早 9:30。"],
+  [7.6, "sys", "3 分钟后"],
+  [10.4, "a", "测试全部通过：214 个用例，退出码 0。我核对过测试日志。"],
+] : [
+  [0.6, "u", "Run the full test suite and tell me if it passes."],
+  [2.6, "a", "On it. A subagent is running the tests in the background, so I'm free in the meantime."],
+  [4.8, "u", "Meanwhile, when is tomorrow's standup?"],
+  [6.0, "a", "9:30 tomorrow morning."],
+  [7.6, "sys", "3 minutes later"],
+  [10.4, "a", "The suite passes: 214 tests, exit code 0. I checked the test log."],
+];
+// Note texts as super-agent writes them (handoff.py, reports.py); the task and its numbers are an example.
+const EVENTS = [
+  [1.6, "ink", "delegate_task", zh ? "检查交代，给子代理的任务附上背景材料" : "Brief checked, briefing added to the subagent's task",
+   "=== Handoff briefing (attached by super-agent) ===\n## The user's recent messages (latest last)\n## User and environment memory\n## Working rules\n## How to report"],
+  [8.4, "green", "subagent finished", zh ? "助手下一轮开头收到的说明" : "Note for the main agent's next turn",
+   '[super-agent] Subagent finished: "Run the full test suite" (status: completed, 9 tool rounds, 3.1 min).\n- Evidence it reported: pytest -q: 214 passed, exit 0. Spot-check the real end state before telling the user.'],
+];
+const DURATION = 14;
+
+const chat = document.getElementById("chat"), side = document.getElementById("side");
+const nodes = CHAT.map(([at, kind, text]) => {
+  const el = document.createElement("div");
+  el.className = kind === "sys" ? "sys" : "msg " + kind;
+  el.textContent = text;
+  let typing = null;
+  if (kind === "a") {
+    typing = document.createElement("div"); typing.className = "typing"; typing.innerHTML = "<i></i><i></i><i></i>";
+    chat.appendChild(typing);
+  }
+  chat.appendChild(el);
+  return { at, el, typing };
+});
+const evs = EVENTS.map(([at, cls, pill, ttl, text]) => {
+  const el = document.createElement("div");
+  el.className = "card note ev";
+  el.innerHTML = `<div class="hd"><span class="pill ${cls}">${esc(pill)}</span><span class="ttl">${esc(ttl)}</span></div><p>${esc(text)}</p>`;
+  side.appendChild(el);
+  return { at, el };
+});
+
+const ease = x => 1 - Math.pow(1 - Math.min(1, Math.max(0, x)), 3);
+function show(el, t, at) {
+  const k = ease((t - at) / 0.35);
+  el.classList.toggle("hide", t < at);
+  el.style.opacity = k;
+  el.style.transform = `translateY(${(1 - k) * 10}px)`;
+}
+window.render = t => {
+  for (const { at, el, typing } of nodes) {
+    if (typing) {
+      typing.classList.toggle("hide", !(t >= at - 0.8 && t < at));
+      typing.querySelectorAll("i").forEach((d, i) => { d.style.opacity = 0.35 + 0.65 * Math.max(0, Math.sin((t * 5 - i * 0.8))); });
+    }
+    show(el, t, at);
+  }
+  for (const { at, el } of evs) show(el, t, at);
+  // fade the whole stage out at the end so the loop restarts from an empty chat
+  document.querySelector(".frame").style.opacity = 1 - ease((t - (DURATION - 0.6)) / 0.5);
+};
+render(DURATION - 1.5);
+document.fonts.ready.then(() => {
+  if (chat.scrollHeight > chat.clientHeight + 1) __errors.push("chat overflows");
+  if (side.scrollHeight > side.clientHeight + 1) __errors.push("side overflows");
+  document.body.dataset.ready = "1";
+});
+</script>
+</body>
+</html>
